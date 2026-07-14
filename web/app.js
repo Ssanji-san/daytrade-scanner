@@ -126,7 +126,7 @@ function renderCalendar(payload) {
         <span class="imp ${e.impact}"></span>
         <span class="t">${localTime(e.ts)}</span>
         <span>${e.title}</span>
-        <span class="fx">${e.forecast ? "f " + e.forecast : ""}</span>
+        <span class="fx" title="forecast vs previous reading">${e.forecast ? `fcst ${e.forecast}` : ""}${e.previous ? ` · prev ${e.previous}` : ""}</span>
       </li>`
     )
     .join("") || '<li class="past">No red/orange events.</li>';
