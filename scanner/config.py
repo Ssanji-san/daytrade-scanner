@@ -51,6 +51,28 @@ class Config:
     host: str = "127.0.0.1"
     port: int = 8124
 
+    # --- paper-trading bot ---
+    # The broker refuses to start unless trading_base contains "paper-api";
+    # this bot must never touch a live account.
+    trading_base: str = "https://paper-api.alpaca.markets"
+    bot_bankroll: float = 5_000.0        # simulated account (paper balance ignored)
+    bot_risk_pct: float = 1.0            # % of bankroll risked per trade
+    bot_max_notional_pct: float = 25.0   # position size cap as % of bankroll
+    bot_max_trades_per_day: int = 4
+    bot_min_price: float = 2.0           # bot trades $2-$20 only (user request)
+    bot_max_price: float = 20.0
+    bot_stop_pct: float = 3.0            # stop distance from entry; defines R
+    bot_targets_r: tuple = (2.0, 3.0)    # split exit: half at 2R, half at 3R
+    bot_time_stop_minutes: int = 20
+    bot_window_open: str = "09:35"       # ET; no entries before/after the window
+    bot_window_close: str = "11:30"
+    bot_flatten_time: str = "15:50"      # ET; close everything before the bell
+    bot_daily_loss_pct: float = 3.0      # kill switch: stop entering for the day
+    bot_score_threshold: float = 0.55
+    bot_model_min_samples: int = 40      # below this, heuristic scoring
+    bot_journal_path: str = "cache/journal.db"
+    bot_forward_marks_min: tuple = (5, 15, 30)   # forward-return checkpoints
+
     # --- data endpoints ---
     data_base: str = "https://data.alpaca.markets"
     feed: str = "iex"                   # snapshots/bars feed on the free plan
