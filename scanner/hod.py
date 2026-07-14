@@ -1,0 +1,44 @@
+"""Scanner 2: small-cap high-of-day momentum.
+
+Filters on Ross Cameron's five stock-selection criteria (float, % up
+today, volume traded, relative volume, news) plus the price band and
+proximity to the high of day. Stocks failing exactly one criterion go to
+the dimmed "near" list so the user sees what's about to qualify.
+"""
+from .config import Config
+
+
+def _criteria(state, cfg: Config):
+    """Ordered (name, passed) checks. Unknown values count as failures."""
+    price, high = state["price"], state["day_high"]
+    dist = 100.0 * (high - price) / high if high else None
+    checks = [
+        ("pct_up", (state["day_pct"] or 0) >= cfg.hod_min_pct_up),
+        ("volume", (state["day_volume"] or 0) >= cfg.hod_min_volume),
+        ("rvol", (state["rvol"] or 0) >= cfg.hod_min_rvol),
+        ("float", state["float_shares"] is not None
+                  and state["float_shares"] < cfg.hod_max_float),
+        ("hod", dist is not None and dist <= cfg.hod_near_high_pct),
+    ]
+    if cfg.hod_require_news:
+        checks.append(("news", bool(state["has_news"])))
+    return checks, dist
+
+
+def scan(states, cfg: Config):
+    """Returns (qualified, near) row lists, both sorted by day % desc."""
+    qualified, near = [], []
+    for state in states:
+        if not (cfg.hod_min_price <= state["price"] <= cfg.hod_max_price):
+            continue
+        checks, dist = _criteria(state, cfg)
+        failed = [name for name, ok in checks if not ok]
+        if len(failed) > cfg.near_filter_max_failures:
+            continue
+        row = dict(state, failed=failed, dist_from_hod=dist)
+        (qualified if not failed else near).append(row)
+
+    by_pct = lambda r: -(r["day_pct"] or 0)
+    qualified.sort(key=by_pct)
+    near.sort(key=by_pct)
+    return qualified[:cfg.hod_rows], near[:cfg.hod_rows]
