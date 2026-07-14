@@ -4,6 +4,8 @@ Both the live poll loop and replay mode push per-symbol dicts through
 `ingest()`; everything downstream (history, gainers, HOD scan, news
 badges) is computed here so the two modes exercise identical logic.
 """
+from dataclasses import replace
+
 from . import hod
 from .config import Config
 from .gainers import top_gainers
@@ -74,8 +76,10 @@ class MarketState:
             })
         return states
 
-    def payload(self, now):
+    def payload(self, now, require_news=None):
         cfg = self.cfg
+        if require_news is not None and require_news != cfg.hod_require_news:
+            cfg = replace(cfg, hod_require_news=require_news)
         states = self.build_states(now)
         qualified, near = hod.scan(states, cfg)
         stale_after = max(15.0, 5 * cfg.poll_seconds)

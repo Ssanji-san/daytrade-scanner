@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Momentum Scanner</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>Momentum Scanner</h1>
+    <span id="mode-badge" class="badge"></span>
+    <span id="status" class="status"><span class="dot"></span><span id="status-text">connecting…</span></span>
+  </div>
+  <div class="controls">
+    <div class="seg" id="window-toggle">
+      <button data-w="5" class="active">5m</button>
+      <button data-w="10">10m</button>
+      <button data-w="15">15m</button>
+    </div>
+    <label class="chk"><input type="checkbox" id="require-news"> News required</label>
+    <label class="chk"><input type="checkbox" id="sound"> Sound</label>
+    <span id="clock" class="clock"></span>
+  </div>
+</header>
+
+<div id="stale-banner" class="stale-banner hidden"></div>
+
+<main>
+  <section class="panel">
+    <h2>Top Gainers <span id="gainer-window-label" class="sub">last 5 min</span></h2>
+    <table id="gainers">
+      <thead><tr>
+        <th>Symbol</th><th class="num" id="th-window">%5m</th><th class="num">%Day</th>
+        <th class="num">Price</th><th class="num">Volume</th><th class="num">RVOL</th>
+        <th class="num">Float≈</th><th>News</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="gainers-empty" class="empty hidden">Nothing moving yet.</p>
+  </section>
+
+  <section class="panel">
+    <h2>HOD Momentum <span class="sub">$1–$20 · Ross Cameron criteria</span></h2>
+    <table id="hod">
+      <thead><tr>
+        <th>Symbol</th><th class="num">Price</th><th class="num">%Day</th>
+        <th class="num">From HOD</th><th class="num">Volume</th><th class="num">RVOL</th>
+        <th class="num">Float≈</th><th>News</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="hod-empty" class="empty hidden">No qualifying stocks right now.</p>
+  </section>
+
+  <aside class="panel side">
+    <h2>Economic Calendar <span class="sub">red / orange</span></h2>
+    <ul id="calendar" class="cal"></ul>
+    <h2>Headlines</h2>
+    <ul id="news" class="headlines"></ul>
+  </aside>
+</main>
+
+<footer>
+  Candidates, not buy signals. Float ≈ shares outstanding (SEC). Quotes from Alpaca's free IEX feed.
+  Not financial advice.
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

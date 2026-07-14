@@ -6,9 +6,29 @@ close-enough upper bound. The UI labels it with an approx sign.
 """
 import datetime as dt
 import json
+import os
 import pathlib
 
 from .config import Config
+
+# SEC asks automated clients to identify themselves.
+SEC_HEADERS = {"User-Agent": os.environ.get(
+    "SEC_CONTACT", "daytrade-scanner personal-use")}
+
+
+async def fetch_ticker_map(session, cfg: Config):
+    async with session.get(cfg.sec_tickers_url, headers=SEC_HEADERS) as resp:
+        resp.raise_for_status()
+        return parse_ticker_map(await resp.json())
+
+
+async def fetch_shares(session, cik):
+    url = ("https://data.sec.gov/api/xbrl/companyconcept/"
+           f"CIK{cik:010d}/dei/EntityCommonStockSharesOutstanding.json")
+    async with session.get(url, headers=SEC_HEADERS) as resp:
+        if resp.status != 200:
+            return None
+        return parse_shares(await resp.json())
 
 
 def parse_ticker_map(payload):
