@@ -62,6 +62,39 @@
   </aside>
 </main>
 
+<section class="panel bot-panel" id="bot-panel">
+  <h2>Paper Trading Bot
+    <span class="badge paper">PAPER</span>
+    <span id="bot-chips" class="bot-chips"></span>
+  </h2>
+  <div id="bot-off" class="empty">Bot is not running. Start with
+    <code>python -m scanner.main --bot</code> during market hours.</div>
+  <div id="bot-body" class="bot-grid hidden">
+    <div>
+      <h3>Today's trades</h3>
+      <table id="bot-trades">
+        <thead><tr>
+          <th>Time</th><th>Symbol</th><th class="num">Qty</th>
+          <th class="num">Entry</th><th class="num">Exit</th>
+          <th class="num">R</th><th class="num">PnL</th><th>Via</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="bot-no-trades" class="empty hidden">No trades yet today.</p>
+    </div>
+    <div>
+      <h3>Learning</h3>
+      <ul id="bot-learning" class="learning"></ul>
+    </div>
+    <div>
+      <h3>Equity <span class="sub">(paper account)</span></h3>
+      <svg id="bot-equity" viewBox="0 0 260 80" preserveAspectRatio="none"></svg>
+      <p class="empty" style="padding-top:4px">Paper fills ignore slippage —
+      treat PnL as an upper bound.</p>
+    </div>
+  </div>
+</section>
+
 <footer>
   Candidates, not buy signals. Float ≈ shares outstanding (SEC). Quotes from Alpaca's free IEX feed.
   Not financial advice.

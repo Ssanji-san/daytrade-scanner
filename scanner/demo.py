@@ -84,3 +84,49 @@ def build_demo_session(cfg: Config, now=None):
          "date": iso(30), "forecast": "", "previous": ""},
     ]
     return {"frames": frames, "news": news, "calendar_events": calendar_events}
+
+
+def build_demo_bot_status(cfg: Config, now=None):
+    """Fake bot state so the Bot panel is reviewable without keys or markets."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    ts = lambda mins_ago: int((now - dt.timedelta(minutes=mins_ago)).timestamp())
+
+    def trade(mins_ago, symbol, qty, entry, exit_price, reason, held_min=12):
+        risk = entry * cfg.bot_stop_pct / 100
+        return {"ts": ts(mins_ago), "symbol": symbol, "qty": qty,
+                "entry": entry, "exit_ts": ts(mins_ago - held_min),
+                "exit_price": exit_price,
+                "pnl": round((exit_price - entry) * qty, 2),
+                "r_multiple": round((exit_price - entry) / risk, 2),
+                "exit_reason": reason}
+
+    today = [
+        trade(180, "RUNA", 150, 8.10, 8.59, "target"),      # +2R
+        trade(150, "NEARX", 320, 3.90, 3.78, "stop"),       # -1R
+        trade(95, "HODX", 230, 5.35, 5.67, "target"),       # ~+2R
+    ]
+    day_pnl = round(sum(t["pnl"] for t in today), 2)
+    base = cfg.bot_bankroll
+    equity = []
+    for day_offset in range(20, -1, -1):
+        drift = (20 - day_offset) * 14 + (day_offset % 3 - 1) * 35
+        equity.append([int((now - dt.timedelta(days=day_offset)).timestamp()),
+                       round(base + drift, 2)])
+
+    return {
+        "enabled": True, "error": None,
+        "bankroll": cfg.bot_bankroll,
+        "trades_today": len(today), "cap": cfg.bot_max_trades_per_day,
+        "day_pnl": day_pnl,
+        "open": [{"symbol": "MOVR", "qty": 113, "entry": 11.02,
+                  "opened_ts": ts(6)}],
+        "today": today,
+        "recent": today,
+        "stats": {"count": 17, "win_rate": 0.47, "expectancy_r": 0.42},
+        "model": {"kind": "logreg", "samples": 63, "holdout_acc": 0.62},
+        "model_history": [
+            {"ts": ts(60 * 24), "samples": 63, "holdout_acc": 0.62},
+            {"ts": ts(60 * 48), "samples": 41, "holdout_acc": 0.55},
+        ],
+        "equity": equity,
+    }

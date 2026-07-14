@@ -32,7 +32,29 @@ calendar — no paid subscriptions.
 ```
 .venv\Scripts\python -m scanner.main --demo     # synthetic data, no keys needed
 .venv\Scripts\python -m scanner.main            # live (market hours)
+.venv\Scripts\python -m scanner.main --bot      # live + paper-trading bot
 ```
+
+## The paper-trading bot (`--bot`)
+
+Trades HOD-momentum alerts on your **Alpaca paper account** — it is
+hard-locked to `paper-api.alpaca.markets` and refuses to start against
+anything else. Rules (all tunable in `scanner/config.py`):
+
+- $2–$20 symbols only, entries 9:35–11:30 ET, **max 4 trades/day**,
+  never the same symbol twice in a day
+- Sizes off a simulated **$5,000 bankroll** (1% = $50 risk per trade),
+  regardless of the paper account's fake $100k
+- Exits: stop −3% (= 1R); shares split into two bracket orders — half
+  takes profit at **+2R**, half at **+3R**; 20-min time stop; everything
+  flattened 15:50 ET; kill switch stops entries at −3% day PnL
+- **Learning**: every qualified alert (taken or not) is journaled to
+  `cache/journal.db` and tracked for 30 minutes (did it reach +2R before
+  −1R?). A small logistic-regression model retrains on those outcomes and
+  ranks tomorrow's alerts; until 40 labeled alerts exist, a transparent
+  rvol+news heuristic does the ranking. The dashboard's Bot panel shows
+  win rate, expectancy (in R), model accuracy, and the paper equity curve
+  so you can see whether it's actually improving.
 
 Live mode needs your Alpaca keys as environment variables:
 

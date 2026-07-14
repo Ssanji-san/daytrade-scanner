@@ -19,9 +19,10 @@ from aiohttp import web
 from .alpaca import AlpacaClient
 from .calendar_feed import filter_events
 from .config import DEFAULT, Config
-from .demo import build_demo_session
+from .demo import build_demo_bot_status, build_demo_session
 from .floats import FloatCache, fetch_shares, fetch_ticker_map
 from .state import MarketState
+from .trading.bot import bot_loop
 
 WEB_DIR = pathlib.Path(__file__).resolve().parent.parent / "web"
 FLOAT_FETCHES_PER_CYCLE = 4
@@ -112,6 +113,8 @@ async def playback_loop(app, cfg: Config, session_data=None, regenerate=False):
         state.set_news(now, data["news"])
         state.set_calendar(filter_events(data["calendar_events"], cfg))
         ctx["state"] = state
+        if regenerate:   # demo mode also fakes the bot panel
+            ctx["bot_status"] = build_demo_bot_status(cfg)
         for frame in frames[-tail:]:
             now = dt.datetime.fromtimestamp(frame["ts"], dt.timezone.utc)
             state.ingest(now, frame["symbols"])
@@ -133,6 +136,7 @@ async def api_state(request):
                             if require_news is not None else None)
     payload["mode"] = request.app["mode"]
     payload["now"] = int(now.timestamp())
+    payload["bot"] = ctx.get("bot_status")
     return web.json_response(payload)
 
 
@@ -140,16 +144,19 @@ async def index(request):
     return web.FileResponse(WEB_DIR / "index.html")
 
 
-def build_app(cfg: Config, mode, runner_coro):
+def build_app(cfg: Config, mode, runner_coros):
     app = web.Application()
-    app["ctx"] = {"state": MarketState(cfg), "virtual_now": None}
+    app["ctx"] = {"state": MarketState(cfg), "virtual_now": None,
+                  "bot_status": None}
     app["mode"] = mode
 
     async def start_background(app):
-        app["worker"] = asyncio.create_task(runner_coro(app))
+        app["workers"] = [asyncio.create_task(coro(app))
+                          for coro in runner_coros]
 
     async def stop_background(app):
-        app["worker"].cancel()
+        for worker in app["workers"]:
+            worker.cancel()
 
     app.on_startup.append(start_background)
     app.on_cleanup.append(stop_background)
@@ -165,19 +172,29 @@ def main():
                         help="synthetic looping session, no API keys needed")
     parser.add_argument("--replay", metavar="FILE",
                         help="replay a recorded session JSON")
+    parser.add_argument("--bot", action="store_true",
+                        help="run the paper-trading bot alongside the live scan")
     parser.add_argument("--port", type=int, default=DEFAULT.port)
     args = parser.parse_args()
     cfg = DEFAULT
 
     if args.demo:
-        mode, runner = "demo", lambda app: playback_loop(app, cfg, regenerate=True)
+        mode = "demo"
+        runners = [lambda app: playback_loop(app, cfg, regenerate=True)]
     elif args.replay:
         data = json.loads(pathlib.Path(args.replay).read_text(encoding="utf-8"))
-        mode, runner = "replay", lambda app: playback_loop(app, cfg, session_data=data)
+        mode = "replay"
+        runners = [lambda app: playback_loop(app, cfg, session_data=data)]
     else:
-        mode, runner = "live", lambda app: live_loop(app, cfg)
+        mode = "live"
+        runners = [lambda app: live_loop(app, cfg)]
+        if args.bot:
+            runners.append(lambda app: bot_loop(app, cfg))
+            print("[bot] paper-trading bot enabled "
+                  f"(max {cfg.bot_max_trades_per_day} trades/day, "
+                  f"${cfg.bot_bankroll:,.0f} simulated bankroll)")
 
-    app = build_app(cfg, mode, runner)
+    app = build_app(cfg, mode, runners)
     print(f"[{mode}] dashboard -> http://{cfg.host}:{args.port}")
     web.run_app(app, host=cfg.host, port=args.port, print=None)
 
