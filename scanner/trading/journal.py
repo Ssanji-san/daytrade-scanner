@@ -130,6 +130,11 @@ class Journal:
             (day,)).fetchone()
         return row["pnl"]
 
+    def open_trade_rows(self):
+        rows = self.db.execute(
+            "SELECT * FROM trades WHERE exit_ts IS NULL ORDER BY ts").fetchall()
+        return [dict(r) for r in rows]
+
     def recent_trades(self, limit=50):
         rows = self.db.execute(
             "SELECT * FROM trades WHERE exit_ts IS NOT NULL"

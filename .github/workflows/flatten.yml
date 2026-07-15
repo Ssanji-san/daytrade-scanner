@@ -1,0 +1,46 @@
+name: flatten
+
+on:
+  schedule:
+    # Two times cover DST: 19:50 UTC = 15:50 ET in summer,
+    # 20:50 UTC = 15:50 ET in winter. The script only closes positions
+    # inside the 15:40-16:00 ET window; otherwise it just reconciles.
+    - cron: "50 19 * * 1-5"
+    - cron: "50 20 * * 1-5"
+  workflow_dispatch:
+
+concurrency: trading-session
+
+permissions:
+  contents: write
+
+jobs:
+  flatten:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Reconcile and flatten leftovers
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+        run: python -m scanner.flatten
+
+      - name: Commit journal
+        run: |
+          git config user.name "trade-bot"
+          git config user.email "actions@github.com"
+          git add cache || true
+          if ! git diff --cached --quiet; then
+            git commit -m "flatten reconcile [skip ci]" --quiet
+            git pull --rebase --quiet || true
+            git push --quiet
+          fi

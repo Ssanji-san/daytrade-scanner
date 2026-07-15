@@ -78,6 +78,16 @@ class TestTrades:
         assert len(journal.trades_today("2026-07-14")) == 1
         assert journal.day_pnl("2026-07-14") == 0.0
 
+    def test_open_trade_rows_lists_only_unclosed(self, journal):
+        tid1 = journal.record_trade_open(epoch(10, 0), "AAA", qty=100, entry=5.0,
+                                         stop=4.85, targets=[5.3], features=FEATURES)
+        journal.record_trade_open(epoch(10, 5), "BBB", qty=50, entry=6.0,
+                                  stop=5.82, targets=[6.36], features=FEATURES)
+        journal.record_trade_close(tid1, epoch(10, 20), 5.30, "target")
+        open_rows = journal.open_trade_rows()
+        assert [r["symbol"] for r in open_rows] == ["BBB"]
+        assert open_rows[0]["id"] is not None
+
     def test_rolling_stats(self, journal):
         for i, (exit_p, reason) in enumerate([(5.30, "target"), (4.85, "stop"),
                                               (5.45, "target"), (4.85, "stop")]):

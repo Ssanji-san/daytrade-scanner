@@ -69,6 +69,36 @@ safety net, but environment variables are the intended path.
 
 First-time setup: `python -m venv .venv && .venv\Scripts\pip install -r requirements.txt`
 
+## Running it in the cloud (GitHub Actions)
+
+You don't need your PC on: two workflows run the whole thing on GitHub's
+servers every weekday.
+
+- **trading-session** starts before the open, scans + trades until
+  12:15 ET, and pushes the journal + a status snapshot every ~10 min.
+- **flatten** runs near 15:50 ET as a safety net: reconciles fills and
+  closes anything still open. (Bracket stops/targets live on Alpaca's
+  servers, so exits work even with no process running.)
+- **GitHub Pages** (from `/docs`) serves the same dashboard, readable
+  from your phone; it updates each time the session pushes (~10 min lag).
+
+One-time setup:
+
+1. Create a **public** GitHub repo (public = unlimited free Actions
+   minutes; only paper trades and code are published, never keys) and
+   push this project to it.
+2. Repo → Settings → Secrets and variables → Actions → add secrets
+   `ALPACA_KEY` and `ALPACA_SECRET` (your **paper** keys).
+3. Settings → Pages → deploy from branch `main`, folder `/docs`.
+4. Actions tab → enable workflows. Test with "Run workflow" on
+   `trading-session` during market hours.
+
+Notes: GitHub cron can start a few minutes late (fine — the bot's entry
+window is enforced in ET regardless). The trade journal
+(`cache/journal.db`) is committed by the workflows so learning persists
+between days — avoid running `--bot` locally on days the cloud session
+trades, or the journals will fight.
+
 ## Tests
 
 ```

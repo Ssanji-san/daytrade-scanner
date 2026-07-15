@@ -3,5 +3,6 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-cache/
 fixtures/recorded-*.json
+# cache/ is tracked on purpose: the cloud workflow commits journal.db
+# (trade history + learning data) and floats.json between runs.

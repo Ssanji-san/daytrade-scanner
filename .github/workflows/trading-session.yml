@@ -1,0 +1,62 @@
+name: trading-session
+
+on:
+  schedule:
+    # 13:15 UTC = 9:15 ET in summer (8:15 ET in winter - the bot's own
+    # ET-based window gate handles the DST drift; it just idles longer).
+    - cron: "15 13 * * 1-5"
+  workflow_dispatch:
+
+concurrency: trading-session
+
+permissions:
+  contents: write
+
+jobs:
+  session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build Pages dashboard
+        run: python scripts/build_docs.py
+
+      - name: Run scanner + bot until 12:15 ET
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          SEC_CONTACT: ${{ vars.SEC_CONTACT }}
+        run: |
+          git config user.name "trade-bot"
+          git config user.email "actions@github.com"
+          python -m scanner.session --until-et 12:15 &
+          SESSION_PID=$!
+          # push fresh status + journal every 10 minutes while it runs
+          while kill -0 $SESSION_PID 2>/dev/null; do
+            sleep 600
+            if ! kill -0 $SESSION_PID 2>/dev/null; then break; fi
+            git add docs cache || true
+            if ! git diff --cached --quiet; then
+              git commit -m "session update [skip ci]" --quiet
+              git pull --rebase --quiet || true
+              git push --quiet || true
+            fi
+          done
+          wait $SESSION_PID
+
+      - name: Final commit
+        run: |
+          git add docs cache || true
+          if ! git diff --cached --quiet; then
+            git commit -m "session end $(date -u +%F) [skip ci]" --quiet
+            git pull --rebase --quiet || true
+            git push --quiet
+          fi
