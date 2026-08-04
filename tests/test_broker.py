@@ -29,3 +29,27 @@ def test_bracket_order_payload():
         "take_profit": {"limit_price": "5.83"},
         "stop_loss": {"stop_price": "5.34"},
     }
+
+
+def test_market_payload():
+    broker = Broker(session=None, cfg=CFG)
+    assert broker.market_payload("HODX", qty=50, side="buy") == {
+        "symbol": "HODX", "qty": "50", "side": "buy",
+        "type": "market", "time_in_force": "day",
+    }
+
+
+def test_stop_payload():
+    broker = Broker(session=None, cfg=CFG)
+    assert broker.stop_payload("HODX", qty=25, stop_price=4.85) == {
+        "symbol": "HODX", "qty": "25", "side": "sell",
+        "type": "stop", "time_in_force": "day", "stop_price": "4.85",
+    }
+
+
+def test_trailing_stop_payload():
+    broker = Broker(session=None, cfg=CFG)
+    assert broker.trailing_stop_payload("HODX", qty=25, trail_percent=5.0) == {
+        "symbol": "HODX", "qty": "25", "side": "sell",
+        "type": "trailing_stop", "time_in_force": "day", "trail_percent": "5",
+    }

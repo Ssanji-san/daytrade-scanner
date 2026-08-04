@@ -46,6 +46,23 @@ class Broker:
             payload["limit_price"] = f"{limit_price:.2f}"
         return payload
 
+    @staticmethod
+    def market_payload(symbol, qty, side):
+        return {"symbol": symbol, "qty": str(qty), "side": side,
+                "type": "market", "time_in_force": "day"}
+
+    @staticmethod
+    def stop_payload(symbol, qty, stop_price, side="sell"):
+        return {"symbol": symbol, "qty": str(qty), "side": side,
+                "type": "stop", "time_in_force": "day",
+                "stop_price": f"{stop_price:.2f}"}
+
+    @staticmethod
+    def trailing_stop_payload(symbol, qty, trail_percent, side="sell"):
+        return {"symbol": symbol, "qty": str(qty), "side": side,
+                "type": "trailing_stop", "time_in_force": "day",
+                "trail_percent": f"{trail_percent:g}"}
+
     # ---- HTTP (thin) ----
 
     async def _request(self, method, path, json=None, params=None):
@@ -81,6 +98,23 @@ class Broker:
                                    json=self.bracket_payload(
                                        symbol, qty, limit_price,
                                        stop_price, target_price))
+
+    async def submit_market_buy(self, symbol, qty):
+        return await self._request("POST", "/v2/orders",
+                                   json=self.market_payload(symbol, qty, "buy"))
+
+    async def submit_market_sell(self, symbol, qty):
+        return await self._request("POST", "/v2/orders",
+                                   json=self.market_payload(symbol, qty, "sell"))
+
+    async def submit_stop(self, symbol, qty, stop_price):
+        return await self._request("POST", "/v2/orders",
+                                   json=self.stop_payload(symbol, qty, stop_price))
+
+    async def submit_trailing_stop(self, symbol, qty, trail_percent):
+        return await self._request(
+            "POST", "/v2/orders",
+            json=self.trailing_stop_payload(symbol, qty, trail_percent))
 
     async def close_position(self, symbol):
         return await self._request("DELETE", f"/v2/positions/{symbol}")
