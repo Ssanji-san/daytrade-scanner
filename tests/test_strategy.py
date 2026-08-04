@@ -63,15 +63,15 @@ class TestShouldEnter:
 
 class TestSizing:
     def test_notional_cap_binds_with_default_config(self):
-        # risk $50 at a 3% stop implies $1,666 notional -> capped at 25% of $5k
+        # risk $10 at a 3% stop implies $666 notional -> capped at 25% of $1k = $250
         qty, stop = size_position(5.0, CFG)
-        assert qty == 250                      # 1250 / 5.00
+        assert qty == 50                       # 250 / 5.00
         assert stop == pytest.approx(4.85)
 
     def test_uncapped_when_risk_is_small(self):
-        cfg = replace(CFG, bot_risk_pct=0.5)   # risk $25 -> notional $833
+        cfg = replace(CFG, bot_risk_pct=0.5)   # risk $5 -> 16 sh, under the $250 cap
         qty, stop = size_position(10.0, cfg)
-        assert qty == 83                       # 25 / 0.30
+        assert qty == 16                       # 5 / 0.30
         assert stop == pytest.approx(9.70)
 
     def test_zero_when_price_exceeds_notional_cap(self):
