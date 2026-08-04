@@ -99,3 +99,73 @@ def test_enter_places_buy_and_full_size_stop(tmp_path):
     assert trade["scale_out"] == pytest.approx(5.30)   # 5.00 + 2 * 0.15
     assert trade["banked"] is False
     assert journal.trades_today("2023-11-14")  # record_trade_open persisted
+
+
+def _open_a_trade(bot, ts, price=5.0, qty=50):
+    asyncio.run(bot._enter(a_pick(price=price, qty=qty), ts=ts))
+    return bot.open_trades["HODX"]
+
+
+def test_scale_out_banks_half_and_starts_trailing(tmp_path):
+    bot, broker, _ = make_bot(tmp_path)
+    trade = _open_a_trade(bot, ts=int(et(10, 0).timestamp()))
+    broker._positions = [{"symbol": "HODX", "current_price": 5.30}]
+    state = FakeState({"HODX": {"price": 5.30}})            # at +2R
+
+    asyncio.run(bot._manage_open(state, now=et(10, 5),
+                                 ts=int(et(10, 5).timestamp())))
+
+    assert trade["stop_order_id"] in broker.cancelled       # -1R stop pulled
+    sells = [o for o in broker.orders if o["type"] == "market" and o["side"] == "sell"]
+    assert sells and sells[0]["qty"] == trade["bank_qty"]    # banked half
+    trail = [o for o in broker.orders if o["type"] == "trailing_stop"]
+    assert trail and trail[0]["qty"] == trade["runner_qty"]
+    assert trade["banked"] is True
+
+
+def test_time_stop_cuts_a_stalled_trade_before_scale_out(tmp_path):
+    bot, broker, journal = make_bot(tmp_path)
+    open_ts = int(et(10, 0).timestamp())
+    _open_a_trade(bot, ts=open_ts)
+    broker._positions = [{"symbol": "HODX", "current_price": 5.05}]  # below +2R
+    state = FakeState({"HODX": {"price": 5.05}})
+    late = et(10, 21)                                        # 21 min later
+
+    asyncio.run(bot._manage_open(state, now=late, ts=int(late.timestamp())))
+
+    assert "HODX" not in bot.open_trades
+    closed = journal.recent_trades(1)[0]
+    assert closed["exit_reason"] == "time_stop"
+
+
+def test_runner_stays_open_past_time_stop(tmp_path):
+    bot, broker, _ = make_bot(tmp_path)
+    open_ts = int(et(10, 0).timestamp())
+    trade = _open_a_trade(bot, ts=open_ts)
+    trade["banked"] = True                                  # already a runner
+    broker._positions = [{"symbol": "HODX", "current_price": 6.0}]
+    state = FakeState({"HODX": {"price": 6.0}})
+    late = et(10, 40)
+
+    asyncio.run(bot._manage_open(state, now=late, ts=int(late.timestamp())))
+
+    assert "HODX" in bot.open_trades                        # not time-stopped
+
+
+def test_close_records_blended_r_from_sell_fills(tmp_path):
+    bot, broker, journal = make_bot(tmp_path)
+    _open_a_trade(bot, ts=int(et(10, 0).timestamp()))
+    bot.open_trades["HODX"]["banked"] = True
+    broker._positions = []                                  # fully closed
+    broker.closed_orders = [
+        {"side": "sell", "filled_qty": "25", "filled_avg_price": "5.30", "legs": []},
+        {"side": "sell", "filled_qty": "25", "filled_avg_price": "5.60", "legs": []},
+    ]
+    state = FakeState({})
+
+    asyncio.run(bot._manage_open(state, now=et(11, 0),
+                                 ts=int(et(11, 0).timestamp())))
+
+    trade = journal.recent_trades(1)[0]
+    assert trade["exit_price"] == pytest.approx(5.45)       # weighted average
+    assert trade["r_multiple"] == pytest.approx(3.0)        # (5.45-5.0)/0.15

@@ -159,52 +159,77 @@ class TradingBot:
 
     async def _manage_open(self, state, now, ts):
         if not self.open_trades:
-            # flatten leftovers from crashes exactly once per day after cutoff
             return
         positions = {p["symbol"]: p for p in await self.broker.positions()}
         flatten = _past(now, self.cfg.bot_flatten_time)
         for symbol, trade in list(self.open_trades.items()):
             pos = positions.get(symbol)
             if pos is None:
-                # brackets did their job; find the exit fills
                 exit_price = await self._closed_exit_price(symbol, trade)
-                self.journal.record_trade_close(trade["trade_id"], ts,
-                                                exit_price, "bracket")
-                del self.open_trades[symbol]
-                print(f"[bot] CLOSED {symbol} @~{exit_price:.2f} (bracket)")
-                continue
-            age_min = (ts - trade["opened_ts"]) / 60
-            if flatten or age_min >= self.cfg.bot_time_stop_minutes:
-                reason = "flatten" if flatten else "time_stop"
-                for order_id in trade["order_ids"]:
-                    try:
-                        await self.broker.cancel_order(order_id)
-                    except aiohttp.ClientResponseError:
-                        pass   # already filled/cancelled
-                await self.broker.close_position(symbol)
-                exit_price = float(pos.get("current_price")
-                                   or trade["entry"])
+                reason = "trailing" if trade["banked"] else "stop"
                 self.journal.record_trade_close(trade["trade_id"], ts,
                                                 exit_price, reason)
                 del self.open_trades[symbol]
                 print(f"[bot] CLOSED {symbol} @~{exit_price:.2f} ({reason})")
-
-    async def _closed_exit_price(self, symbol, trade):
-        """Weighted average sell fill across the trade's bracket legs."""
-        total_qty = total_value = 0.0
-        for order_id in trade["order_ids"]:
-            try:
-                order = await self.broker.order(order_id)
-            except aiohttp.ClientResponseError:
                 continue
-            for leg in (order.get("legs") or []):
+
+            latest = state.latest.get(symbol)
+            price = (latest["price"] if latest
+                     else float(pos.get("current_price") or trade["entry"]))
+
+            if flatten:
+                await self._flatten_trade(symbol, trade, ts, pos, "flatten")
+                continue
+
+            if not trade["banked"] and price >= trade["scale_out"]:
+                await self.broker.cancel_order(trade["stop_order_id"])
+                if trade["runner_qty"] >= 1:
+                    await self.broker.submit_market_sell(symbol, trade["bank_qty"])
+                    tr = await self.broker.submit_trailing_stop(
+                        symbol, trade["runner_qty"], self.cfg.bot_runner_trail_pct)
+                    trade["trailing_order_id"] = tr["id"]
+                else:
+                    await self.broker.submit_market_sell(symbol, trade["qty"])
+                trade["banked"] = True
+                print(f"[bot] SCALE-OUT {symbol}: banked {trade['bank_qty']} "
+                      f"@~{price:.2f}, runner {trade['runner_qty']} trailing "
+                      f"{self.cfg.bot_runner_trail_pct:g}%")
+                continue
+
+            age_min = (ts - trade["opened_ts"]) / 60
+            if not trade["banked"] and age_min >= self.cfg.bot_time_stop_minutes:
+                await self._flatten_trade(symbol, trade, ts, pos, "time_stop")
+
+    async def _flatten_trade(self, symbol, trade, ts, pos, reason):
+        for order_id in (trade["stop_order_id"], trade["trailing_order_id"]):
+            if order_id:
+                try:
+                    await self.broker.cancel_order(order_id)
+                except aiohttp.ClientResponseError:
+                    pass
+        await self.broker.close_position(symbol)
+        fallback = float(pos.get("current_price") or trade["entry"])
+        exit_price = await self._closed_exit_price(symbol, trade, fallback)
+        self.journal.record_trade_close(trade["trade_id"], ts, exit_price, reason)
+        del self.open_trades[symbol]
+        print(f"[bot] CLOSED {symbol} @~{exit_price:.2f} ({reason})")
+
+    async def _closed_exit_price(self, symbol, trade, fallback=None):
+        """Share-weighted average of all closed sell fills for the symbol."""
+        orders = await self.broker._request(
+            "GET", "/v2/orders",
+            params={"status": "closed", "symbols": symbol,
+                    "limit": 50, "nested": "true"})
+        legs = []
+        for order in orders or []:
+            for leg in [order] + (order.get("legs") or []):
                 if leg.get("side") == "sell" and leg.get("filled_avg_price"):
-                    qty = float(leg.get("filled_qty") or 0)
-                    total_qty += qty
-                    total_value += qty * float(leg["filled_avg_price"])
-        if total_qty:
-            return total_value / total_qty
-        return trade["entry"]
+                    legs.append((float(leg.get("filled_qty") or 0),
+                                 float(leg["filled_avg_price"])))
+        avg = weighted_exit(legs)
+        if avg is not None:
+            return avg
+        return fallback if fallback is not None else trade["entry"]
 
     # ------------------------------------------------------------ status
 
