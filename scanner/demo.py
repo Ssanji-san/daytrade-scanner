@@ -101,9 +101,9 @@ def build_demo_bot_status(cfg: Config, now=None):
                 "exit_reason": reason}
 
     today = [
-        trade(180, "RUNA", 150, 8.10, 8.59, "target"),      # +2R
-        trade(150, "NEARX", 320, 3.90, 3.78, "stop"),       # -1R
-        trade(95, "HODX", 230, 5.35, 5.67, "target"),       # ~+2R
+        trade(180, "RUNA", 30, 8.10, 9.32, "trailing"),     # runner trailed ~+5R
+        trade(150, "NEARX", 64, 3.90, 3.78, "stop"),        # -1R
+        trade(95, "HODX", 46, 5.35, 5.67, "trailing"),      # banked +2R, trailed out
     ]
     day_pnl = round(sum(t["pnl"] for t in today), 2)
     base = cfg.bot_bankroll
@@ -118,7 +118,7 @@ def build_demo_bot_status(cfg: Config, now=None):
         "bankroll": cfg.bot_bankroll,
         "trades_today": len(today), "cap": cfg.bot_max_trades_per_day,
         "day_pnl": day_pnl,
-        "open": [{"symbol": "MOVR", "qty": 113, "entry": 11.02,
+        "open": [{"symbol": "MOVR", "qty": 22, "entry": 11.02,
                   "opened_ts": ts(6)}],
         "today": today,
         "recent": today,
