@@ -16,7 +16,7 @@ from .broker import Broker
 from .journal import Journal
 from .model import train, scorer_from_weights
 from .strategy import (ET, exit_levels, should_enter, size_position,
-                       split_qty, _parse_hhmm)
+                       split_qty, weighted_exit, _parse_hhmm)
 
 MARKET_OPEN = dt.time(9, 30)
 
@@ -104,7 +104,7 @@ class TradingBot:
     async def cycle(self, state, now):
         day = now.astimezone(ET).strftime("%Y-%m-%d")
         ts = int(now.timestamp())
-        payload = state.payload(now)
+        payload = state.payload(now, require_news=True)
         qualified = payload["hod"]["qualified"]
 
         # 1. journal every qualified alert + track open alert outcomes
@@ -134,75 +134,102 @@ class TradingBot:
             await self._enter(pick, ts)
 
     async def _enter(self, pick, ts):
-        levels = exit_levels(pick["price"], self.cfg)
-        qty_2r, qty_3r = split_qty(pick["qty"])
-        legs = []
-        for qty, target in ((qty_2r, levels["targets"][0]),
-                            (qty_3r, levels["targets"][1])):
-            if qty < 1:
-                continue
-            order = await self.broker.submit_bracket(
-                pick["symbol"], qty, stop_price=levels["stop"],
-                target_price=target)
-            legs.append(order["id"])
+        entry = pick["price"]
+        levels = exit_levels(entry, self.cfg)
+        total_qty = pick["qty"]
+        bank_qty, runner_qty = split_qty(total_qty)
+
+        await self.broker.submit_market_buy(pick["symbol"], total_qty)
+        stop = await self.broker.submit_stop(
+            pick["symbol"], total_qty, levels["stop"])
+
         trade_id = self.journal.record_trade_open(
-            ts, pick["symbol"], qty=pick["qty"], entry=pick["price"],
-            stop=levels["stop"], targets=levels["targets"],
+            ts, pick["symbol"], qty=total_qty, entry=entry,
+            stop=levels["stop"], targets=[levels["scale_out"]],
             features=pick["features"])
         self.open_trades[pick["symbol"]] = {
-            "trade_id": trade_id, "order_ids": legs, "opened_ts": ts,
-            "qty": pick["qty"], "entry": pick["price"]}
-        print(f"[bot] ENTER {pick['symbol']} x{pick['qty']} @~{pick['price']:.2f} "
-              f"stop {levels['stop']:.2f} targets {levels['targets']}")
+            "trade_id": trade_id, "stop_order_id": stop["id"],
+            "trailing_order_id": None, "qty": total_qty,
+            "bank_qty": bank_qty, "runner_qty": runner_qty,
+            "entry": entry, "stop": levels["stop"],
+            "scale_out": levels["scale_out"], "opened_ts": ts,
+            "banked": False}
+        print(f"[bot] ENTER {pick['symbol']} x{total_qty} @~{entry:.2f} "
+              f"stop {levels['stop']:.2f} scale-out {levels['scale_out']:.2f}")
 
     async def _manage_open(self, state, now, ts):
         if not self.open_trades:
-            # flatten leftovers from crashes exactly once per day after cutoff
             return
         positions = {p["symbol"]: p for p in await self.broker.positions()}
         flatten = _past(now, self.cfg.bot_flatten_time)
         for symbol, trade in list(self.open_trades.items()):
             pos = positions.get(symbol)
             if pos is None:
-                # brackets did their job; find the exit fills
                 exit_price = await self._closed_exit_price(symbol, trade)
-                self.journal.record_trade_close(trade["trade_id"], ts,
-                                                exit_price, "bracket")
-                del self.open_trades[symbol]
-                print(f"[bot] CLOSED {symbol} @~{exit_price:.2f} (bracket)")
-                continue
-            age_min = (ts - trade["opened_ts"]) / 60
-            if flatten or age_min >= self.cfg.bot_time_stop_minutes:
-                reason = "flatten" if flatten else "time_stop"
-                for order_id in trade["order_ids"]:
-                    try:
-                        await self.broker.cancel_order(order_id)
-                    except aiohttp.ClientResponseError:
-                        pass   # already filled/cancelled
-                await self.broker.close_position(symbol)
-                exit_price = float(pos.get("current_price")
-                                   or trade["entry"])
+                reason = "trailing" if trade["banked"] else "stop"
                 self.journal.record_trade_close(trade["trade_id"], ts,
                                                 exit_price, reason)
                 del self.open_trades[symbol]
                 print(f"[bot] CLOSED {symbol} @~{exit_price:.2f} ({reason})")
-
-    async def _closed_exit_price(self, symbol, trade):
-        """Weighted average sell fill across the trade's bracket legs."""
-        total_qty = total_value = 0.0
-        for order_id in trade["order_ids"]:
-            try:
-                order = await self.broker.order(order_id)
-            except aiohttp.ClientResponseError:
                 continue
-            for leg in (order.get("legs") or []):
+
+            latest = state.latest.get(symbol)
+            price = (latest["price"] if latest
+                     else float(pos.get("current_price") or trade["entry"]))
+
+            if flatten:
+                await self._flatten_trade(symbol, trade, ts, pos, "flatten")
+                continue
+
+            if not trade["banked"] and price >= trade["scale_out"]:
+                await self.broker.cancel_order(trade["stop_order_id"])
+                if trade["runner_qty"] >= 1:
+                    await self.broker.submit_market_sell(symbol, trade["bank_qty"])
+                    tr = await self.broker.submit_trailing_stop(
+                        symbol, trade["runner_qty"], self.cfg.bot_runner_trail_pct)
+                    trade["trailing_order_id"] = tr["id"]
+                else:
+                    await self.broker.submit_market_sell(symbol, trade["qty"])
+                trade["banked"] = True
+                print(f"[bot] SCALE-OUT {symbol}: banked {trade['bank_qty']} "
+                      f"@~{price:.2f}, runner {trade['runner_qty']} trailing "
+                      f"{self.cfg.bot_runner_trail_pct:g}%")
+                continue
+
+            age_min = (ts - trade["opened_ts"]) / 60
+            if not trade["banked"] and age_min >= self.cfg.bot_time_stop_minutes:
+                await self._flatten_trade(symbol, trade, ts, pos, "time_stop")
+
+    async def _flatten_trade(self, symbol, trade, ts, pos, reason):
+        for order_id in (trade["stop_order_id"], trade["trailing_order_id"]):
+            if order_id:
+                try:
+                    await self.broker.cancel_order(order_id)
+                except aiohttp.ClientResponseError:
+                    pass
+        await self.broker.close_position(symbol)
+        fallback = float(pos.get("current_price") or trade["entry"])
+        exit_price = await self._closed_exit_price(symbol, trade, fallback)
+        self.journal.record_trade_close(trade["trade_id"], ts, exit_price, reason)
+        del self.open_trades[symbol]
+        print(f"[bot] CLOSED {symbol} @~{exit_price:.2f} ({reason})")
+
+    async def _closed_exit_price(self, symbol, trade, fallback=None):
+        """Share-weighted average of all closed sell fills for the symbol."""
+        orders = await self.broker._request(
+            "GET", "/v2/orders",
+            params={"status": "closed", "symbols": symbol,
+                    "limit": 50, "nested": "true"})
+        legs = []
+        for order in orders or []:
+            for leg in [order] + (order.get("legs") or []):
                 if leg.get("side") == "sell" and leg.get("filled_avg_price"):
-                    qty = float(leg.get("filled_qty") or 0)
-                    total_qty += qty
-                    total_value += qty * float(leg["filled_avg_price"])
-        if total_qty:
-            return total_value / total_qty
-        return trade["entry"]
+                    legs.append((float(leg.get("filled_qty") or 0),
+                                 float(leg["filled_avg_price"])))
+        avg = weighted_exit(legs)
+        if avg is not None:
+            return avg
+        return fallback if fallback is not None else trade["entry"]
 
     # ------------------------------------------------------------ status
 

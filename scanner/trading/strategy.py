@@ -52,12 +52,20 @@ def size_position(price, cfg: Config):
 
 
 def exit_levels(entry_price, cfg: Config):
-    """Stop at -1R; targets at each configured R multiple (default 2R, 3R)."""
+    """Stop at -1R; scale-out (bank half) at +scale_out_r R."""
     r = entry_price * cfg.bot_stop_pct / 100
     return {
         "stop": entry_price - r,
-        "targets": [entry_price + mult * r for mult in cfg.bot_targets_r],
+        "scale_out": entry_price + cfg.bot_scale_out_r * r,
     }
+
+
+def weighted_exit(legs):
+    """Share-weighted average exit price. legs: list of (qty, price)."""
+    total_qty = sum(qty for qty, _ in legs)
+    if not total_qty:
+        return None
+    return sum(qty * price for qty, price in legs) / total_qty
 
 
 def split_qty(qty):
