@@ -16,7 +16,7 @@ from .broker import Broker
 from .journal import Journal
 from .model import train, scorer_from_weights
 from .strategy import (ET, exit_levels, should_enter, size_position,
-                       split_qty, _parse_hhmm)
+                       split_qty, weighted_exit, _parse_hhmm)
 
 MARKET_OPEN = dt.time(9, 30)
 
@@ -104,7 +104,7 @@ class TradingBot:
     async def cycle(self, state, now):
         day = now.astimezone(ET).strftime("%Y-%m-%d")
         ts = int(now.timestamp())
-        payload = state.payload(now)
+        payload = state.payload(now, require_news=True)
         qualified = payload["hod"]["qualified"]
 
         # 1. journal every qualified alert + track open alert outcomes
@@ -134,26 +134,28 @@ class TradingBot:
             await self._enter(pick, ts)
 
     async def _enter(self, pick, ts):
-        levels = exit_levels(pick["price"], self.cfg)
-        qty_2r, qty_3r = split_qty(pick["qty"])
-        legs = []
-        for qty, target in ((qty_2r, levels["targets"][0]),
-                            (qty_3r, levels["targets"][1])):
-            if qty < 1:
-                continue
-            order = await self.broker.submit_bracket(
-                pick["symbol"], qty, stop_price=levels["stop"],
-                target_price=target)
-            legs.append(order["id"])
+        entry = pick["price"]
+        levels = exit_levels(entry, self.cfg)
+        total_qty = pick["qty"]
+        bank_qty, runner_qty = split_qty(total_qty)
+
+        await self.broker.submit_market_buy(pick["symbol"], total_qty)
+        stop = await self.broker.submit_stop(
+            pick["symbol"], total_qty, levels["stop"])
+
         trade_id = self.journal.record_trade_open(
-            ts, pick["symbol"], qty=pick["qty"], entry=pick["price"],
-            stop=levels["stop"], targets=levels["targets"],
+            ts, pick["symbol"], qty=total_qty, entry=entry,
+            stop=levels["stop"], targets=[levels["scale_out"]],
             features=pick["features"])
         self.open_trades[pick["symbol"]] = {
-            "trade_id": trade_id, "order_ids": legs, "opened_ts": ts,
-            "qty": pick["qty"], "entry": pick["price"]}
-        print(f"[bot] ENTER {pick['symbol']} x{pick['qty']} @~{pick['price']:.2f} "
-              f"stop {levels['stop']:.2f} targets {levels['targets']}")
+            "trade_id": trade_id, "stop_order_id": stop["id"],
+            "trailing_order_id": None, "qty": total_qty,
+            "bank_qty": bank_qty, "runner_qty": runner_qty,
+            "entry": entry, "stop": levels["stop"],
+            "scale_out": levels["scale_out"], "opened_ts": ts,
+            "banked": False}
+        print(f"[bot] ENTER {pick['symbol']} x{total_qty} @~{entry:.2f} "
+              f"stop {levels['stop']:.2f} scale-out {levels['scale_out']:.2f}")
 
     async def _manage_open(self, state, now, ts):
         if not self.open_trades:
