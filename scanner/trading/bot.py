@@ -246,7 +246,7 @@ class TradingBot:
                                       if k != "order_ids"}}
                      for s, t in self.open_trades.items()],
             "today": trades,
-            "recent": self.journal.recent_trades(20),
+            "recent": self.journal.recent_trades(50),
             "stats": self.journal.rolling_stats(20),
             "model": {k: v for k, v in self.model_meta.items()
                       if k != "weights"},

@@ -33,6 +33,8 @@ const tvLink = (sym) =>
   `<a href="https://www.tradingview.com/chart/?symbol=${sym}" target="_blank" rel="noopener">${sym}</a>`;
 const localTime = (epoch) =>
   new Date(epoch * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const shortDate = (epoch) =>
+  new Date(epoch * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
 
 // ---------- sound ----------
 let audioCtx = null;
@@ -224,6 +226,24 @@ function renderBot(payload) {
   } else {
     svg.innerHTML = "";
   }
+
+  const history = bot.recent || [];
+  $("#bot-history tbody").innerHTML = history
+    .map((t) => {
+      const bought = (t.qty || 0) * (t.entry || 0);
+      const cls = t.pnl >= 0 ? "up" : "down";
+      return `<tr>
+        <td>${shortDate(t.ts)}</td>
+        <td class="sym">${tvLink(t.symbol)}</td>
+        <td class="num">$${fmtNum(bought)}</td>
+        <td class="num">$${fmtNum(t.exit_price)}</td>
+        <td class="num ${cls}">${fmtMoney(t.pnl)}</td>
+        <td class="num ${cls}">${(t.r_multiple >= 0 ? "+" : "") + t.r_multiple.toFixed(1)}R</td>
+        <td>${t.exit_reason || ""}</td>
+      </tr>`;
+    })
+    .join("");
+  $("#bot-history-empty").classList.toggle("hidden", history.length > 0);
 }
 
 function renderStatus(payload) {

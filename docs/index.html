@@ -57,6 +57,18 @@
       <p class="empty" style="padding-top:4px">Paper fills ignore slippage —
       treat PnL as an upper bound.</p>
     </div>
+    <div class="bot-hist">
+      <h3>Trade history <span class="sub">recent closed trades</span></h3>
+      <table id="bot-history">
+        <thead><tr>
+          <th>Date</th><th>Symbol</th><th class="num">Bought</th>
+          <th class="num">Exit</th><th class="num">P&amp;L</th>
+          <th class="num">R</th><th>Via</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="bot-history-empty" class="empty hidden">No closed trades yet.</p>
+    </div>
   </div>
 </section>
 
