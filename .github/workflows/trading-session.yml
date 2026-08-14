@@ -46,7 +46,7 @@ jobs:
             git add docs cache || true
             if ! git diff --cached --quiet; then
               git commit -m "session update [skip ci]" --quiet
-              git pull --rebase --quiet || true
+              git pull --rebase --autostash --quiet || true
               git push --quiet || true
             fi
           done
@@ -57,6 +57,6 @@ jobs:
           git add docs cache || true
           if ! git diff --cached --quiet; then
             git commit -m "session end $(date -u +%F) [skip ci]" --quiet
-            git pull --rebase --quiet || true
+            git pull --rebase --autostash --quiet || true
             git push --quiet
           fi

@@ -13,6 +13,10 @@ on:
         description: "Share quantity for the probe order"
         required: false
         default: "1"
+      sequence:
+        description: "Symbol to reproduce the buy-then-stop entry on (blank = plain probe)"
+        required: false
+        default: ""
 
 jobs:
   diagnose:
@@ -32,4 +36,9 @@ jobs:
         env:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
-        run: python scripts/diagnose_alpaca.py --qty ${{ inputs.qty }} --probe ${{ inputs.symbols }}
+        run: |
+          if [ -n "${{ inputs.sequence }}" ]; then
+            python scripts/diagnose_alpaca.py --qty ${{ inputs.qty }} --sequence ${{ inputs.sequence }}
+          else
+            python scripts/diagnose_alpaca.py --qty ${{ inputs.qty }} --probe ${{ inputs.symbols }}
+          fi
