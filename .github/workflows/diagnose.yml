@@ -17,6 +17,10 @@ on:
         description: "Symbol to reproduce the buy-then-stop entry on (blank = plain probe)"
         required: false
         default: ""
+      live_entry:
+        description: "Symbol to run the REAL bot entry path on, then undo (blank = skip)"
+        required: false
+        default: ""
 
 jobs:
   diagnose:
@@ -37,7 +41,9 @@ jobs:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: |
-          if [ -n "${{ inputs.sequence }}" ]; then
+          if [ -n "${{ inputs.live_entry }}" ]; then
+            python scripts/diagnose_alpaca.py --qty ${{ inputs.qty }} --live-entry ${{ inputs.live_entry }}
+          elif [ -n "${{ inputs.sequence }}" ]; then
             python scripts/diagnose_alpaca.py --qty ${{ inputs.qty }} --sequence ${{ inputs.sequence }}
           else
             python scripts/diagnose_alpaca.py --qty ${{ inputs.qty }} --probe ${{ inputs.symbols }}

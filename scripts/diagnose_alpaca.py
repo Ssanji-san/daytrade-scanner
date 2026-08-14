@@ -101,6 +101,50 @@ async def main(probe_symbols, qty=1):
                            f"close {sym}")
 
 
+async def live_entry(symbol, qty):
+    """Exercise the REAL Broker code path against the paper API, then undo it."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from scanner.config import DEFAULT
+    from scanner.trading.broker import Broker
+    from scanner.trading.strategy import exit_levels
+
+    async with aiohttp.ClientSession() as session:
+        await cleanup(session, "before")
+        await asyncio.sleep(3)
+        broker = Broker(session, DEFAULT)       # PaperOnlyError if misconfigured
+        print(f"\n>>> Broker.submit_oto_stop({symbol}, {qty}) "
+              "- the real bot entry path")
+        levels = None
+        try:
+            snap = await broker._request(
+                "GET", "/v2/positions")   # cheap auth check
+            price_resp = await session.get(
+                f"https://data.alpaca.markets/v2/stocks/{symbol}/trades/latest",
+                headers=broker.headers)
+            price = (await price_resp.json())["trade"]["p"]
+            levels = exit_levels(price, DEFAULT)
+            print(f"    last={price} stop={levels['stop']:.2f} "
+                  f"scale_out={levels['scale_out']:.2f}")
+            order = await broker.submit_oto_stop(symbol, qty, levels["stop"])
+            print(f"    *** ENTRY ACCEPTED *** id={order.get('id')} "
+                  f"status={order.get('status')}")
+            print(f"    legs={[(l.get('type'), l.get('status')) for l in (order.get('legs') or [])]}")
+        except Exception as exc:
+            print(f"    !!! ENTRY FAILED: {type(exc).__name__}: {exc}")
+        await asyncio.sleep(5)
+        print("\n>>> Broker.cancel_orders_for + close (undo the test trade)")
+        try:
+            await broker.cancel_orders_for(symbol)
+            await asyncio.sleep(2)
+            await broker.close_position(symbol)
+            print("    cleaned up via the bot's own exit path")
+        except Exception as exc:
+            print(f"    cleanup note: {type(exc).__name__}: {exc}")
+        await asyncio.sleep(3)
+        await cleanup(session, "after")
+
+
 async def cleanup(session, label):
     """Cancel every open order and close every position. Leaves a clean slate."""
     code, orders = await show(session, "GET", "/v2/orders",
@@ -190,11 +234,16 @@ if __name__ == "__main__":
                         help="symbols to inspect and test-order")
     parser.add_argument("--qty", type=int, default=1,
                         help="share quantity for the probe order")
+    parser.add_argument("--live-entry", metavar="SYMBOL",
+                        help="run the real Broker entry path on this symbol, "
+                             "then cancel/close it again")
     parser.add_argument("--sequence", metavar="SYMBOL",
                         help="reproduce the bot's buy-then-stop entry and "
                              "test the atomic OTO alternative, then clean up")
     args = parser.parse_args()
-    if args.sequence:
+    if args.live_entry:
+        asyncio.run(live_entry(args.live_entry, args.qty))
+    elif args.sequence:
         asyncio.run(sequence(args.sequence, args.qty))
     else:
         asyncio.run(main(args.probe, args.qty))

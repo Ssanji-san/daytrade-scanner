@@ -47,6 +47,17 @@ def test_stop_payload():
     }
 
 
+def test_oto_stop_payload_is_one_complex_order():
+    """Entry and stop must travel together or Alpaca calls it a wash trade."""
+    broker = Broker(session=None, cfg=CFG)
+    assert broker.oto_stop_payload("HODX", qty=50, stop_price=4.85) == {
+        "symbol": "HODX", "qty": "50", "side": "buy",
+        "type": "market", "time_in_force": "day",
+        "order_class": "oto",
+        "stop_loss": {"stop_price": "4.85"},
+    }
+
+
 def test_trailing_stop_payload():
     broker = Broker(session=None, cfg=CFG)
     assert broker.trailing_stop_payload("HODX", qty=25, trail_percent=5.0) == {

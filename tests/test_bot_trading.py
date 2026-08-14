@@ -48,6 +48,15 @@ class FakeBroker:
         return self._new(side="sell", type="stop", symbol=symbol, qty=qty,
                          stop_price=stop_price)
 
+    async def submit_oto_stop(self, symbol, qty, stop_price):
+        return self._new(side="buy", type="market", order_class="oto",
+                         symbol=symbol, qty=qty, stop_price=stop_price)
+
+    async def cancel_orders_for(self, symbol):
+        for o in self.orders:
+            if o.get("symbol") == symbol:
+                self.cancelled.append(o["id"])
+
     async def submit_trailing_stop(self, symbol, qty, trail_percent):
         return self._new(side="sell", type="trailing_stop", symbol=symbol,
                          qty=qty, trail_percent=trail_percent)
@@ -84,21 +93,51 @@ def a_pick(price=5.0, qty=50):
             "score": 0.8, "features": {"rvol": 8.0}}
 
 
-def test_enter_places_buy_and_full_size_stop(tmp_path):
+def test_enter_uses_one_atomic_order_not_two(tmp_path):
+    """Buy + stop must go in a single OTO order.
+
+    Two separate opposite-side orders are rejected by Alpaca as a wash
+    trade, which previously blocked every entry.
+    """
     bot, broker, journal = make_bot(tmp_path)
     asyncio.run(bot._enter(a_pick(price=5.0, qty=50), ts=1_700_000_000))
 
-    kinds = {(o["side"], o["type"]) for o in broker.orders}
-    assert ("buy", "market") in kinds
-    assert ("sell", "stop") in kinds
-    stop = next(o for o in broker.orders if o["type"] == "stop")
-    assert stop["qty"] == 50 and stop["stop_price"] == pytest.approx(4.85)
+    assert len(broker.orders) == 1, "entry must be ONE order, not buy + stop"
+    order = broker.orders[0]
+    assert order["order_class"] == "oto"
+    assert order["side"] == "buy" and order["qty"] == 50
+    assert order["stop_price"] == pytest.approx(4.85)
+    assert not any(o["side"] == "sell" for o in broker.orders)
 
     trade = bot.open_trades["HODX"]
     assert trade["bank_qty"] + trade["runner_qty"] == 50
     assert trade["scale_out"] == pytest.approx(5.30)   # 5.00 + 2 * 0.15
     assert trade["banked"] is False
     assert journal.trades_today("2023-11-14")  # record_trade_open persisted
+
+
+def test_rejected_entry_is_not_retried_all_session(tmp_path):
+    """A broker refusal must not re-fire every poll cycle."""
+    import datetime as dt
+    bot, broker, _ = make_bot(tmp_path)
+
+    async def refuse(*a, **k):
+        raise RuntimeError("422 wash trade")
+    broker.submit_oto_stop = refuse
+
+    class State:
+        latest = {}
+        def payload(self, now, require_news=None):
+            row = {"symbol": "HODX", "price": 5.0, "rvol": 9.0, "day_pct": 22.0,
+                   "float_shares": 8e6, "has_news": True, "dist_from_hod": 0.0,
+                   "day_high": 5.0, "changes": {"5": 3.0}}
+            return {"hod": {"qualified": [row]}}
+
+    now = et(10, 0)
+    asyncio.run(bot.cycle(State(), now))
+    assert bot.rejected == {"HODX"}
+    asyncio.run(bot.cycle(State(), now + dt.timedelta(seconds=3)))
+    assert bot.rejected == {"HODX"}      # still skipped, no second attempt
 
 
 def _open_a_trade(bot, ts, price=5.0, qty=50):
@@ -115,7 +154,7 @@ def test_scale_out_banks_half_and_starts_trailing(tmp_path):
     asyncio.run(bot._manage_open(state, now=et(10, 5),
                                  ts=int(et(10, 5).timestamp())))
 
-    assert trade["stop_order_id"] in broker.cancelled       # -1R stop pulled
+    assert broker.cancelled                                 # -1R stop pulled
     sells = [o for o in broker.orders if o["type"] == "market" and o["side"] == "sell"]
     assert sells and sells[0]["qty"] == trade["bank_qty"]    # banked half
     trail = [o for o in broker.orders if o["type"] == "trailing_stop"]

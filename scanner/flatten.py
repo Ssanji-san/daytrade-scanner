@@ -63,6 +63,18 @@ async def run(force=False):
         await reconcile(broker, journal, {p["symbol"] for p in positions},
                         now_ts)
 
+        # An open order with no position behind it (an attached stop whose
+        # position already closed) makes tomorrow's buy on that symbol look
+        # like a wash trade, so clear those regardless of the time window.
+        position_symbols = {p["symbol"] for p in positions}
+        for order in await broker.open_orders():
+            if order["symbol"] not in position_symbols:
+                try:
+                    await broker.cancel_order(order["id"])
+                    print(f"[flatten] cancelled orphan order {order['symbol']}")
+                except aiohttp.ClientResponseError:
+                    pass
+
         if not positions:
             print("[flatten] no open positions")
             return

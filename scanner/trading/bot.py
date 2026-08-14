@@ -83,6 +83,8 @@ class TradingBot:
         self.journal = journal
         self.broker = broker
         self.open_trades = {}     # symbol -> dict
+        self.rejected = set()     # symbols whose entry the broker refused today
+        self._rejected_day = None
         self.scorer, self.model_meta = self._retrain()
         self.error = None
         self.equity_history = None
@@ -123,15 +125,22 @@ class TradingBot:
         # 3. new entries
         if _past(now, self.cfg.bot_flatten_time):
             return
+        if self._rejected_day != day:      # fresh slate each session
+            self.rejected, self._rejected_day = set(), day
         trades = self.journal.trades_today(day)
         picks = choose_entries(
             qualified, self.scorer,
             trades_today=len(trades),
-            traded_symbols={t["symbol"] for t in trades},
+            traded_symbols={t["symbol"] for t in trades} | self.rejected,
             day_pnl=self.journal.day_pnl(day),
             now=now, cfg=self.cfg)
         for pick in picks:
-            await self._enter(pick, ts)
+            try:
+                await self._enter(pick, ts)
+            except Exception as exc:
+                # Don't re-hammer a symbol the broker refused; one line, once.
+                self.rejected.add(pick["symbol"])
+                print(f"[bot] ENTRY REJECTED {pick['symbol']}: {exc}")
 
     async def _enter(self, pick, ts):
         entry = pick["price"]
@@ -139,8 +148,11 @@ class TradingBot:
         total_qty = pick["qty"]
         bank_qty, runner_qty = split_qty(total_qty)
 
-        await self.broker.submit_market_buy(pick["symbol"], total_qty)
-        stop = await self.broker.submit_stop(
+        # One atomic order: the stop rides along and Alpaca arms it after the
+        # fill. Submitting buy and stop separately is rejected as a wash trade
+        # ("opposite side market/stop order exists"), which is what kept every
+        # entry from going through.
+        parent = await self.broker.submit_oto_stop(
             pick["symbol"], total_qty, levels["stop"])
 
         trade_id = self.journal.record_trade_open(
@@ -148,7 +160,7 @@ class TradingBot:
             stop=levels["stop"], targets=[levels["scale_out"]],
             features=pick["features"])
         self.open_trades[pick["symbol"]] = {
-            "trade_id": trade_id, "stop_order_id": stop["id"],
+            "trade_id": trade_id, "parent_order_id": parent["id"],
             "trailing_order_id": None, "qty": total_qty,
             "bank_qty": bank_qty, "runner_qty": runner_qty,
             "entry": entry, "stop": levels["stop"],
@@ -182,7 +194,7 @@ class TradingBot:
                 continue
 
             if not trade["banked"] and price >= trade["scale_out"]:
-                await self.broker.cancel_order(trade["stop_order_id"])
+                await self.broker.cancel_orders_for(symbol)
                 if trade["runner_qty"] >= 1:
                     await self.broker.submit_market_sell(symbol, trade["bank_qty"])
                     tr = await self.broker.submit_trailing_stop(
@@ -201,12 +213,9 @@ class TradingBot:
                 await self._flatten_trade(symbol, trade, ts, pos, "time_stop")
 
     async def _flatten_trade(self, symbol, trade, ts, pos, reason):
-        for order_id in (trade["stop_order_id"], trade["trailing_order_id"]):
-            if order_id:
-                try:
-                    await self.broker.cancel_order(order_id)
-                except aiohttp.ClientResponseError:
-                    pass
+        # Clear protective orders first: an open sell blocks the close as a
+        # wash trade, and a leftover one blocks tomorrow's entry.
+        await self.broker.cancel_orders_for(symbol)
         await self.broker.close_position(symbol)
         fallback = float(pos.get("current_price") or trade["entry"])
         exit_price = await self._closed_exit_price(symbol, trade, fallback)
