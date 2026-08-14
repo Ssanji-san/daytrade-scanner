@@ -49,7 +49,7 @@ async def show(session, method, path, label, payload=None):
         return resp.status, data
 
 
-async def main(probe_symbols):
+async def main(probe_symbols, qty=1):
     if not HEADERS["APCA-API-KEY-ID"]:
         print("!! ALPACA_KEY / ALPACA_SECRET not set in the environment")
         return
@@ -59,6 +59,7 @@ async def main(probe_symbols):
         print("=" * 62)
         status, acct = await show(session, "GET", "/v2/account", "account")
         if isinstance(acct, dict):
+            print(f"    (all keys: {sorted(acct.keys())})")
             for field in ACCOUNT_FIELDS:
                 if field in acct:
                     print(f"    {field:26} = {acct[field]}")
@@ -86,10 +87,10 @@ async def main(probe_symbols):
 
         print()
         print("=" * 62)
-        print("3. ORDER PROBE (qty=1 market buy, paper only)")
+        print(f"3. ORDER PROBE (qty={qty} market buy, paper only)")
         print("=" * 62)
         for sym in probe_symbols:
-            payload = {"symbol": sym, "qty": "1", "side": "buy",
+            payload = {"symbol": sym, "qty": str(qty), "side": "buy",
                        "type": "market", "time_in_force": "day"}
             code, order = await show(session, "POST", "/v2/orders",
                                      f"probe buy {sym}", payload)
@@ -104,5 +105,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--probe", nargs="*", default=["AAPL"],
                         help="symbols to inspect and test-order")
+    parser.add_argument("--qty", type=int, default=1,
+                        help="share quantity for the probe order")
     args = parser.parse_args()
-    asyncio.run(main(args.probe))
+    asyncio.run(main(args.probe, args.qty))

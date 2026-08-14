@@ -9,6 +9,10 @@ on:
         description: "Symbols to inspect and test-order (space separated)"
         required: false
         default: "AAPL"
+      qty:
+        description: "Share quantity for the probe order"
+        required: false
+        default: "1"
 
 jobs:
   diagnose:
@@ -28,4 +32,4 @@ jobs:
         env:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
-        run: python scripts/diagnose_alpaca.py --probe ${{ inputs.symbols }}
+        run: python scripts/diagnose_alpaca.py --qty ${{ inputs.qty }} --probe ${{ inputs.symbols }}
