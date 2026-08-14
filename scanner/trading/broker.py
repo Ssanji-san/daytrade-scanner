@@ -6,6 +6,8 @@ unless the base URL is the paper API. Do not remove that check.
 import asyncio
 import os
 
+import aiohttp
+
 from ..config import Config
 
 PAPER_MARKER = "paper-api"
@@ -74,7 +76,13 @@ class Broker:
                 if resp.status == 429:
                     await asyncio.sleep(2 ** attempt)
                     continue
-                resp.raise_for_status()
+                if resp.status >= 400:
+                    # Alpaca explains rejections in the body; raise_for_status
+                    # would discard it and leave us guessing at a bare 422.
+                    body = (await resp.text())[:400]
+                    raise aiohttp.ClientResponseError(
+                        resp.request_info, resp.history, status=resp.status,
+                        message=f"{resp.reason}: {body}", headers=resp.headers)
                 if resp.status == 204:
                     return None
                 return await resp.json()
