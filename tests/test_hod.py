@@ -77,3 +77,19 @@ def test_sorted_by_day_pct_and_capped():
     qualified, _ = scan(states, CFG)
     assert len(qualified) == CFG.hod_rows
     assert qualified[0]["symbol"] == "S29"
+
+
+def test_a_pullback_entry_is_tradable_not_stranded_in_the_near_list():
+    """The HOD gate must not cancel out the pullback entry.
+
+    The entry fires on a pullback, so price sits a few percent under the
+    day high by definition. A gate tight enough to reject that makes the
+    whole strategy unreachable: the setup fires and the row lands in the
+    'near' list, which the bot never trades.
+    """
+    pulling_back = make_state(price=5.38, day_high=5.50,
+                              setup={"setup": "micro_pullback", "stop": 5.35})
+    qualified, near = scan([pulling_back], Config(hod_require_news=True))
+    assert [r["symbol"] for r in qualified] == ["TEST"]
+    assert near == []
+    assert qualified[0]["dist_from_hod"] == pytest.approx(2.18, abs=0.05)

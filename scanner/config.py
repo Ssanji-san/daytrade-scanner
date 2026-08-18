@@ -29,7 +29,11 @@ class Config:
     hod_min_volume: int = 100_000       # cumulative shares today (tradability floor)
     hod_min_rvol: float = 5.0           # relative volume vs 30-day average
     hod_require_news: bool = False      # UI toggle; badge always shown
-    hod_near_high_pct: float = 1.0      # "at HOD" = within this % of day high
+    # "Near the high", not "at the high". The entry is the pullback, and a
+    # healthy flag pulls back 2-5% - a 1% gate rejected most of them and
+    # only let the trade through after price had already run past the
+    # signal, which is the chasing this strategy exists to avoid.
+    hod_near_high_pct: float = 4.0      # within this % of the day high
     hod_rows: int = 20
     near_filter_max_failures: int = 1   # dimmed "about to qualify" section
 
