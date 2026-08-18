@@ -57,7 +57,7 @@ class TestChooseEntries:
 
     def test_skips_traded_low_score_and_out_of_band(self):
         rows = [row("DUP"), row("CHEAP", price=1.50, day_high=1.50),
-                row("WEAK", rvol=0.5), row("GOOD")]
+                row("WEAK", rvol=0.5, catalyst=None), row("GOOD")]
         picks = choose_entries(rows, HeuristicScorer(), trades_today=0,
                                traded_symbols={"DUP"}, day_pnl=0.0,
                                now=et(10, 0), cfg=CFG)

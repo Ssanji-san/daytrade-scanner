@@ -6,7 +6,7 @@ badges) is computed here so the two modes exercise identical logic.
 """
 from dataclasses import replace
 
-from . import hod, setups
+from . import catalyst, hod, setups
 from .config import Config
 from .gainers import top_gainers
 from .history import SymbolHistory, rvol
@@ -19,6 +19,7 @@ class MarketState:
         self.latest = {}         # symbol -> last merged snapshot dict
         self.news = []
         self._news_ts = {}       # symbol -> newest headline epoch
+        self._news_by_symbol = {}   # symbol -> [items], for catalyst scoring
         self.calendar = []
         self.last_ingest = None
 
@@ -42,9 +43,11 @@ class MarketState:
     def set_news(self, now, items):
         self.news = sorted(items, key=lambda i: -i["ts"])[:100]
         self._news_ts = {}
+        self._news_by_symbol = {}
         for item in items:
             sym = item["symbol"]
             self._news_ts[sym] = max(self._news_ts.get(sym, 0), item["ts"])
+            self._news_by_symbol.setdefault(sym, []).append(item)
 
     def set_calendar(self, events):
         self.calendar = events
@@ -68,6 +71,8 @@ class MarketState:
             setup = setups.detect_pullback(history.completed_bars, price,
                                            self.cfg)
             states.append({
+                "catalyst": catalyst.score_news(
+                    self._news_by_symbol.get(sym), now.timestamp(), self.cfg),
                 "vwap": symbol_vwap,
                 "above_vwap": (symbol_vwap is not None
                                and price >= symbol_vwap),

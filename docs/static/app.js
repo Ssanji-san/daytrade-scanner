@@ -55,6 +55,15 @@ function beep() {
 function newsCell(row) {
   return row.has_news ? '<td title="headline in the last 24h">📰</td>' : "<td></td>";
 }
+function catalystCell(row) {
+  const c = row.catalyst;
+  if (!c) return '<td><span class="waiting">none</span></td>';
+  const cls = c.veto ? "cat-veto" : c.score >= 0.6 ? "cat-strong" : c.score >= 0.3 ? "cat-ok" : "cat-weak";
+  const age = c.age_minutes < 60 ? `${Math.round(c.age_minutes)}m` : `${Math.round(c.age_minutes / 60)}h`;
+  const label = c.veto ? "offering ⚠" : `${c.category} ${c.score.toFixed(2)}`;
+  return `<td title="${(c.headline || "").replace(/"/g, "'")}"><span class="cat-chip ${cls}">${label}</span> <span class="waiting">${age}</span></td>`;
+}
+
 function floatCell(v, hot) {
   const cls = hot && v != null && v < 20e6 ? "hot" : "";
   return `<td class="num ${cls}">${fmtBig(v)}</td>`;
@@ -100,6 +109,7 @@ function hodRow(r, cls) {
     ${floatCell(r.float_shares, true)}
     <td class="num ${r.above_vwap ? "up" : "down"}">${r.vwap == null ? "–" : (r.above_vwap ? "above" : "below")}</td>
     <td>${r.setup ? `<span class="setup-chip">${r.setup.setup.replace("_", " ")}</span>` : '<span class="waiting">waiting</span>'}</td>
+    ${catalystCell(r)}
     ${newsCell(r)}
   </tr>`;
 }

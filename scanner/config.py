@@ -47,9 +47,12 @@ class Config:
     # session has elapsed, treat elapsed as this to avoid absurd rvol at the open.
     rvol_min_session_fraction: float = 0.05
 
-    # --- news ---
+    # --- news / catalyst quality ---
     news_max_age_hours: float = 24.0    # headline this recent => catalyst badge
     news_per_symbol: int = 3
+    catalyst_min_score: float = 0.30    # below this the "news" is not a reason
+    catalyst_fresh_minutes: float = 60.0   # full weight while it is breaking
+    catalyst_veto: tuple = ("offering",)   # dilution kills the runner
 
     # --- calendar ---
     calendar_impacts: tuple = ("High", "Medium")  # red / orange

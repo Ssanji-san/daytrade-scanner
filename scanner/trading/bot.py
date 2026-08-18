@@ -41,6 +41,11 @@ def features_from_row(row, now):
                     or (row.get("changes") or {}).get(5) or 0.0,
         "minutes_since_open": _minutes_since_open(now),
         "above_vwap": 1.0 if row.get("above_vwap") else 0.0,
+        # How big the reason is, and how fresh - the two things that
+        # separate a scalp from a runner.
+        "catalyst_score": (row.get("catalyst") or {}).get("score") or 0.0,
+        "catalyst_age": min((row.get("catalyst") or {}).get("age_minutes")
+                            or 999.0, 999.0),
     }
 
 

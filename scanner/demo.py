@@ -90,6 +90,10 @@ def build_demo_session(cfg: Config, now=None):
          "ts": ts(-4), "url": "https://example.com/movr", "source": "demo"},
         {"symbol": "RUNA", "headline": "RUNA announces strategic partnership",
          "ts": ts(-65), "url": "https://example.com/runa", "source": "demo"},
+        # Dilution: looks like news, kills the runner. The bot must veto it.
+        {"symbol": "RUNB", "headline": "RUNB announces pricing of $40M "
+                                       "underwritten public offering",
+         "ts": ts(-12), "url": "https://example.com/runb", "source": "demo"},
     ]
 
     iso = lambda delta_min: (now + dt.timedelta(minutes=delta_min)).isoformat()

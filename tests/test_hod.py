@@ -49,15 +49,27 @@ def test_two_failures_excluded_entirely():
     assert qualified == [] and near == []
 
 
-def test_news_optional_by_default_but_required_when_configured():
-    no_news = make_state(has_news=False)
+def test_news_optional_by_default():
+    no_news = make_state(has_news=False, catalyst=None)
     qualified, near = scan([no_news], CFG)
     assert len(qualified) == 1 and qualified[0]["has_news"] is False
 
+
+def test_news_check_is_about_the_catalyst_not_just_a_headline():
+    """When news is required it means a *reason*, not any press release."""
     strict = Config(hod_require_news=True)
-    qualified, near = scan([no_news], strict)
-    assert qualified == []
-    assert near[0]["failed"] == ["news"]
+    assert len(scan([make_state()], strict)[0]) == 1     # fresh FDA approval
+
+    qualified, near = scan([make_state(has_news=False, catalyst=None)], strict)
+    assert qualified == [] and near[0]["failed"] == ["news"]
+
+    # A share offering is a reason to stay OUT however good it looks.
+    dilution = make_state(catalyst={"category": "offering", "weight": 0.05,
+                                    "score": 0.05, "age_minutes": 5.0,
+                                    "veto": True,
+                                    "headline": "prices public offering"})
+    qualified, near = scan([dilution], strict)
+    assert qualified == [] and near[0]["failed"] == ["news"]
 
 
 def test_sorted_by_day_pct_and_capped():

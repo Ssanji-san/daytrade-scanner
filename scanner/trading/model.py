@@ -10,7 +10,7 @@ import random
 
 FEATURE_ORDER = ["rvol", "day_pct", "float_shares", "has_news",
                  "dist_from_hod", "change_5", "minutes_since_open",
-                 "above_vwap"]
+                 "above_vwap", "catalyst_score", "catalyst_age"]
 
 
 def _vector(features):
@@ -30,8 +30,10 @@ class HeuristicScorer:
 
     def score(self, features):
         rvol = float(features.get("rvol") or 0.0)
+        catalyst = float(features.get("catalyst_score") or 0.0)
         news = 1.0 if features.get("has_news") else 0.0
-        return max(0.0, min(1.0, 0.4 + min(rvol, 20.0) / 50.0 + 0.1 * news))
+        return max(0.0, min(1.0, 0.35 + min(rvol, 20.0) / 50.0
+                            + 0.25 * catalyst + 0.05 * news))
 
 
 class LogisticScorer:

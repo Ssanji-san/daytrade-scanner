@@ -5,6 +5,7 @@ today, volume traded, relative volume, news) plus the price band and
 proximity to the high of day. Stocks failing exactly one criterion go to
 the dimmed "near" list so the user sees what's about to qualify.
 """
+from . import catalyst
 from .config import Config
 
 
@@ -24,7 +25,10 @@ def _criteria(state, cfg: Config):
         # Long only above VWAP - below it the move is a fade, not a trend.
         checks.append(("vwap", bool(state.get("above_vwap"))))
     if cfg.hod_require_news:
-        checks.append(("news", bool(state["has_news"])))
+        # Not "is there a headline" but "is there a *reason*": a real
+        # catalyst, still fresh, and no share offering behind the move.
+        checks.append(("news", catalyst.is_tradable(state.get("catalyst"),
+                                                    cfg)))
     return checks, dist
 
 
