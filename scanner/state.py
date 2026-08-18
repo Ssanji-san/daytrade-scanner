@@ -6,7 +6,7 @@ badges) is computed here so the two modes exercise identical logic.
 """
 from dataclasses import replace
 
-from . import hod
+from . import hod, setups
 from .config import Config
 from .gainers import top_gainers
 from .history import SymbolHistory, rvol
@@ -29,6 +29,7 @@ class MarketState:
         for sym, data in symbol_data.items():
             history = self.histories.setdefault(sym, SymbolHistory())
             history.add(now, data["price"], data["cum_volume"])
+            history.add_bar(data.get("minute_bar"))
             prev = self.latest.get(sym, {})
             merged = dict(data)
             for sticky in ("avg_volume", "float_shares"):
@@ -62,7 +63,15 @@ class MarketState:
             price, prev_close = data["price"], data.get("prev_close")
             day_pct = (100.0 * (price - prev_close) / prev_close
                        if prev_close else None)
+            bars = history.all_bars
+            symbol_vwap = setups.vwap(bars)
+            setup = setups.detect_pullback(history.completed_bars, price,
+                                           self.cfg)
             states.append({
+                "vwap": symbol_vwap,
+                "above_vwap": (symbol_vwap is not None
+                               and price >= symbol_vwap),
+                "setup": setup,
                 "symbol": sym,
                 "price": price,
                 "day_pct": day_pct,

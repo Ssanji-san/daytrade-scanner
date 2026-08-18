@@ -61,13 +61,35 @@
       <h3>Trade history <span class="sub">recent closed trades</span></h3>
       <table id="bot-history">
         <thead><tr>
-          <th>Date</th><th>Symbol</th><th class="num">Bought</th>
+          <th>Date</th><th>Symbol</th><th>Setup</th><th class="num">Bought</th>
           <th class="num">Exit</th><th class="num">P&amp;L</th>
           <th class="num">R</th><th>Via</th>
         </tr></thead>
         <tbody></tbody>
       </table>
       <p id="bot-history-empty" class="empty hidden">No closed trades yet.</p>
+    </div>
+    <div class="bot-hist">
+      <h3>Open orders <span class="sub">live at the broker</span></h3>
+      <table id="bot-orders">
+        <thead><tr>
+          <th>Symbol</th><th>Side</th><th>Type</th><th class="num">Qty</th>
+          <th class="num">Limit</th><th class="num">Stop</th><th>Status</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="bot-orders-empty" class="empty hidden">No open orders.</p>
+    </div>
+    <div class="bot-hist">
+      <h3>Alerts <span class="sub">every setup it studied — this is the learning data</span></h3>
+      <table id="bot-alerts">
+        <thead><tr>
+          <th>Date</th><th>Time</th><th>Symbol</th><th class="num">Price</th>
+          <th>Setup</th><th>Outcome</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="bot-alerts-empty" class="empty hidden">No alerts recorded yet.</p>
     </div>
   </div>
 </section>
@@ -92,7 +114,7 @@
       <thead><tr>
         <th>Symbol</th><th class="num">Price</th><th class="num">%Day</th>
         <th class="num">From HOD</th><th class="num">Volume</th><th class="num">RVOL</th>
-        <th class="num">Float≈</th><th>News</th>
+        <th class="num">Float≈</th><th class="num">VWAP</th><th>Setup</th><th>News</th>
       </tr></thead>
       <tbody></tbody>
     </table>

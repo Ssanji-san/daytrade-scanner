@@ -33,6 +33,14 @@ class Config:
     hod_rows: int = 20
     near_filter_max_failures: int = 1   # dimmed "about to qualify" section
 
+    # --- entry setups (Ross Cameron micro-pullback / flat top) ---
+    setup_lookback_bars: int = 10        # 1-min bars scanned for the swing high
+    setup_max_pullback_bars: int = 3     # 1-3 red candles, then the break
+    setup_min_pullback_pct: float = 0.4  # below this it's noise, not a pullback
+    setup_max_pullback_pct: float = 8.0  # above this the move has broken down
+    setup_flat_top_tolerance_pct: float = 0.3   # highs within this = flat top
+    require_vwap: bool = True            # never long below VWAP
+
     # --- relative volume ---
     rvol_baseline_days: int = 30
     # Linear time-of-day adjustment floor: before this fraction of the
@@ -61,7 +69,10 @@ class Config:
     bot_max_trades_per_day: int = 4
     bot_min_price: float = 2.0           # bot trades $2-$20 only (user request)
     bot_max_price: float = 20.0
-    bot_stop_pct: float = 3.0            # stop distance from entry; defines R
+    bot_stop_pct: float = 3.0            # fallback stop when no setup low exists
+    bot_min_stop_pct: float = 1.0        # floor: never risk less than noise
+    bot_max_stop_pct: float = 6.0        # skip setups whose stop is this far away
+    bot_limit_slippage_pct: float = 0.3  # marketable limit above the ask
     bot_scale_out_r: float = 2.0         # bank half here
     bot_runner_trail_pct: float = 5.0    # native trailing-stop width for the runner
     bot_time_stop_minutes: int = 20      # only applies before scale-out

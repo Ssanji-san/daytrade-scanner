@@ -16,7 +16,8 @@ from .broker import Broker
 from .journal import Journal
 from .model import train, scorer_from_weights
 from .strategy import (ET, exit_levels, should_enter, size_position,
-                       split_qty, weighted_exit, _parse_hhmm)
+                       split_qty, technical_stop, weighted_exit,
+                       _parse_hhmm)
 
 MARKET_OPEN = dt.time(9, 30)
 
@@ -39,6 +40,7 @@ def features_from_row(row, now):
         "change_5": (row.get("changes") or {}).get("5")
                     or (row.get("changes") or {}).get(5) or 0.0,
         "minutes_since_open": _minutes_since_open(now),
+        "above_vwap": 1.0 if row.get("above_vwap") else 0.0,
     }
 
 
@@ -47,6 +49,11 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
     """Best-scored qualifying rows first, never exceeding the daily cap."""
     scored = []
     for row in qualified_rows:
+        # The momentum criteria say *what* to trade; the pullback says
+        # *when*. No setup means the entry has not arrived - buying here
+        # would be chasing the high.
+        if not row.get("setup"):
+            continue
         features = features_from_row(row, now)
         scored.append((scorer.score(features), row, features))
     scored.sort(key=lambda t: -t[0])
@@ -59,12 +66,16 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
                                day_pnl=day_pnl, now=now, cfg=cfg)
         if not take:
             continue
-        qty, stop = size_position(row["price"], cfg)
+        setup = row["setup"]
+        stop = technical_stop(row["price"], setup.get("stop"), cfg)
+        if stop is None:
+            continue                     # risk to the setup low is too wide
+        qty, stop = size_position(row["price"], cfg, stop_price=stop)
         if qty < 1:
             continue
         picks.append({"symbol": row["symbol"], "price": row["price"],
                       "qty": qty, "stop": stop, "score": score,
-                      "features": features})
+                      "setup": setup.get("setup"), "features": features})
         taken.add(row["symbol"])
     return picks
 
@@ -84,6 +95,7 @@ class TradingBot:
         self.broker = broker
         self.open_trades = {}     # symbol -> dict
         self.rejected = set()     # symbols whose entry the broker refused today
+        self.open_orders = []     # live broker orders, for the dashboard
         self._rejected_day = None
         self.scorer, self.model_meta = self._retrain()
         self.error = None
@@ -111,13 +123,19 @@ class TradingBot:
 
         # 1. journal every qualified alert + track open alert outcomes
         for row in qualified:
-            r_dollars = row["price"] * self.cfg.bot_stop_pct / 100
+            setup = row.get("setup") or {}
+            stop = setup.get("stop")
+            r_dollars = ((row["price"] - stop) if stop and stop < row["price"]
+                         else row["price"] * self.cfg.bot_stop_pct / 100)
             self.journal.record_alert(ts, row["symbol"], row["price"],
-                                      r_dollars, features_from_row(row, now))
+                                      r_dollars, features_from_row(row, now),
+                                      setup=setup.get("setup"))
         for alert_id, symbol in self.journal.open_alerts():
             latest = state.latest.get(symbol)
             if latest:
-                self.journal.track_alert(alert_id, ts, latest["price"])
+                bar = latest.get("minute_bar") or {}
+                self.journal.track_alert(alert_id, ts, latest["price"],
+                                         high=bar.get("h"), low=bar.get("l"))
 
         # 2. manage open trades (fills, time stop, flatten)
         await self._manage_open(state, now, ts)
@@ -144,7 +162,7 @@ class TradingBot:
 
     async def _enter(self, pick, ts):
         entry = pick["price"]
-        levels = exit_levels(entry, self.cfg)
+        levels = exit_levels(entry, self.cfg, stop_price=pick.get("stop"))
         total_qty = pick["qty"]
         bank_qty, runner_qty = split_qty(total_qty)
 
@@ -152,13 +170,14 @@ class TradingBot:
         # fill. Submitting buy and stop separately is rejected as a wash trade
         # ("opposite side market/stop order exists"), which is what kept every
         # entry from going through.
+        limit = entry * (1 + self.cfg.bot_limit_slippage_pct / 100)
         parent = await self.broker.submit_oto_stop(
-            pick["symbol"], total_qty, levels["stop"])
+            pick["symbol"], total_qty, levels["stop"], limit_price=limit)
 
         trade_id = self.journal.record_trade_open(
             ts, pick["symbol"], qty=total_qty, entry=entry,
             stop=levels["stop"], targets=[levels["scale_out"]],
-            features=pick["features"])
+            features=pick["features"], setup=pick.get("setup"))
         self.open_trades[pick["symbol"]] = {
             "trade_id": trade_id, "parent_order_id": parent["id"],
             "trailing_order_id": None, "qty": total_qty,
@@ -167,7 +186,8 @@ class TradingBot:
             "scale_out": levels["scale_out"], "opened_ts": ts,
             "banked": False}
         print(f"[bot] ENTER {pick['symbol']} x{total_qty} @~{entry:.2f} "
-              f"stop {levels['stop']:.2f} scale-out {levels['scale_out']:.2f}")
+              f"[{pick.get('setup')}] stop {levels['stop']:.2f} "
+              f"scale-out {levels['scale_out']:.2f}")
 
     async def _manage_open(self, state, now, ts):
         if not self.open_trades:
@@ -260,6 +280,9 @@ class TradingBot:
             "model": {k: v for k, v in self.model_meta.items()
                       if k != "weights"},
             "model_history": self.journal.model_history(10),
+            "alerts": self.journal.recent_alerts(40),
+            "setup_stats": self.journal.setup_stats(),
+            "orders": self.open_orders,
             "equity": self.equity_history,
         }
 
@@ -285,6 +308,7 @@ async def bot_loop(app, cfg: Config):
                         [t, e] for t, e in zip(history.get("timestamp") or [],
                                                history.get("equity") or [])
                         if e is not None]
+                    bot.open_orders = await broker.open_orders() or []
                     last_equity_pull = now.timestamp()
                 bot.error = None
             except Exception as exc:

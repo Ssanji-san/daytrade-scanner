@@ -13,6 +13,10 @@ def make_state(**overrides):
         "float_shares": 8_000_000,
         "has_news": True,
         "changes": {5: 3.0, 10: 6.0, 15: 9.0},
+        "vwap": 5.30,
+        "above_vwap": True,
+        "setup": {"setup": "micro_pullback", "stop": 5.35,
+                  "swing_high": 5.55, "pullback_low": 5.35, "trigger": 5.48},
     }
     state.update(overrides)
     return state

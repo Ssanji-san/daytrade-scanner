@@ -113,3 +113,35 @@ class TestModelVersions:
         assert latest["samples"] == 80
         assert latest["weights"]["rvol"] == 0.6
         assert len(journal.model_history()) == 2
+
+
+def test_wick_through_the_stop_labels_a_loss(tmp_path):
+    """Grading on polled last prices alone hides the wick that stopped you out.
+
+    The bar low dipped below the stop and recovered; the poll only ever saw
+    the recovered price. That has to grade as a loss or the model learns a
+    world it never trades in.
+    """
+    journal = Journal(str(tmp_path / "j.db"))
+    alert_id = journal.record_alert(1_700_000_000, "HODX", price=5.00,
+                                    r_dollars=0.15, features={"rvol": 8.0},
+                                    setup="micro_pullback")
+    journal.track_alert(alert_id, 1_700_000_060, price=5.02,
+                        high=5.05, low=4.80)      # wicked well below 4.85
+    rows = journal.labeled_dataset()
+    assert rows and rows[0][1] == 0
+
+
+def test_wick_to_target_labels_a_win(tmp_path):
+    journal = Journal(str(tmp_path / "j.db"))
+    alert_id = journal.record_alert(1_700_000_000, "HODX", price=5.00,
+                                    r_dollars=0.15, features={"rvol": 8.0})
+    journal.track_alert(alert_id, 1_700_000_060, price=5.10,
+                        high=5.35, low=4.95)      # tagged +2R (5.30) intrabar
+    assert journal.labeled_dataset()[0][1] == 1
+
+
+def test_setup_is_stored_and_reported(tmp_path):
+    journal = Journal(str(tmp_path / "j.db"))
+    journal.record_alert(1_700_000_000, "AAA", 5.0, 0.15, {}, setup="flat_top")
+    assert journal.recent_alerts(5)[0]["setup"] == "flat_top"

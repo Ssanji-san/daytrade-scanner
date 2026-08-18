@@ -24,7 +24,8 @@ def test_parse_snapshots_maps_fields():
     out = parse_snapshots(raw)
     assert out["AAA"] == {"price": 5.43, "cum_volume": 1_234_567,
                           "day_high": 5.60, "prev_close": 4.00,
-                          "avg_volume": None, "float_shares": None}
+                          "avg_volume": None, "float_shares": None,
+                          "minute_bar": None}   # no t/h on this bar
 
 
 def test_parse_snapshots_falls_back_when_no_latest_trade():

@@ -84,7 +84,7 @@ function renderGainers(payload) {
   $("#gainers-empty").classList.toggle("hidden", rows.length > 0);
 }
 
-const FAIL_LABELS = { pct_up: "%day", volume: "volume", rvol: "rvol", float: "float", hod: "off high", news: "no news" };
+const FAIL_LABELS = { pct_up: "%day", volume: "volume", rvol: "rvol", float: "float", hod: "off high", news: "no news", vwap: "below VWAP" };
 
 function hodRow(r, cls) {
   const fails = (r.failed || [])
@@ -98,6 +98,8 @@ function hodRow(r, cls) {
     <td class="num">${fmtBig(r.day_volume)}</td>
     <td class="num">${r.rvol == null ? "–" : r.rvol.toFixed(1)}</td>
     ${floatCell(r.float_shares, true)}
+    <td class="num ${r.above_vwap ? "up" : "down"}">${r.vwap == null ? "–" : (r.above_vwap ? "above" : "below")}</td>
+    <td>${r.setup ? `<span class="setup-chip">${r.setup.setup.replace("_", " ")}</span>` : '<span class="waiting">waiting</span>'}</td>
     ${newsCell(r)}
   </tr>`;
 }
@@ -207,6 +209,11 @@ function renderBot(payload) {
     [`Win rate (last ${stats.count || 0})`, stats.win_rate != null ? (stats.win_rate * 100).toFixed(0) + "%" : "–"],
     ["Expectancy", stats.expectancy_r != null ? (stats.expectancy_r >= 0 ? "+" : "") + stats.expectancy_r.toFixed(2) + "R / trade" : "–"],
   ];
+  (bot.setup_stats || []).forEach((s) => {
+    const exp = s.exp_r == null ? "–" : (s.exp_r >= 0 ? "+" : "") + s.exp_r.toFixed(2) + "R";
+    rows.push([`↳ ${String(s.setup).replace("_", " ")} (${s.n})`,
+               `${Math.round((s.wins / s.n) * 100)}% · ${exp}`]);
+  });
   $("#bot-learning").innerHTML = rows
     .map(([k, v]) => `<li><span class="k">${k}</span><span>${v}</span></li>`)
     .join("");
@@ -235,6 +242,7 @@ function renderBot(payload) {
       return `<tr>
         <td>${shortDate(t.ts)}</td>
         <td class="sym">${tvLink(t.symbol)}</td>
+        <td>${t.setup ? t.setup.replace("_", " ") : "–"}</td>
         <td class="num">$${fmtNum(bought)}</td>
         <td class="num">$${fmtNum(t.exit_price)}</td>
         <td class="num ${cls}">${fmtMoney(t.pnl)}</td>
@@ -244,6 +252,38 @@ function renderBot(payload) {
     })
     .join("");
   $("#bot-history-empty").classList.toggle("hidden", history.length > 0);
+
+  const orders = bot.orders || [];
+  $("#bot-orders tbody").innerHTML = orders
+    .map((o) => `<tr>
+      <td class="sym">${tvLink(o.symbol)}</td>
+      <td class="${o.side === "buy" ? "up" : "down"}">${o.side}</td>
+      <td>${(o.type || "").replace("_", " ")}</td>
+      <td class="num">${o.qty}</td>
+      <td class="num">${o.limit_price ? "$" + fmtNum(+o.limit_price) : "–"}</td>
+      <td class="num">${o.stop_price ? "$" + fmtNum(+o.stop_price) : "–"}</td>
+      <td>${o.status || ""}</td>
+    </tr>`)
+    .join("");
+  $("#bot-orders-empty").classList.toggle("hidden", orders.length > 0);
+
+  const alerts = bot.alerts || [];
+  $("#bot-alerts tbody").innerHTML = alerts
+    .map((a) => {
+      const done = a.label != null;
+      const cls = !done ? "" : a.label === 1 ? "up" : "down";
+      const outcome = !done ? "tracking…" : a.label === 1 ? "hit +2R" : "failed";
+      return `<tr>
+        <td>${a.day || shortDate(a.ts)}</td>
+        <td>${localTime(a.ts)}</td>
+        <td class="sym">${tvLink(a.symbol)}</td>
+        <td class="num">$${fmtNum(a.price)}</td>
+        <td>${a.setup ? a.setup.replace("_", " ") : "–"}</td>
+        <td class="${cls}">${outcome}</td>
+      </tr>`;
+    })
+    .join("");
+  $("#bot-alerts-empty").classList.toggle("hidden", alerts.length > 0);
 }
 
 function renderStatus(payload) {

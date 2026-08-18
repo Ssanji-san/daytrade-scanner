@@ -42,6 +42,12 @@ def parse_snapshots(raw):
             "prev_close": prev["c"],
             "avg_volume": None,
             "float_shares": None,
+            # Real 1-minute OHLC: the setup detector and the honest alert
+            # labels both need true highs/lows, not polled last prices.
+            "minute_bar": ({"t": minute["t"], "o": minute.get("o"),
+                            "h": minute.get("h"), "l": minute.get("l"),
+                            "c": minute.get("c"), "v": minute.get("v", 0)}
+                           if minute.get("t") and minute.get("h") else None),
         }
     return out
 

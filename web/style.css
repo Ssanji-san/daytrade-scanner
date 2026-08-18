@@ -157,6 +157,11 @@ tr.hod-flash { animation: hodflash 1.6s ease-out; }
   border: 1px solid var(--border); border-radius: 6px;
 }
 .bot-hist { grid-column: 1 / -1; margin-top: 6px; }
+.setup-chip {
+  font-size: 10px; padding: 1px 6px; border-radius: 8px;
+  background: #123322; color: var(--green); border: 1px solid #1f4d2e;
+}
+.waiting { color: var(--muted); font-size: 11px; }
 .bot-hist h3 .sub { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--muted); }
 
 footer {

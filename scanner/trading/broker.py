@@ -60,17 +60,23 @@ class Broker:
                 "stop_price": f"{stop_price:.2f}"}
 
     @staticmethod
-    def oto_stop_payload(symbol, qty, stop_price):
+    def oto_stop_payload(symbol, qty, stop_price, limit_price=None):
         """Entry + attached stop as ONE order.
 
         Submitting the buy and the stop separately trips Alpaca's wash-trade
         guard ("opposite side market/stop order exists"), which is why the
         entry must be a single complex order.
         """
-        return {"symbol": symbol, "qty": str(qty), "side": "buy",
-                "type": "market", "time_in_force": "day",
-                "order_class": "oto",
-                "stop_loss": {"stop_price": f"{stop_price:.2f}"}}
+        payload = {"symbol": symbol, "qty": str(qty), "side": "buy",
+                   "type": "market", "time_in_force": "day",
+                   "order_class": "oto",
+                   "stop_loss": {"stop_price": f"{stop_price:.2f}"}}
+        if limit_price:
+            # Marketable limit: fills like a market order but refuses the
+            # runaway prints that market orders eat on thin small caps.
+            payload["type"] = "limit"
+            payload["limit_price"] = f"{limit_price:.2f}"
+        return payload
 
     @staticmethod
     def trailing_stop_payload(symbol, qty, trail_percent, side="sell"):
@@ -128,10 +134,10 @@ class Broker:
         return await self._request("POST", "/v2/orders",
                                    json=self.market_payload(symbol, qty, "sell"))
 
-    async def submit_oto_stop(self, symbol, qty, stop_price):
-        return await self._request("POST", "/v2/orders",
-                                   json=self.oto_stop_payload(symbol, qty,
-                                                              stop_price))
+    async def submit_oto_stop(self, symbol, qty, stop_price, limit_price=None):
+        return await self._request(
+            "POST", "/v2/orders",
+            json=self.oto_stop_payload(symbol, qty, stop_price, limit_price))
 
     async def cancel_orders_for(self, symbol):
         """Cancel every open order on a symbol, attached stop legs included."""

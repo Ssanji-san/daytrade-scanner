@@ -48,9 +48,10 @@ class FakeBroker:
         return self._new(side="sell", type="stop", symbol=symbol, qty=qty,
                          stop_price=stop_price)
 
-    async def submit_oto_stop(self, symbol, qty, stop_price):
+    async def submit_oto_stop(self, symbol, qty, stop_price, limit_price=None):
         return self._new(side="buy", type="market", order_class="oto",
-                         symbol=symbol, qty=qty, stop_price=stop_price)
+                         symbol=symbol, qty=qty, stop_price=stop_price,
+                         limit_price=limit_price)
 
     async def cancel_orders_for(self, symbol):
         for o in self.orders:
@@ -130,7 +131,8 @@ def test_rejected_entry_is_not_retried_all_session(tmp_path):
         def payload(self, now, require_news=None):
             row = {"symbol": "HODX", "price": 5.0, "rvol": 9.0, "day_pct": 22.0,
                    "float_shares": 8e6, "has_news": True, "dist_from_hod": 0.0,
-                   "day_high": 5.0, "changes": {"5": 3.0}}
+                   "day_high": 5.0, "changes": {"5": 3.0}, "above_vwap": True,
+                   "setup": {"setup": "micro_pullback", "stop": 4.85}}
             return {"hod": {"qualified": [row]}}
 
     now = et(10, 0)

@@ -1,0 +1,92 @@
+"""The entry setups: VWAP and the micro-pullback trigger.
+
+These encode the difference between chasing a high and trading a pullback,
+so they get tested as carefully as the risk math.
+"""
+import pytest
+
+from scanner.config import Config
+from scanner.setups import detect_pullback, vwap
+from scanner.trading.strategy import technical_stop
+
+CFG = Config()
+
+
+def bar(o, h, l, c, v=10_000, t="t"):
+    return {"t": t, "o": o, "h": h, "l": l, "c": c, "v": v}
+
+
+class TestVwap:
+    def test_volume_weighted_not_simple_average(self):
+        bars = [bar(10, 10, 10, 10, v=1_000),      # typical 10, small size
+                bar(20, 20, 20, 20, v=9_000)]      # typical 20, big size
+        assert vwap(bars) == pytest.approx(19.0)   # not 15
+
+    def test_none_without_volume(self):
+        assert vwap([]) is None
+        assert vwap([bar(10, 10, 10, 10, v=0)]) is None
+
+
+def rally_then_pullback():
+    """Runs to 5.50, pulls back two candles, sits just under the highs."""
+    return [
+        bar(5.00, 5.10, 4.98, 5.08),
+        bar(5.08, 5.30, 5.05, 5.28),
+        bar(5.28, 5.50, 5.25, 5.48),   # swing high 5.50
+        bar(5.48, 5.49, 5.35, 5.38),   # red
+        bar(5.38, 5.42, 5.36, 5.40),   # red-ish, pullback low 5.35
+    ]
+
+
+class TestPullbackTrigger:
+    def test_fires_when_price_breaks_the_prior_candle_high(self):
+        setup = detect_pullback(rally_then_pullback(), price=5.43, cfg=CFG)
+        assert setup is not None
+        assert setup["setup"] in ("micro_pullback", "flat_top")
+        assert setup["pullback_low"] == pytest.approx(5.35)
+        assert setup["stop"] == pytest.approx(5.35)    # stop at the flag low
+
+    def test_silent_while_price_is_still_inside_the_pullback(self):
+        # No new high yet -> no entry. This is the anti-chasing rule.
+        assert detect_pullback(rally_then_pullback(), price=5.40, cfg=CFG) is None
+
+    def test_no_setup_when_price_is_running_with_no_pullback(self):
+        bars = [bar(5.0, 5.1, 5.0, 5.1), bar(5.1, 5.3, 5.1, 5.3),
+                bar(5.3, 5.6, 5.3, 5.6)]      # swing high is the last bar
+        assert detect_pullback(bars, price=5.70, cfg=CFG) is None
+
+    def test_rejects_a_pullback_that_broke_down(self):
+        bars = rally_then_pullback()
+        bars[-1] = bar(5.38, 5.42, 4.60, 5.40)     # -16% off the high
+        assert detect_pullback(bars, price=5.43, cfg=CFG) is None
+
+    def test_rejects_noise_too_shallow_to_be_a_pullback(self):
+        bars = [bar(5.00, 5.10, 4.98, 5.08), bar(5.08, 5.30, 5.05, 5.28),
+                bar(5.28, 5.50, 5.25, 5.48), bar(5.48, 5.49, 5.49, 5.49)]
+        assert detect_pullback(bars, price=5.55, cfg=CFG) is None
+
+    def test_needs_history(self):
+        assert detect_pullback([bar(5, 5, 5, 5)], price=6.0, cfg=CFG) is None
+
+    def test_flat_top_when_the_high_is_tested_twice(self):
+        bars = [bar(5.28, 5.50, 5.25, 5.48),
+                bar(5.48, 5.50, 5.40, 5.45),   # second touch of 5.50
+                bar(5.45, 5.47, 5.38, 5.44)]
+        setup = detect_pullback(bars, price=5.49, cfg=CFG)
+        assert setup and setup["setup"] == "flat_top"
+
+
+class TestTechnicalStop:
+    def test_uses_the_setup_low(self):
+        assert technical_stop(5.48, 5.35, CFG) == pytest.approx(5.35)
+
+    def test_widens_a_stop_tighter_than_noise(self):
+        stop = technical_stop(10.0, 9.98, CFG)          # 0.2% -> floor 1%
+        assert stop == pytest.approx(9.90)
+
+    def test_refuses_a_setup_whose_risk_is_too_wide(self):
+        assert technical_stop(10.0, 9.00, CFG) is None  # 10% > 6% max
+
+    def test_falls_back_when_there_is_no_usable_low(self):
+        assert technical_stop(10.0, None, CFG) == pytest.approx(9.70)
+        assert technical_stop(10.0, 10.5, CFG) == pytest.approx(9.70)

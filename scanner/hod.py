@@ -20,6 +20,9 @@ def _criteria(state, cfg: Config):
                   and state["float_shares"] < cfg.hod_max_float),
         ("hod", dist is not None and dist <= cfg.hod_near_high_pct),
     ]
+    if cfg.require_vwap:
+        # Long only above VWAP - below it the move is a fade, not a trend.
+        checks.append(("vwap", bool(state.get("above_vwap"))))
     if cfg.hod_require_news:
         checks.append(("news", bool(state["has_news"])))
     return checks, dist

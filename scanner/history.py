@@ -18,9 +18,39 @@ SESSION_MINUTES = 390  # 9:30 -> 16:00
 class SymbolHistory:
     def __init__(self, maxlen=2400):
         self._samples = deque(maxlen=maxlen)  # (ts, price, cum_volume), ts ascending
+        self._bars = deque(maxlen=180)        # completed 1-minute bars
+        self._current_bar = None
 
     def add(self, ts, price, cum_volume):
         self._samples.append((ts, price, cum_volume))
+
+    def add_bar(self, bar):
+        """Fold in Alpaca's minuteBar; the same minute arrives many times.
+
+        Snapshots are polled every few seconds, so the in-progress minute is
+        replaced until its timestamp rolls over and it becomes final. Real
+        bar highs/lows carry the wicks a polled price never sees.
+        """
+        if not bar or not bar.get("t"):
+            return
+        if self._current_bar is None:
+            self._current_bar = dict(bar)
+        elif bar["t"] == self._current_bar["t"]:
+            self._current_bar = dict(bar)
+        else:
+            self._bars.append(self._current_bar)
+            self._current_bar = dict(bar)
+
+    @property
+    def completed_bars(self):
+        return list(self._bars)
+
+    @property
+    def all_bars(self):
+        bars = list(self._bars)
+        if self._current_bar:
+            bars.append(self._current_bar)
+        return bars
 
     def __len__(self):
         return len(self._samples)

@@ -21,11 +21,24 @@ def _actors():
     def movr(m):   # flat, then +2%/min for the last 5 minutes
         return 10.0 if m <= MINUTES - 5 else 10.0 * (1 + 0.02 * (m - (MINUTES - 5)))
 
+    def hodx(m):
+        """Runs, flags for a few minutes, then breaks out.
+
+        This is the shape the bot waits for: it must NOT buy the initial
+        ramp, only the break of the flag.
+        """
+        run, flag = MINUTES - 7, MINUTES - 4
+        if m <= run:
+            return 4.80 + (5.50 - 4.80) * m / run
+        if m <= flag:
+            return 5.50 - 0.14 * (m - run) / (flag - run)      # pull back
+        return 5.36 + 0.34 * (m - flag) / (MINUTES - flag)     # new high
+
     ramp = lambda lo, hi: (lambda m: lo + (hi - lo) * m / MINUTES)
     return {
         "MOVR":  (movr,              {"prev_close": 9.80, "final_vol": 6_000_000,
                                       "avg_volume": 5_000_000, "float_shares": 45_000_000}),
-        "HODX":  (ramp(4.80, 5.50),  {"prev_close": 4.00, "final_vol": 3_000_000,
+        "HODX":  (hodx,            {"prev_close": 4.00, "final_vol": 3_000_000,
                                       "avg_volume": 400_000, "float_shares": 8_000_000}),
         "NEARX": (ramp(3.30, 3.85),  {"prev_close": 3.30, "final_vol": 150_000,
                                       "avg_volume": 3_000_000, "float_shares": 5_000_000}),
@@ -53,6 +66,8 @@ def build_demo_session(cfg: Config, now=None):
         symbols = {}
         for sym, (price_fn, f) in actors.items():
             price = round(price_fn(minutes), 4)
+            bar_ts = (start + dt.timedelta(seconds=i * STEP_SECONDS)
+                      ).replace(second=0, microsecond=0).isoformat()
             symbols[sym] = {
                 "price": price,
                 "cum_volume": int(f["final_vol"] * progress),
@@ -60,6 +75,9 @@ def build_demo_session(cfg: Config, now=None):
                 "prev_close": f["prev_close"],
                 "avg_volume": f["avg_volume"],
                 "float_shares": f["float_shares"],
+                "minute_bar": {"t": bar_ts, "o": price, "h": price,
+                               "l": round(price * 0.995, 4), "c": price,
+                               "v": max(1, int(f["final_vol"] / 100))},
             }
         frames.append({"ts": int((start + dt.timedelta(seconds=i * STEP_SECONDS)).timestamp()),
                        "symbols": symbols})
@@ -98,7 +116,8 @@ def build_demo_bot_status(cfg: Config, now=None):
                 "exit_price": exit_price,
                 "pnl": round((exit_price - entry) * qty, 2),
                 "r_multiple": round((exit_price - entry) / risk, 2),
-                "exit_reason": reason}
+                "exit_reason": reason,
+                "setup": "micro_pullback" if qty % 2 else "flat_top"}
 
     today = [
         trade(180, "RUNA", 30, 8.10, 9.32, "trailing"),     # runner trailed ~+5R
@@ -129,4 +148,25 @@ def build_demo_bot_status(cfg: Config, now=None):
             {"ts": ts(60 * 48), "samples": 41, "holdout_acc": 0.55},
         ],
         "equity": equity,
+        "orders": [
+            {"symbol": "MOVR", "side": "sell", "type": "trailing_stop",
+             "qty": 11, "limit_price": None, "stop_price": "10.47",
+             "status": "held"},
+            {"symbol": "HODX", "side": "buy", "type": "limit", "qty": 46,
+             "limit_price": "5.37", "stop_price": "5.19", "status": "new"},
+        ],
+        "alerts": [
+            {"ts": ts(20), "day": "2026-08-18", "symbol": "MOVR",
+             "price": 11.02, "setup": "micro_pullback", "label": None},
+            {"ts": ts(75), "day": "2026-08-18", "symbol": "HODX",
+             "price": 5.35, "setup": "flat_top", "label": 1},
+            {"ts": ts(140), "day": "2026-08-18", "symbol": "NEARX",
+             "price": 3.90, "setup": "micro_pullback", "label": 0},
+            {"ts": ts(190), "day": "2026-08-17", "symbol": "RUNA",
+             "price": 8.10, "setup": "micro_pullback", "label": 1},
+        ],
+        "setup_stats": [
+            {"setup": "micro_pullback", "n": 11, "wins": 6, "exp_r": 0.48},
+            {"setup": "flat_top", "n": 6, "wins": 2, "exp_r": -0.21},
+        ],
     }

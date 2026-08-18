@@ -41,9 +41,31 @@ def should_enter(symbol="", *, price, score, trades_today, traded_symbols,
     return not reasons, reasons
 
 
-def size_position(price, cfg: Config):
+def technical_stop(entry, raw_stop, cfg: Config):
+    """Clamp a setup's stop into a sane risk band. None means don't trade.
+
+    The stop belongs at the setup's invalidation level (the pullback low),
+    not at an arbitrary percentage - but a stop tighter than noise gets
+    shaken out, and one too far away is not a trade worth taking.
+    """
+    if not entry:
+        return None
+    if raw_stop is None or raw_stop >= entry:
+        return entry * (1 - cfg.bot_stop_pct / 100)
+    pct = 100.0 * (entry - raw_stop) / entry
+    if pct > cfg.bot_max_stop_pct:
+        return None
+    if pct < cfg.bot_min_stop_pct:
+        return entry * (1 - cfg.bot_min_stop_pct / 100)
+    return raw_stop
+
+
+def size_position(price, cfg: Config, stop_price=None):
     """(shares, stop_price). Risk a fixed % of bankroll; cap the notional."""
-    stop_price = price * (1 - cfg.bot_stop_pct / 100)
+    if stop_price is None:
+        stop_price = price * (1 - cfg.bot_stop_pct / 100)
+    if stop_price >= price:
+        return 0, stop_price
     risk_dollars = cfg.bot_bankroll * cfg.bot_risk_pct / 100
     qty = int(risk_dollars / (price - stop_price))
     max_notional = cfg.bot_bankroll * cfg.bot_max_notional_pct / 100
@@ -51,12 +73,16 @@ def size_position(price, cfg: Config):
     return qty, stop_price
 
 
-def exit_levels(entry_price, cfg: Config):
-    """Stop at -1R; scale-out (bank half) at +scale_out_r R."""
-    r = entry_price * cfg.bot_stop_pct / 100
+def exit_levels(entry_price, cfg: Config, stop_price=None):
+    """Stop at the setup low (-1R); scale-out at +scale_out_r R above entry."""
+    if stop_price is None:
+        stop_price = entry_price * (1 - cfg.bot_stop_pct / 100)
+    r = entry_price - stop_price
+    # Round to cents: these are the prices we actually send to the broker,
+    # and comparing raw floats against a quoted price is a coin flip.
     return {
-        "stop": entry_price - r,
-        "scale_out": entry_price + cfg.bot_scale_out_r * r,
+        "stop": round(stop_price, 2),
+        "scale_out": round(entry_price + cfg.bot_scale_out_r * r, 2),
     }
 
 

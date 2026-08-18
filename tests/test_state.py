@@ -19,7 +19,9 @@ def snap(price, cum_volume=2_000_000, day_high=None, prev_close=4.0,
     return {"price": price, "cum_volume": cum_volume,
             "day_high": day_high if day_high is not None else price,
             "prev_close": prev_close, "avg_volume": avg_volume,
-            "float_shares": float_shares}
+            "float_shares": float_shares,
+            "minute_bar": {"t": "2026-07-14T12:45:00Z", "o": price,
+                           "h": price, "l": price, "c": price, "v": 5000}}
 
 
 def feed_flat_then_spike(state):
