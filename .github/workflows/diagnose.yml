@@ -21,6 +21,10 @@ on:
         description: "Show account activities + equity by day (true/false)"
         required: false
         default: "false"
+      fills_date:
+        description: "List every fill on this date (YYYY-MM-DD)"
+        required: false
+        default: ""
       live_entry:
         description: "Symbol to run the REAL bot entry path on, then undo (blank = skip)"
         required: false
@@ -46,7 +50,7 @@ jobs:
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: |
           if [ "${{ inputs.history }}" = "true" ]; then
-            python scripts/diagnose_alpaca.py --history
+            python scripts/diagnose_alpaca.py --history --fills-date "${{ inputs.fills_date }}"
           elif [ -n "${{ inputs.live_entry }}" ]; then
             python scripts/diagnose_alpaca.py --qty ${{ inputs.qty }} --live-entry ${{ inputs.live_entry }}
           elif [ -n "${{ inputs.sequence }}" ]; then

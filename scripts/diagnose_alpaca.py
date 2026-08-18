@@ -145,9 +145,23 @@ async def live_entry(symbol, qty):
         await cleanup(session, "after")
 
 
-async def history():
+async def history(fills_date=None):
     """Where did the account balance actually come from? Fills vs deposits."""
     async with aiohttp.ClientSession() as session:
+        if fills_date:
+            print("=" * 62)
+            print(f"EVERY FILL ON {fills_date}")
+            print("=" * 62)
+            code, day = await show(session, "GET",
+                                   f"/v2/account/activities/FILL?date={fills_date}"
+                                   "&page_size=100", f"fills {fills_date}")
+            if isinstance(day, list):
+                print(f"    {len(day)} fill(s)")
+                for a in day:
+                    print(f"      {a.get('transaction_time','')[11:19]} "
+                          f"{a.get('symbol'):6} {a.get('side'):10} "
+                          f"qty={a.get('qty'):>6} @ {a.get('price')}")
+            return
         print("=" * 62)
         print("ACCOUNT ACTIVITIES (fills, deposits, transfers)")
         print("=" * 62)
@@ -276,6 +290,8 @@ if __name__ == "__main__":
                         help="symbols to inspect and test-order")
     parser.add_argument("--qty", type=int, default=1,
                         help="share quantity for the probe order")
+    parser.add_argument("--fills-date", default=None,
+                        help="list every fill on this YYYY-MM-DD")
     parser.add_argument("--history", action="store_true",
                         help="show account activities + equity by day")
     parser.add_argument("--live-entry", metavar="SYMBOL",
@@ -286,7 +302,7 @@ if __name__ == "__main__":
                              "test the atomic OTO alternative, then clean up")
     args = parser.parse_args()
     if args.history:
-        asyncio.run(history())
+        asyncio.run(history(args.fills_date))
     elif args.live_entry:
         asyncio.run(live_entry(args.live_entry, args.qty))
     elif args.sequence:
