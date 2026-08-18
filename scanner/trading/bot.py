@@ -128,13 +128,13 @@ class TradingBot:
 
         # 1. journal every qualified alert + track open alert outcomes
         for row in qualified:
-            setup = row.get("setup") or {}
-            stop = setup.get("stop")
-            r_dollars = ((row["price"] - stop) if stop and stop < row["price"]
-                         else row["price"] * self.cfg.bot_stop_pct / 100)
-            self.journal.record_alert(ts, row["symbol"], row["price"],
-                                      r_dollars, features_from_row(row, now),
-                                      setup=setup.get("setup"))
+            self._journal_alert(ts, row, now, observed=0)
+        if self.cfg.learn_from_near_misses:
+            # Rows that missed by exactly one criterion are graded too, but
+            # never traded: they teach the model what separates a winner
+            # from an almost-winner, without loosening what it buys.
+            for row in payload["hod"].get("near") or []:
+                self._journal_alert(ts, row, now, observed=1)
         for alert_id, symbol in self.journal.open_alerts():
             latest = state.latest.get(symbol)
             if latest:
@@ -164,6 +164,15 @@ class TradingBot:
                 # Don't re-hammer a symbol the broker refused; one line, once.
                 self.rejected.add(pick["symbol"])
                 print(f"[bot] ENTRY REJECTED {pick['symbol']}: {exc}")
+
+    def _journal_alert(self, ts, row, now, observed):
+        setup = row.get("setup") or {}
+        stop = setup.get("stop")
+        r_dollars = ((row["price"] - stop) if stop and stop < row["price"]
+                     else row["price"] * self.cfg.bot_stop_pct / 100)
+        self.journal.record_alert(ts, row["symbol"], row["price"], r_dollars,
+                                  features_from_row(row, now),
+                                  setup=setup.get("setup"), observed=observed)
 
     async def _enter(self, pick, ts):
         entry = pick["price"]
@@ -286,6 +295,8 @@ class TradingBot:
                       if k != "weights"},
             "model_history": self.journal.model_history(10),
             "alerts": self.journal.recent_alerts(40),
+            "learning": self.journal.learning_progress(
+                self.cfg.bot_model_min_samples),
             "setup_stats": self.journal.setup_stats(),
             "orders": self.open_orders,
             "equity": self.equity_history,

@@ -210,3 +210,30 @@ def test_close_records_blended_r_from_sell_fills(tmp_path):
     trade = journal.recent_trades(1)[0]
     assert trade["exit_price"] == pytest.approx(5.45)       # weighted average
     assert trade["r_multiple"] == pytest.approx(3.0)        # (5.45-5.0)/0.15
+
+
+def test_near_misses_are_learned_from_but_never_traded(tmp_path):
+    """Near-miss rows grow the training set without loosening what it buys."""
+    bot, broker, journal = make_bot(tmp_path)
+
+    good = {"symbol": "GOOD", "price": 5.0, "rvol": 9.0, "day_pct": 22.0,
+            "float_shares": 8e6, "has_news": True, "dist_from_hod": 0.0,
+            "day_high": 5.0, "changes": {"5": 3.0}, "above_vwap": True,
+            "setup": {"setup": "micro_pullback", "stop": 4.85}}
+    near = dict(good, symbol="NEAR", failed=["rvol"])
+
+    class State:
+        latest = {}
+        def payload(self, now, require_news=None):
+            return {"hod": {"qualified": [good], "near": [near]}}
+
+    asyncio.run(bot.cycle(State(), et(10, 0)))
+
+    graded = {a["symbol"]: a["observed"] for a in journal.recent_alerts(10)}
+    assert graded == {"GOOD": 0, "NEAR": 1}          # both journalled
+    assert [t["symbol"] for t in journal.trades_today("2026-07-14")] == ["GOOD"]
+    assert "NEAR" not in bot.open_trades              # never traded
+
+    progress = journal.learning_progress(40)
+    assert progress["labeled"] == 0                   # not resolved yet
+    assert progress["needed"] == 40

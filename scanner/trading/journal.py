@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     features TEXT,
     mfe REAL DEFAULT 0, mae REAL DEFAULT 0,
     label INTEGER, resolved_ts INTEGER,
+    observed INTEGER DEFAULT 0,
     UNIQUE(day, symbol)
 );
 CREATE TABLE IF NOT EXISTS trades (
@@ -55,18 +56,27 @@ class Journal:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN setup TEXT")
             except sqlite3.OperationalError:
                 pass
+        try:
+            self.db.execute(
+                "ALTER TABLE alerts ADD COLUMN observed INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         self.db.commit()
 
     # ---------------------------------------------------------- alerts
 
-    def record_alert(self, ts, symbol, price, r_dollars, features, setup=None):
-        """One alert per symbol per trading day; returns id or None if dupe."""
+    def record_alert(self, ts, symbol, price, r_dollars, features, setup=None,
+                     observed=0):
+        """One alert per symbol per trading day; returns id or None if dupe.
+
+        `observed` marks a near-miss: graded for learning, never traded.
+        """
         try:
             cur = self.db.execute(
                 "INSERT INTO alerts (ts, day, symbol, price, r_dollars,"
-                " features, setup) VALUES (?,?,?,?,?,?,?)",
+                " features, setup, observed) VALUES (?,?,?,?,?,?,?,?)",
                 (ts, _day(ts), symbol, price, r_dollars, json.dumps(features),
-                 setup))
+                 setup, int(observed)))
             self.db.commit()
             return cur.lastrowid
         except sqlite3.IntegrityError:
@@ -107,7 +117,7 @@ class Journal:
     def recent_alerts(self, limit=40):
         """Newest alerts with their graded outcome, for the dashboard."""
         rows = self.db.execute(
-            "SELECT ts, day, symbol, price, setup, label, mfe, mae"
+            "SELECT ts, day, symbol, price, setup, label, mfe, mae, observed"
             " FROM alerts ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
 
@@ -119,6 +129,16 @@ class Journal:
             " SUM(CASE WHEN r_multiple > 0 THEN 1 ELSE 0 END) wins"
             " FROM trades WHERE exit_ts IS NOT NULL GROUP BY 1").fetchall()
         return [dict(r) for r in rows]
+
+    def learning_progress(self, min_samples):
+        """How close the model is to training, split by data source."""
+        row = self.db.execute(
+            "SELECT COUNT(*) n,"
+            " SUM(CASE WHEN observed=0 THEN 1 ELSE 0 END) tradable"
+            " FROM alerts WHERE label IS NOT NULL").fetchone()
+        return {"labeled": row["n"] or 0,
+                "tradable": row["tradable"] or 0,
+                "needed": min_samples}
 
     def labeled_dataset(self):
         rows = self.db.execute(

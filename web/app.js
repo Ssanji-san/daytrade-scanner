@@ -212,7 +212,10 @@ function renderBot(payload) {
 
   const stats = bot.stats || {};
   const model = bot.model || {};
+  const lp = bot.learning || {};
   const rows = [
+    ["Progress to trained model",
+     lp.labeled != null ? `${lp.labeled}/${lp.needed} (${lp.tradable || 0} tradable)` : "–"],
     ["Scoring", model.kind === "logreg" ? `trained model (v${(bot.model_history || []).length})` : "heuristic (collecting data)"],
     ["Training samples", model.samples ?? 0],
     ["Holdout accuracy", model.holdout_acc != null ? (model.holdout_acc * 100).toFixed(0) + "%" : "–"],
@@ -289,6 +292,7 @@ function renderBot(payload) {
         <td class="sym">${tvLink(a.symbol)}</td>
         <td class="num">$${fmtNum(a.price)}</td>
         <td>${a.setup ? a.setup.replace("_", " ") : "–"}</td>
+        <td>${a.observed ? '<span class="waiting">near miss</span>' : '<span class="setup-chip">tradable</span>'}</td>
         <td class="${cls}">${outcome}</td>
       </tr>`;
     })

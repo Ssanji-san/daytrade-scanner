@@ -85,6 +85,10 @@ class Config:
     bot_daily_loss_pct: float = 3.0      # kill switch: stop entering for the day
     bot_score_threshold: float = 0.55
     bot_model_min_samples: int = 40      # below this, heuristic scoring
+    learn_from_near_misses: bool = True  # grade near-miss rows too (never
+                                         # traded) so the model sees what
+                                         # separates a winner from an
+                                         # almost-winner
     bot_journal_path: str = "cache/journal.db"
     bot_forward_marks_min: tuple = (5, 15, 30)   # forward-return checkpoints
 
