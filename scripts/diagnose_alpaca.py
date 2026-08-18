@@ -145,6 +145,48 @@ async def live_entry(symbol, qty):
         await cleanup(session, "after")
 
 
+async def history():
+    """Where did the account balance actually come from? Fills vs deposits."""
+    async with aiohttp.ClientSession() as session:
+        print("=" * 62)
+        print("ACCOUNT ACTIVITIES (fills, deposits, transfers)")
+        print("=" * 62)
+        code, acts = await show(session, "GET", "/v2/account/activities",
+                                "activities")
+        if isinstance(acts, list):
+            print(f"    {len(acts)} activity record(s)")
+            fills = [a for a in acts if a.get("activity_type") == "FILL"]
+            other = [a for a in acts if a.get("activity_type") != "FILL"]
+            print(f"    FILL records: {len(fills)}   non-FILL: {len(other)}")
+            print("    --- non-FILL (deposits/resets/journals) ---")
+            for a in other[:20]:
+                print(f"      {a.get('date') or a.get('transaction_time')} "
+                      f"{a.get('activity_type')} net={a.get('net_amount')} "
+                      f"desc={a.get('description')}")
+            print("    --- fills (oldest 25) ---")
+            for a in sorted(fills, key=lambda x: x.get("transaction_time") or "")[:25]:
+                print(f"      {a.get('transaction_time')} {a.get('symbol')} "
+                      f"{a.get('side')} qty={a.get('qty')} @ {a.get('price')}")
+        print()
+        print("=" * 62)
+        print("EQUITY BY DAY (what the dashboard chart plots)")
+        print("=" * 62)
+        code, hist = await show(session, "GET",
+                                "/v2/account/portfolio/history"
+                                "?period=1M&timeframe=1D", "portfolio history")
+        if isinstance(hist, dict):
+            import datetime as _dt
+            ts = hist.get("timestamp") or []
+            eq = hist.get("equity") or []
+            pl = hist.get("profit_loss") or []
+            for i, t in enumerate(ts):
+                d = _dt.datetime.fromtimestamp(t, _dt.timezone.utc).strftime("%a %m-%d")
+                e = eq[i] if i < len(eq) else None
+                p = pl[i] if i < len(pl) else None
+                if e is not None:
+                    print(f"      {d}  equity=${e:>10,.2f}  day P/L={p}")
+
+
 async def cleanup(session, label):
     """Cancel every open order and close every position. Leaves a clean slate."""
     code, orders = await show(session, "GET", "/v2/orders",
@@ -234,6 +276,8 @@ if __name__ == "__main__":
                         help="symbols to inspect and test-order")
     parser.add_argument("--qty", type=int, default=1,
                         help="share quantity for the probe order")
+    parser.add_argument("--history", action="store_true",
+                        help="show account activities + equity by day")
     parser.add_argument("--live-entry", metavar="SYMBOL",
                         help="run the real Broker entry path on this symbol, "
                              "then cancel/close it again")
@@ -241,7 +285,9 @@ if __name__ == "__main__":
                         help="reproduce the bot's buy-then-stop entry and "
                              "test the atomic OTO alternative, then clean up")
     args = parser.parse_args()
-    if args.live_entry:
+    if args.history:
+        asyncio.run(history())
+    elif args.live_entry:
         asyncio.run(live_entry(args.live_entry, args.qty))
     elif args.sequence:
         asyncio.run(sequence(args.sequence, args.qty))

@@ -17,6 +17,10 @@ on:
         description: "Symbol to reproduce the buy-then-stop entry on (blank = plain probe)"
         required: false
         default: ""
+      history:
+        description: "Show account activities + equity by day (true/false)"
+        required: false
+        default: "false"
       live_entry:
         description: "Symbol to run the REAL bot entry path on, then undo (blank = skip)"
         required: false
@@ -41,7 +45,9 @@ jobs:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: |
-          if [ -n "${{ inputs.live_entry }}" ]; then
+          if [ "${{ inputs.history }}" = "true" ]; then
+            python scripts/diagnose_alpaca.py --history
+          elif [ -n "${{ inputs.live_entry }}" ]; then
             python scripts/diagnose_alpaca.py --qty ${{ inputs.qty }} --live-entry ${{ inputs.live_entry }}
           elif [ -n "${{ inputs.sequence }}" ]; then
             python scripts/diagnose_alpaca.py --qty ${{ inputs.qty }} --sequence ${{ inputs.sequence }}
