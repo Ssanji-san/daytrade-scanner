@@ -59,7 +59,7 @@
     </div>
     <div class="bot-hist">
       <h3>Trade history <span class="sub">recent closed trades</span></h3>
-      <table id="bot-history">
+      <table id="bot-history" class="collapsed">
         <thead><tr>
           <th>Date</th><th>Symbol</th><th>Setup</th><th class="num">Bought</th>
           <th class="num">Exit</th><th class="num">P&amp;L</th>
@@ -68,6 +68,7 @@
         <tbody></tbody>
       </table>
       <p id="bot-history-empty" class="empty hidden">No closed trades yet.</p>
+      <button id="bot-history-more" class="more-btn hidden"></button>
     </div>
     <div class="bot-hist">
       <h3>Open orders <span class="sub">live at the broker</span></h3>
@@ -82,7 +83,7 @@
     </div>
     <div class="bot-hist">
       <h3>Alerts <span class="sub">every setup it studied — this is the learning data</span></h3>
-      <table id="bot-alerts">
+      <table id="bot-alerts" class="collapsed">
         <thead><tr>
           <th>Date</th><th>Time</th><th>Symbol</th><th class="num">Price</th>
           <th>Setup</th><th>Source</th><th>Outcome</th>
@@ -90,6 +91,7 @@
         <tbody></tbody>
       </table>
       <p id="bot-alerts-empty" class="empty hidden">No alerts recorded yet.</p>
+      <button id="bot-alerts-more" class="more-btn hidden"></button>
     </div>
   </div>
 </section>

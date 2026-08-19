@@ -162,6 +162,14 @@ tr.hod-flash { animation: hodflash 1.6s ease-out; }
   background: #123322; color: var(--green); border: 1px solid #1f4d2e;
 }
 .waiting { color: var(--muted); font-size: 11px; }
+/* Long tables show the newest 10; the button reveals the rest. */
+table.collapsed tbody tr:nth-child(n+11) { display: none; }
+.more-btn {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--muted); border-radius: 6px; padding: 4px 10px;
+  font: inherit; font-size: 12px; cursor: pointer; margin-top: 8px;
+}
+.more-btn:hover { color: var(--accent); border-color: var(--accent); }
 .cat-chip {
   font-size: 10px; padding: 1px 6px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--panel2);

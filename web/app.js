@@ -12,6 +12,26 @@ let prevGainers = new Set();
 let prevHod = new Set();
 let prevHighs = {};
 
+// Long tables collapse to the newest ROW_LIMIT rows behind a toggle.
+const ROW_LIMIT = 10;
+const rowCounts = {};
+
+function applyCollapse(id, count) {
+  const table = $("#" + id);
+  const btn = $("#" + id + "-more");
+  if (!table || !btn) return;
+  rowCounts[id] = count;
+  const extra = count - ROW_LIMIT;
+  if (extra <= 0) {
+    btn.classList.add("hidden");
+    return;
+  }
+  btn.classList.remove("hidden");
+  btn.textContent = table.classList.contains("collapsed")
+    ? `See ${extra} more ▾`
+    : "Show less ▴";
+}
+
 // ---------- formatting ----------
 const fmtNum = (v, digits = 2) =>
   v == null ? "–" : v.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -265,6 +285,7 @@ function renderBot(payload) {
     })
     .join("");
   $("#bot-history-empty").classList.toggle("hidden", history.length > 0);
+  applyCollapse("bot-history", history.length);
 
   const orders = bot.orders || [];
   $("#bot-orders tbody").innerHTML = orders
@@ -298,6 +319,7 @@ function renderBot(payload) {
     })
     .join("");
   $("#bot-alerts-empty").classList.toggle("hidden", alerts.length > 0);
+  applyCollapse("bot-alerts", alerts.length);
 }
 
 function renderStatus(payload) {
@@ -355,6 +377,15 @@ $("#window-toggle").addEventListener("click", (ev) => {
   $("#gainer-window-label").textContent = `last ${windowMin} min`;
   prevGainers = new Set();
   tick();
+});
+
+["bot-history", "bot-alerts"].forEach((id) => {
+  const btn = $("#" + id + "-more");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    $("#" + id).classList.toggle("collapsed");
+    applyCollapse(id, rowCounts[id] || 0);
+  });
 });
 
 setInterval(tick, 1000);
