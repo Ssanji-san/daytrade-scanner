@@ -166,8 +166,9 @@ tr.hod-flash { animation: hodflash 1.6s ease-out; }
 table.collapsed tbody tr:nth-child(n+11) { display: none; }
 .more-btn {
   background: transparent; border: 1px solid var(--border);
-  color: var(--muted); border-radius: 6px; padding: 4px 10px;
-  font: inherit; font-size: 12px; cursor: pointer; margin-top: 8px;
+  color: var(--muted); border-radius: 6px; padding: 4px 14px;
+  font: inherit; font-size: 12px; cursor: pointer;
+  display: block; margin: 8px auto 0;
 }
 .more-btn:hover { color: var(--accent); border-color: var(--accent); }
 .cat-chip {
