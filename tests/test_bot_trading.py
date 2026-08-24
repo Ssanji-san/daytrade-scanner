@@ -237,3 +237,20 @@ def test_near_misses_are_learned_from_but_never_traded(tmp_path):
     progress = journal.learning_progress(40)
     assert progress["labeled"] == 0                   # not resolved yet
     assert progress["needed"] == 40
+
+
+def test_journal_failure_after_entry_unwinds_the_order(tmp_path):
+    """A live order the journal does not know about is untracked risk."""
+    bot, broker, journal = make_bot(tmp_path)
+
+    def boom(*a, **k):
+        raise RuntimeError("attempt to write a readonly database")
+    journal.record_trade_open = boom
+    broker._positions = [{"symbol": "HODX", "current_price": 5.0}]
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(bot._enter(a_pick(), ts=1_700_000_000))
+
+    assert "HODX" not in bot.open_trades
+    assert broker.cancelled                       # entry order pulled
+    assert broker._positions == []                # position closed

@@ -46,22 +46,57 @@ def _day(ts):
 
 
 class Journal:
+    # SQLite reports a connection whose file was replaced as
+    # "attempt to write a readonly database" (SQLITE_READONLY_DBMOVED).
+    # The cloud workflow commits cache/journal.db every 10 minutes while
+    # the bot is running, and git rewrites the file underneath us, so the
+    # connection has to be able to heal itself or the bot goes deaf for
+    # the rest of the session.
+    RECOVERABLE = ("readonly", "moved", "disk i/o", "closed database",
+                   "database is locked", "no such table")
+
     def __init__(self, path):
-        pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path)
-        self.db.row_factory = sqlite3.Row
-        self.db.executescript(SCHEMA)
+        self.path = str(path)
+        pathlib.Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self._connect()
+
+    def _connect(self):
+        self._db = sqlite3.connect(self.path)
+        self._db.row_factory = sqlite3.Row
+        self._db.executescript(SCHEMA)
         for table in ("alerts", "trades"):      # migrate older journals
             try:
-                self.db.execute(f"ALTER TABLE {table} ADD COLUMN setup TEXT")
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN setup TEXT")
             except sqlite3.OperationalError:
                 pass
         try:
-            self.db.execute(
+            self._db.execute(
                 "ALTER TABLE alerts ADD COLUMN observed INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
-        self.db.commit()
+        self._db.commit()
+
+    def _recoverable(self, exc):
+        return any(hint in str(exc).lower() for hint in self.RECOVERABLE)
+
+    def _execute(self, sql, params=()):
+        """Run a statement, reopening once if the file was swapped."""
+        try:
+            return self._db.execute(sql, params)
+        except (sqlite3.OperationalError, sqlite3.ProgrammingError) as exc:
+            if not self._recoverable(exc):
+                raise
+            self._connect()
+            return self._db.execute(sql, params)
+
+    def _commit(self):
+        try:
+            return self._db.commit()
+        except (sqlite3.OperationalError, sqlite3.ProgrammingError) as exc:
+            if not self._recoverable(exc):
+                raise
+            self._connect()
+            return self._db.commit()
 
     # ---------------------------------------------------------- alerts
 
@@ -72,12 +107,12 @@ class Journal:
         `observed` marks a near-miss: graded for learning, never traded.
         """
         try:
-            cur = self.db.execute(
+            cur = self._execute(
                 "INSERT INTO alerts (ts, day, symbol, price, r_dollars,"
                 " features, setup, observed) VALUES (?,?,?,?,?,?,?,?)",
                 (ts, _day(ts), symbol, price, r_dollars, json.dumps(features),
                  setup, int(observed)))
-            self.db.commit()
+            self._commit()
             return cur.lastrowid
         except sqlite3.IntegrityError:
             return None
@@ -89,7 +124,7 @@ class Journal:
         prices alone silently ignores the wick that would have stopped the
         trade out, which teaches the model a rosier world than it trades in.
         """
-        row = self.db.execute("SELECT * FROM alerts WHERE id=?",
+        row = self._execute("SELECT * FROM alerts WHERE id=?",
                               (alert_id,)).fetchone()
         if row is None or row["label"] is not None:
             return
@@ -104,26 +139,26 @@ class Journal:
             label = 1
         elif now_ts - row["ts"] > ALERT_WINDOW_SECONDS:
             label = 0
-        self.db.execute(
+        self._execute(
             "UPDATE alerts SET mfe=?, mae=?, label=?, resolved_ts=? WHERE id=?",
             (mfe, mae, label, now_ts if label is not None else None, alert_id))
-        self.db.commit()
+        self._commit()
 
     def open_alerts(self):
-        rows = self.db.execute(
+        rows = self._execute(
             "SELECT id, symbol FROM alerts WHERE label IS NULL").fetchall()
         return [(r["id"], r["symbol"]) for r in rows]
 
     def recent_alerts(self, limit=40):
         """Newest alerts with their graded outcome, for the dashboard."""
-        rows = self.db.execute(
+        rows = self._execute(
             "SELECT ts, day, symbol, price, setup, label, mfe, mae, observed"
             " FROM alerts ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
 
     def setup_stats(self):
         """Win rate and expectancy per setup type - which patterns work."""
-        rows = self.db.execute(
+        rows = self._execute(
             "SELECT COALESCE(setup,'unknown') AS setup, COUNT(*) n,"
             " AVG(r_multiple) exp_r,"
             " SUM(CASE WHEN r_multiple > 0 THEN 1 ELSE 0 END) wins"
@@ -132,7 +167,7 @@ class Journal:
 
     def learning_progress(self, min_samples):
         """How close the model is to training, split by data source."""
-        row = self.db.execute(
+        row = self._execute(
             "SELECT COUNT(*) n,"
             " SUM(CASE WHEN observed=0 THEN 1 ELSE 0 END) tradable"
             " FROM alerts WHERE label IS NOT NULL").fetchone()
@@ -141,7 +176,7 @@ class Journal:
                 "needed": min_samples}
 
     def labeled_dataset(self):
-        rows = self.db.execute(
+        rows = self._execute(
             "SELECT features, label FROM alerts WHERE label IS NOT NULL"
             " ORDER BY ts").fetchall()
         return [(json.loads(r["features"]), r["label"]) for r in rows]
@@ -150,44 +185,44 @@ class Journal:
 
     def record_trade_open(self, ts, symbol, qty, entry, stop, targets, features,
                           setup=None):
-        cur = self.db.execute(
+        cur = self._execute(
             "INSERT INTO trades (ts, day, symbol, qty, entry, stop, targets,"
             " features, setup) VALUES (?,?,?,?,?,?,?,?,?)",
             (ts, _day(ts), symbol, qty, entry, stop, json.dumps(targets),
              json.dumps(features), setup))
-        self.db.commit()
+        self._commit()
         return cur.lastrowid
 
     def record_trade_close(self, trade_id, ts, exit_price, exit_reason):
-        row = self.db.execute("SELECT * FROM trades WHERE id=?",
+        row = self._execute("SELECT * FROM trades WHERE id=?",
                               (trade_id,)).fetchone()
         pnl = (exit_price - row["entry"]) * row["qty"]
         risk = row["entry"] - row["stop"]
         r_multiple = (exit_price - row["entry"]) / risk if risk else 0.0
-        self.db.execute(
+        self._execute(
             "UPDATE trades SET exit_ts=?, exit_price=?, exit_reason=?,"
             " pnl=?, r_multiple=? WHERE id=?",
             (ts, exit_price, exit_reason, pnl, r_multiple, trade_id))
-        self.db.commit()
+        self._commit()
 
     def trades_today(self, day):
-        rows = self.db.execute(
+        rows = self._execute(
             "SELECT * FROM trades WHERE day=? ORDER BY ts", (day,)).fetchall()
         return [dict(r) for r in rows]
 
     def day_pnl(self, day):
-        row = self.db.execute(
+        row = self._execute(
             "SELECT COALESCE(SUM(pnl), 0) AS pnl FROM trades WHERE day=?",
             (day,)).fetchone()
         return row["pnl"]
 
     def open_trade_rows(self):
-        rows = self.db.execute(
+        rows = self._execute(
             "SELECT * FROM trades WHERE exit_ts IS NULL ORDER BY ts").fetchall()
         return [dict(r) for r in rows]
 
     def recent_trades(self, limit=50):
-        rows = self.db.execute(
+        rows = self._execute(
             "SELECT * FROM trades WHERE exit_ts IS NOT NULL"
             " ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
@@ -204,13 +239,13 @@ class Journal:
     # ---------------------------------------------------------- models
 
     def record_model(self, ts, samples, holdout_acc, weights):
-        self.db.execute(
+        self._execute(
             "INSERT INTO models (ts, samples, holdout_acc, weights)"
             " VALUES (?,?,?,?)", (ts, samples, holdout_acc, json.dumps(weights)))
-        self.db.commit()
+        self._commit()
 
     def latest_model(self):
-        row = self.db.execute(
+        row = self._execute(
             "SELECT * FROM models ORDER BY ts DESC LIMIT 1").fetchone()
         if row is None:
             return None
@@ -219,7 +254,7 @@ class Journal:
         return out
 
     def model_history(self, limit=20):
-        rows = self.db.execute(
+        rows = self._execute(
             "SELECT ts, samples, holdout_acc FROM models"
             " ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]

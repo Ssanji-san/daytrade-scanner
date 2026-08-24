@@ -1,4 +1,5 @@
 import datetime as dt
+import sqlite3
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -145,3 +146,25 @@ def test_setup_is_stored_and_reported(tmp_path):
     journal = Journal(str(tmp_path / "j.db"))
     journal.record_alert(1_700_000_000, "AAA", 5.0, 0.15, {}, setup="flat_top")
     assert journal.recent_alerts(5)[0]["setup"] == "flat_top"
+
+
+def test_survives_the_database_file_being_swapped_underneath_it(tmp_path):
+    """The cloud workflow commits cache/journal.db mid-session.
+
+    git rewrites the file while the bot holds it open and SQLite then
+    reports "attempt to write a readonly database", which used to make the
+    bot stop journalling for the rest of the day.
+    """
+    journal = Journal(str(tmp_path / "j.db"))
+    journal.record_alert(1_700_000_000, "AAA", 5.0, 0.15, {"rvol": 8.0})
+
+    journal._db.close()          # what a swapped file looks like to SQLite
+
+    journal.record_alert(1_700_000_100, "BBB", 6.0, 0.18, {"rvol": 9.0})
+    assert {a["symbol"] for a in journal.recent_alerts(10)} == {"AAA", "BBB"}
+
+
+def test_a_real_error_is_not_swallowed_by_the_retry(tmp_path):
+    journal = Journal(str(tmp_path / "j.db"))
+    with pytest.raises(sqlite3.OperationalError):
+        journal._execute("SELECT * FROM does_not_exist_at_all")

@@ -188,10 +188,23 @@ class TradingBot:
         parent = await self.broker.submit_oto_stop(
             pick["symbol"], total_qty, levels["stop"], limit_price=limit)
 
-        trade_id = self.journal.record_trade_open(
-            ts, pick["symbol"], qty=total_qty, entry=entry,
-            stop=levels["stop"], targets=[levels["scale_out"]],
-            features=pick["features"], setup=pick.get("setup"))
+        try:
+            trade_id = self.journal.record_trade_open(
+                ts, pick["symbol"], qty=total_qty, entry=entry,
+                stop=levels["stop"], targets=[levels["scale_out"]],
+                features=pick["features"], setup=pick.get("setup"))
+        except Exception:
+            # The order is already live. An untracked position would miss
+            # its scale-out, its time stop and the daily cap, so unwind it
+            # rather than leave risk the bot cannot see.
+            print(f"[bot] JOURNAL FAILED after entry on {pick['symbol']} - "
+                  "unwinding the order")
+            try:
+                await self.broker.cancel_orders_for(pick["symbol"])
+                await self.broker.close_position(pick["symbol"])
+            except Exception as unwind:
+                print(f"[bot] UNWIND FAILED {pick['symbol']}: {unwind}")
+            raise
         self.open_trades[pick["symbol"]] = {
             "trade_id": trade_id, "parent_order_id": parent["id"],
             "trailing_order_id": None, "qty": total_qty,
