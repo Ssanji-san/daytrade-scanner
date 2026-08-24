@@ -26,7 +26,12 @@ class Config:
     hod_max_price: float = 20.0
     hod_max_float: float = 20_000_000   # shares (approximated by shares outstanding)
     hod_min_pct_up: float = 10.0        # % up vs previous close
-    hod_min_volume: int = 100_000       # cumulative shares today (tradability floor)
+    # Measured on Alpaca's free IEX feed, which carries only a slice of
+    # consolidated volume - 100k IEX shares is far stricter than Ross's
+    # 100k traded and almost never coexists with float < 20M, so the two
+    # gates cancelled and nothing qualified. rvol >= 5x already proves
+    # unusual activity; this stays a plain liquidity floor.
+    hod_min_volume: int = 25_000        # cumulative IEX shares today
     hod_min_rvol: float = 5.0           # relative volume vs 30-day average
     hod_require_news: bool = False      # UI toggle; badge always shown
     # "Near the high", not "at the high". The entry is the pullback, and a

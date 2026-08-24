@@ -28,7 +28,7 @@ def test_price_band_is_a_hard_gate():
     ({"rvol": 2.0}, "rvol"),
     ({"float_shares": 90_000_000}, "float"),
     ({"day_pct": 4.0}, "pct_up"),
-    ({"day_volume": 40_000}, "volume"),
+    ({"day_volume": 10_000}, "volume"),
     ({"price": 5.00, "day_high": 5.55}, "hod"),  # ~10% off the high
 ])
 def test_single_failure_lands_in_near_list(override, expected_fail):
