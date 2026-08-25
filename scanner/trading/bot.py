@@ -50,7 +50,7 @@ def features_from_row(row, now):
 
 
 def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
-                   day_pnl, now, cfg: Config):
+                   day_pnl, now, cfg: Config, score_threshold=None):
     """Best-scored qualifying rows first, never exceeding the daily cap."""
     scored = []
     for row in qualified_rows:
@@ -68,7 +68,8 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
         count = trades_today + len(picks)
         take, _ = should_enter(row["symbol"], price=row["price"], score=score,
                                trades_today=count, traded_symbols=taken,
-                               day_pnl=day_pnl, now=now, cfg=cfg)
+                               day_pnl=day_pnl, now=now, cfg=cfg,
+                               score_threshold=score_threshold)
         if not take:
             continue
         setup = row["setup"]
@@ -109,7 +110,11 @@ class TradingBot:
 
     def _retrain(self):
         dataset = self.journal.labeled_dataset()
-        scorer, meta = train(dataset, min_samples=self.cfg.bot_model_min_samples)
+        scorer, meta = train(dataset, min_samples=self.cfg.bot_model_min_samples,
+                             percentile=self.cfg.bot_score_percentile)
+        # A trained model sets its own bar; the fixed one only fits the
+        # heuristic's score range.
+        self.score_threshold = meta.get("threshold") or self.cfg.bot_score_threshold
         if meta["kind"] == "logreg":
             last = self.journal.latest_model()
             if not last or last["samples"] != meta["samples"]:
@@ -156,7 +161,8 @@ class TradingBot:
             trades_today=len(trades),
             traded_symbols={t["symbol"] for t in trades} | self.rejected,
             day_pnl=self.journal.day_pnl(day),
-            now=now, cfg=self.cfg)
+            now=now, cfg=self.cfg,
+            score_threshold=self.score_threshold)
         for pick in picks:
             try:
                 await self._enter(pick, ts)
@@ -306,6 +312,7 @@ class TradingBot:
             "stats": self.journal.rolling_stats(20),
             "model": {k: v for k, v in self.model_meta.items()
                       if k != "weights"},
+            "score_threshold": round(self.score_threshold, 3),
             "model_history": self.journal.model_history(10),
             "alerts": self.journal.recent_alerts(40),
             "learning": self.journal.learning_progress(

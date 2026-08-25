@@ -23,9 +23,15 @@ def in_window(now, cfg: Config):
 
 
 def should_enter(symbol="", *, price, score, trades_today, traded_symbols,
-                 day_pnl, now, cfg: Config):
-    """Returns (take, rejection_reasons). Empty reasons == take the trade."""
+                 day_pnl, now, cfg: Config, score_threshold=None):
+    """Returns (take, rejection_reasons). Empty reasons == take the trade.
+
+    `score_threshold` overrides the config bar once a trained model sets
+    its own; see Config.bot_score_percentile.
+    """
     reasons = []
+    threshold = (cfg.bot_score_threshold if score_threshold is None
+                 else score_threshold)
     if not (cfg.bot_min_price <= price <= cfg.bot_max_price):
         reasons.append("price")
     if not in_window(now, cfg):
@@ -34,7 +40,7 @@ def should_enter(symbol="", *, price, score, trades_today, traded_symbols,
         reasons.append("daily_cap")
     if symbol in traded_symbols:
         reasons.append("already_traded")
-    if score < cfg.bot_score_threshold:
+    if score < threshold:
         reasons.append("score")
     if day_pnl <= -cfg.bot_bankroll * cfg.bot_daily_loss_pct / 100:
         reasons.append("kill_switch")

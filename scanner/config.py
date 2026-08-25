@@ -92,7 +92,14 @@ class Config:
     bot_window_close: str = "11:30"
     bot_flatten_time: str = "15:50"      # ET; close everything before the bell
     bot_daily_loss_pct: float = 3.0      # kill switch: stop entering for the day
+    # Fixed bar for the hand-written heuristic only. A TRAINED model emits
+    # a calibrated probability, and with roughly a quarter of setups
+    # reaching +2R its scores sit far below 0.55 - keeping that bar made
+    # the smarter model stop trading entirely. Once trained, the bar comes
+    # from the model's own distribution instead (top quartile of what it
+    # has seen), so it re-calibrates as the model improves.
     bot_score_threshold: float = 0.55
+    bot_score_percentile: float = 75.0
     bot_model_min_samples: int = 40      # below this, heuristic scoring
     learn_from_near_misses: bool = True  # grade near-miss rows too (never
                                          # traded) so the model sees what

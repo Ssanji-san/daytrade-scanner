@@ -98,3 +98,14 @@ class TestWeightedExit:
 
     def test_none_when_no_shares(self):
         assert weighted_exit([]) is None
+
+
+class TestScoreThresholdOverride:
+    def test_explicit_threshold_wins_over_config(self):
+        take, reasons = should_enter(**ok_kwargs(score=0.30),
+                                     score_threshold=0.25)
+        assert take and reasons == []
+
+    def test_config_bar_applies_when_no_override(self):
+        take, reasons = should_enter(**ok_kwargs(score=0.30))
+        assert not take and "score" in reasons

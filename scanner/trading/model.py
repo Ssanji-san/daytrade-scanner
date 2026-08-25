@@ -69,7 +69,19 @@ def _standardize(rows):
     return means, stds
 
 
-def train(dataset, min_samples=40, seed=0, epochs=400, lr=0.1):
+def score_quantile(scorer, dataset, percentile):
+    """The score at `percentile` across the dataset - the model's own bar."""
+    scores = sorted(scorer.score(features) for features, _ in dataset)
+    if not scores:
+        return None
+    index = min(len(scores) - 1, int(len(scores) * percentile / 100.0))
+    # Floor, never round: rounding up lands the bar above the very score
+    # it was meant to admit, which silently rejects every candidate.
+    return math.floor(scores[index] * 10_000) / 10_000
+
+
+def train(dataset, min_samples=40, seed=0, epochs=400, lr=0.1,
+          percentile=75.0):
     """Returns (scorer, meta). meta['kind'] says which path was taken."""
     if len(dataset) < min_samples:
         return HeuristicScorer(), {"kind": "heuristic", "samples": len(dataset)}
@@ -104,5 +116,6 @@ def train(dataset, min_samples=40, seed=0, epochs=400, lr=0.1):
     correct = sum(1 for f, y in holdout if (scorer.score(f) >= 0.5) == bool(y))
     meta = {"kind": "logreg", "samples": len(dataset),
             "holdout_acc": correct / len(holdout),
+            "threshold": score_quantile(scorer, dataset, percentile),
             "weights": scorer.to_weights()}
     return scorer, meta
