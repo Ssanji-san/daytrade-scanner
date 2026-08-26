@@ -26,12 +26,15 @@ class Config:
     hod_max_price: float = 20.0
     hod_max_float: float = 20_000_000   # shares (approximated by shares outstanding)
     hod_min_pct_up: float = 10.0        # % up vs previous close
-    # Measured on Alpaca's free IEX feed, which carries only a slice of
-    # consolidated volume - 100k IEX shares is far stricter than Ross's
-    # 100k traded and almost never coexists with float < 20M, so the two
-    # gates cancelled and nothing qualified. rvol >= 5x already proves
-    # unusual activity; this stays a plain liquidity floor.
-    hod_min_volume: int = 25_000        # cumulative IEX shares today
+    # Disabled (0 = no check). An absolute share count measures the wrong
+    # thing here: Ross's "100k traded" assumes the consolidated tape, but
+    # Alpaca's free feed only shows IEX's slice of it, so the number is a
+    # fraction of what the stock really traded and varies with how much of
+    # the flow happened to route to IEX. Over six sessions it was the sole
+    # blocker on 19 setups (4 of which went on to hit +2R) while only two
+    # rows qualified in total. rvol carries the liquidity test instead - it
+    # compares IEX to IEX, so the feed's share cancels out of the ratio.
+    hod_min_volume: int = 0            # cumulative IEX shares today
     hod_min_rvol: float = 5.0           # relative volume vs 30-day average
     hod_require_news: bool = False      # UI toggle; badge always shown
     # "Near the high", not "at the high". The entry is the pullback, and a

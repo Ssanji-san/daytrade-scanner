@@ -28,7 +28,6 @@ def test_price_band_is_a_hard_gate():
     ({"rvol": 2.0}, "rvol"),
     ({"float_shares": 90_000_000}, "float"),
     ({"day_pct": 4.0}, "pct_up"),
-    ({"day_volume": 10_000}, "volume"),
     ({"price": 5.00, "day_high": 5.55}, "hod"),  # ~10% off the high
 ])
 def test_single_failure_lands_in_near_list(override, expected_fail):
@@ -93,3 +92,17 @@ def test_a_pullback_entry_is_tradable_not_stranded_in_the_near_list():
     assert [r["symbol"] for r in qualified] == ["TEST"]
     assert near == []
     assert qualified[0]["dist_from_hod"] == pytest.approx(2.18, abs=0.05)
+
+
+def test_volume_floor_is_off_by_default_and_applies_when_set():
+    """rvol carries the liquidity test; the absolute floor is opt-in.
+
+    An absolute share count on the IEX feed measures a fraction of real
+    volume, so it is disabled (0) unless deliberately configured.
+    """
+    thin = make_state(day_volume=1_000)
+    assert len(scan([thin], CFG)[0]) == 1          # no volume gate by default
+
+    strict = Config(hod_min_volume=25_000)
+    qualified, near = scan([thin], strict)
+    assert qualified == [] and near[0]["failed"] == ["volume"]

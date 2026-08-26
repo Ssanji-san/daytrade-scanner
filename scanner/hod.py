@@ -15,12 +15,14 @@ def _criteria(state, cfg: Config):
     dist = 100.0 * (high - price) / high if high else None
     checks = [
         ("pct_up", (state["day_pct"] or 0) >= cfg.hod_min_pct_up),
-        ("volume", (state["day_volume"] or 0) >= cfg.hod_min_volume),
         ("rvol", (state["rvol"] or 0) >= cfg.hod_min_rvol),
         ("float", state["float_shares"] is not None
                   and state["float_shares"] < cfg.hod_max_float),
         ("hod", dist is not None and dist <= cfg.hod_near_high_pct),
     ]
+    if cfg.hod_min_volume:
+        checks.insert(1, ("volume",
+                          (state["day_volume"] or 0) >= cfg.hod_min_volume))
     if cfg.require_vwap:
         # Long only above VWAP - below it the move is a fade, not a trend.
         checks.append(("vwap", bool(state.get("above_vwap"))))
