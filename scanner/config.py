@@ -131,6 +131,11 @@ class Config:
     # Simulated results live in their own journal. Mixing them into the live
     # one would let a biased replay quietly poison what the bot has learned
     # from real sessions, with no way to tell the two apart afterwards.
+    # The live near-list keeps rows failing one criterion, which is right
+    # for a dashboard. A sweep needs the ones failing two or three as well:
+    # otherwise it can never see what loosening a pair of gates would admit,
+    # and would only ever explore what the current settings already allow.
+    backtest_near_failures: int = 3
     backtest_journal_path: str = "cache/backtest.db"
     backtest_cache_dir: str = "cache/backtest"
     bot_forward_marks_min: tuple = (5, 15, 30)   # forward-return checkpoints

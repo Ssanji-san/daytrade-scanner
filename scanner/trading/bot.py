@@ -36,6 +36,7 @@ def features_from_row(row, now):
         # Recorded for post-hoc analysis only - FEATURE_ORDER decides what
         # the model actually sees, and this one is feed-distorted.
         "day_volume": row.get("day_volume") or 0.0,
+        "avg_volume": row.get("avg_volume") or 0.0,
         "day_pct": row.get("day_pct") or 0.0,
         "float_shares": row.get("float_shares") or 0.0,
         "has_news": 1.0 if row.get("has_news") else 0.0,

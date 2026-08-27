@@ -231,3 +231,50 @@ class TestSessionWindow:
     def test_no_config_means_no_filtering(self):
         rows = {"AAA": [bar("2026-08-12T19:00:00Z", 1, 1, 1, 1)]}
         assert len(replay.bars_by_minute(rows)) == 1
+
+
+class TestSweepGates:
+    """The sweep decides which rows a threshold set admits."""
+
+    def _features(self, **over):
+        base = {"rvol": 8.0, "float_shares": 8e6, "day_pct": 25.0,
+                "dist_from_hod": 0.5, "catalyst_score": 0.8, "above_vwap": 1.0}
+        base.update(over)
+        return base
+
+    def _combo(self, **over):
+        base = {"rvol": 5.0, "float_max": 20e6, "pct_up": 10.0,
+                "dist_hod": 4.0, "catalyst": 0.3, "vwap": True}
+        base.update(over)
+        return base
+
+    def test_a_clean_row_passes(self):
+        from scripts import sweep
+        assert sweep.passes(self._features(), self._combo())
+
+    def test_each_gate_can_reject_on_its_own(self):
+        from scripts import sweep
+        for field, value in [("rvol", 1.0), ("float_shares", 500e6),
+                             ("day_pct", 2.0), ("dist_from_hod", 20.0),
+                             ("catalyst_score", 0.0), ("above_vwap", 0.0)]:
+            assert not sweep.passes(self._features(**{field: value}),
+                                    self._combo()), field
+
+    def test_loosening_a_gate_admits_what_it_rejected(self):
+        from scripts import sweep
+        thin = self._features(rvol=2.5)
+        assert not sweep.passes(thin, self._combo())
+        assert sweep.passes(thin, self._combo(rvol=2.0))
+
+    def test_unknown_float_is_never_admitted(self):
+        """No float data is not the same as a small float."""
+        from scripts import sweep
+        assert not sweep.passes(self._features(float_shares=0), self._combo())
+
+    def test_win_rate_is_measured_only_over_admitted_rows(self):
+        from scripts import sweep
+        rows = [("2026-08-01", self._features(), 1),
+                ("2026-08-01", self._features(), 0),
+                ("2026-08-01", self._features(rvol=1.0), 1)]   # rejected
+        n, rate = sweep.score(rows, self._combo())
+        assert (n, rate) == (2, 0.5)

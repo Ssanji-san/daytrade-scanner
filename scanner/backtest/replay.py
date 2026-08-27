@@ -12,6 +12,7 @@ minutes are replayed in order and cumulative volume/day-high are accumulated
 as they happen rather than read off the finished session.
 """
 import datetime as dt
+from dataclasses import replace
 
 from ..config import Config
 from ..history import ET
@@ -93,7 +94,10 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
     must be computed from data strictly before `day` - see
     `fetch.prior_avg_volume`.
     """
-    state = MarketState(cfg)
+    # Capture wider than the live near-list so a sweep has something to
+    # explore; the live gate itself is untouched.
+    state = MarketState(replace(
+        cfg, near_filter_max_failures=cfg.backtest_near_failures))
     cursor = SessionCursor()
     timeline = bars_by_minute(minute_bars, cfg)
     last_bar = {}
