@@ -7,6 +7,7 @@ def make_state(**overrides):
         "symbol": "TEST",
         "price": 5.50,
         "day_pct": 25.0,          # % up vs previous close
+        "open_pct": 12.0,         # % gained since the 9:30 bell
         "day_volume": 2_000_000,
         "day_high": 5.55,
         "rvol": 8.0,

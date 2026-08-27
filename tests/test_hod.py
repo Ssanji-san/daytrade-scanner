@@ -123,3 +123,21 @@ def test_an_instrument_that_barely_trades_is_rejected():
 
 def test_a_real_small_cap_still_passes():
     assert len(scan([make_state(avg_volume=400_000)], CFG)[0]) == 1
+
+
+def test_opening_drive_gate_is_switchable():
+    """0 disables it, the way hod_min_volume is disabled."""
+    from dataclasses import replace
+    drifted = make_state(open_pct=1.0)          # barely moved since the bell
+    q, near = scan([drifted], CFG)
+    assert q == [] and "open_drive" in near[0]["failed"]
+
+    off = replace(CFG, hod_min_open_pct=0.0)
+    q, _ = scan([drifted], off)
+    assert [r["symbol"] for r in q] == ["TEST"]
+
+
+def test_a_missing_open_counts_as_a_failure():
+    """Unknown is not a pass - the same rule the float check follows."""
+    q, near = scan([make_state(open_pct=None)], CFG)
+    assert q == [] and "open_drive" in near[0]["failed"]

@@ -22,13 +22,13 @@ class Config:
     gainer_rows: int = 20
 
     # --- scanner 2: HOD momentum (Ross Cameron's five criteria) ---
-    hod_min_price: float = 1.0
+    hod_min_price: float = 2.0          # $2-$20, matching the bot's band
     hod_max_price: float = 20.0
     # 50M, not Ross's 20M. Across 61 replayed sessions of the whole market
     # only 5 rows cleared all the gates at once, which is not enough trades
     # to learn from. These four numbers are loosened together and measured
     # by scripts/sweep.py; they are a starting point, not a claim.
-    hod_max_float: float = 50_000_000   # shares (approximated by shares outstanding)
+    hod_max_float: float = 20_000_000   # shares (approximated by shares outstanding)
     hod_min_pct_up: float = 10.0        # % up vs previous close
     # Disabled (0 = no check). An absolute share count measures the wrong
     # thing here: Ross's "100k traded" assumes the consolidated tape, but
@@ -47,6 +47,10 @@ class Config:
     # is the honest way to say "there is someone on the other side".
     hod_min_avg_volume: int = 10_000    # 30-day average IEX shares
     hod_min_rvol: float = 3.0           # relative volume vs 30-day average
+    # % gained since the 9:30 bell, not since yesterday's close. 0 disables.
+    # This is the opening drive: the stock being bought right now, rather
+    # than one that gapped overnight and has drifted since.
+    hod_min_open_pct: float = 5.0
     hod_require_news: bool = False      # UI toggle; badge always shown
     # "Near the high", not "at the high". The entry is the pullback, and a
     # healthy flag pulls back 2-5% - a 1% gate rejected most of them and
@@ -129,7 +133,10 @@ class Config:
     # 09:30, not 09:35: the first five minutes are often the best move of the
     # day on a gapper, and the opening-range break lives in exactly that slot.
     bot_window_open: str = "09:30"       # ET; no entries before/after the window
-    bot_window_close: str = "11:30"
+    # The first 30 minutes. That is where the opening drive happens and
+    # where these setups actually appear; entries after it were a different
+    # market from the one this is selected for.
+    bot_window_close: str = "10:00"
     bot_flatten_time: str = "15:50"      # ET; close everything before the bell
     # 0 = disabled. The day now ends on a loss COUNT
     # (bot_max_losses_per_day), not a dollar figure. Worth knowing: a count

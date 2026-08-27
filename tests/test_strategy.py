@@ -25,12 +25,13 @@ def ok_kwargs(**overrides):
 
 class TestWindow:
     def test_window_edges(self):
-        # Opens on the bell: the first five minutes are often the best move
-        # of the day on a gapper, and the range break lives in that slot.
+        # Opens on the bell and shuts after thirty minutes: the opening
+        # drive is what this strategy selects for, and entries after it are
+        # a different market.
         assert not in_window(et(9, 29), CFG)
         assert in_window(et(9, 30), CFG)
-        assert in_window(et(11, 30), CFG)
-        assert not in_window(et(11, 31), CFG)
+        assert in_window(et(10, 0), CFG)
+        assert not in_window(et(10, 1), CFG)
 
     def test_handles_other_timezones(self):
         utc_10et = et(10, 0).astimezone(dt.timezone.utc)

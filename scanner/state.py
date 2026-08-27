@@ -41,6 +41,7 @@ class MarketState:
         # deque is maxlen=180 and the opening bars roll off it.
         self._gap_pct = {}       # symbol -> % gap vs prev close at 9:30
         self._opening_range = {}    # symbol -> {"high", "low"} of first N min
+        self._open_price = {}    # symbol -> price at the 9:30 bell
 
     def ingest(self, now, symbol_data):
         """symbol_data: {sym: {price, cum_volume, day_high, prev_close,
@@ -73,6 +74,16 @@ class MarketState:
         # stands. A session that starts late still gets one reading.
         if et < bell or sym not in self._gap_pct:
             self._gap_pct[sym] = 100.0 * (price - prev_close) / prev_close
+
+        # The 9:30 print, frozen. day_pct measures the move from
+        # yesterday's close, which a gapper has already made overnight -
+        # this measures what the stock has done since the bell, which is a
+        # different question and the one the opening drive asks.
+        if sym not in self._open_price and et >= bell:
+            bar = data.get("minute_bar") or {}
+            bar_et = _bar_et(bar.get("t"))
+            if bar.get("o") and bar_et is not None and bar_et >= bell:
+                self._open_price[sym] = bar["o"]
 
         if sym in self._opening_range or et < bell:
             return
@@ -119,6 +130,9 @@ class MarketState:
             symbol_vwap = setups.vwap(bars)
             gap_pct = self._gap_pct.get(sym)
             opening_range = self._opening_range.get(sym)
+            open_price = self._open_price.get(sym)
+            open_pct = (100.0 * (price - open_price) / open_price
+                        if open_price else None)
             # Pullback first; a gapper at the open has no flag to trade yet,
             # so the opening-range break covers exactly that slot.
             setup = setups.detect_pullback(history.completed_bars, price,
@@ -133,6 +147,7 @@ class MarketState:
                 "above_vwap": (symbol_vwap is not None
                                and price >= symbol_vwap),
                 "gap_pct": gap_pct,
+                "open_pct": open_pct,
                 "opening_range": opening_range,
                 "setup": setup,
                 "symbol": sym,
