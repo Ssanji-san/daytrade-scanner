@@ -15,7 +15,8 @@ from ..config import Config
 from .broker import Broker
 from .journal import Journal
 from .model import train, scorer_from_weights
-from .strategy import (ET, exit_levels, should_enter, size_position,
+from .strategy import (ET, bankroll_from, exit_levels, should_enter,
+                       size_position,
                        split_qty, technical_stop, weighted_exit,
                        _parse_hhmm)
 
@@ -82,7 +83,8 @@ def journal_alert(journal, ts, row, now, observed, cfg: Config):
 
 def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
                    day_pnl, now, cfg: Config, score_threshold=None,
-                   losses_today=0, open_positions=0, account=None):
+                   losses_today=0, open_positions=0, account=None,
+                   bankroll=None):
     """Best-scored qualifying rows first, never exceeding the daily cap.
 
     Picks already made in this cycle count against both the daily cap and
@@ -107,7 +109,8 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
         stop = technical_stop(row["price"], setup.get("stop"), cfg)
         if stop is None:
             continue                     # risk to the setup low is too wide
-        qty, stop = size_position(row["price"], cfg, stop_price=stop)
+        qty, stop = size_position(row["price"], cfg, stop_price=stop,
+                                  bankroll=bankroll)
         if qty < 1:
             continue
         take, _ = should_enter(row["symbol"], price=row["price"], score=score,
@@ -116,7 +119,8 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
                                score_threshold=score_threshold,
                                losses_today=losses_today,
                                open_positions=open_positions + len(picks),
-                               account=account, notional=qty * row["price"])
+                               account=account, notional=qty * row["price"],
+                               bankroll=bankroll)
         if not take:
             continue
         picks.append({"symbol": row["symbol"], "price": row["price"],
@@ -143,6 +147,9 @@ class TradingBot:
         self.rejected = set()     # symbols whose entry the broker refused today
         self.open_orders = []     # live broker orders, for the dashboard
         self.account = None       # last good /v2/account snapshot
+        # Sizing follows the real balance: $1,000 risks $50, $2,000 risks
+        # $100. Seeded from config until the first account read lands.
+        self.bankroll = cfg.bot_bankroll
         self._account_pull = 0.0
         self._rejected_day = None
         self.scorer, self.model_meta = self._retrain()
@@ -197,6 +204,8 @@ class TradingBot:
             return
         if self._rejected_day != day:      # fresh slate each session
             self.rejected, self._rejected_day = set(), day
+        account = await self._account_snapshot(ts)
+        self.bankroll = bankroll_from(account, self.cfg, self.bankroll)
         trades = self.journal.trades_today(day)
         picks = choose_entries(
             qualified, self.scorer,
@@ -207,7 +216,7 @@ class TradingBot:
             score_threshold=self.score_threshold,
             losses_today=self.journal.losses_today(day),
             open_positions=len(self.open_trades),
-            account=await self._account_snapshot(ts))
+            account=account, bankroll=self.bankroll)
         for pick in picks:
             try:
                 await self._enter(pick, ts)
@@ -356,7 +365,7 @@ class TradingBot:
         return {
             "enabled": True,
             "error": self.error,
-            "bankroll": self.cfg.bot_bankroll,
+            "bankroll": self.bankroll,
             "trades_today": len(trades),
             "cap": self.cfg.bot_max_trades_per_day,
             "day_pnl": self.journal.day_pnl(day),

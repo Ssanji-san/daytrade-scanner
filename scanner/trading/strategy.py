@@ -58,7 +58,7 @@ def broker_state_reasons(account, notional, cfg: Config):
 def should_enter(symbol="", *, price, score, trades_today, traded_symbols,
                  day_pnl, now, cfg: Config, score_threshold=None,
                  losses_today=0, open_positions=0, account=None,
-                 notional=None):
+                 notional=None, bankroll=None):
     """Returns (take, rejection_reasons). Empty reasons == take the trade.
 
     `score_threshold` overrides the config bar once a trained model sets
@@ -83,7 +83,8 @@ def should_enter(symbol="", *, price, score, trades_today, traded_symbols,
         reasons.append("score")
     # 0 disables the dollar rule; the loss count is the kill switch now.
     if (cfg.bot_daily_loss_pct > 0
-            and day_pnl <= -cfg.bot_bankroll * cfg.bot_daily_loss_pct / 100):
+            and day_pnl <= -(bankroll or cfg.bot_bankroll)
+            * cfg.bot_daily_loss_pct / 100):
         reasons.append("kill_switch")
     reasons.extend(broker_state_reasons(account, notional, cfg))
     return not reasons, reasons
@@ -108,17 +109,43 @@ def technical_stop(entry, raw_stop, cfg: Config):
     return raw_stop
 
 
-def size_position(price, cfg: Config, stop_price=None):
+def bankroll_from(account, cfg: Config, last_known=None):
+    """The balance to size off: the live account, not a hardcoded figure.
+
+    $1,000 risks $50, $2,000 risks $100 - the percentage is fixed and the
+    dollars follow the balance up and back down again. Falls back to the
+    configured bankroll when the account cannot be read, and refuses a
+    reading more than 3x the last one, because a bad parse must never size
+    the next position.
+
+    The backtest deliberately does NOT use this: a replay that compounds
+    would overstate its own results and make R multiples incomparable
+    between the start of the sample and the end.
+    """
+    base = last_known or cfg.bot_bankroll
+    if not account:
+        return base
+    try:
+        equity = float(account.get("equity"))
+    except (TypeError, ValueError):
+        return base
+    if equity <= 0 or (last_known and equity > 3 * last_known):
+        return base
+    return equity
+
+
+def size_position(price, cfg: Config, stop_price=None, bankroll=None):
     """(shares, stop_price). Risk a fixed % of bankroll; cap the notional."""
     if stop_price is None:
         stop_price = price * (1 - cfg.bot_stop_pct / 100)
     if stop_price >= price:
         return 0, stop_price
-    risk_dollars = cfg.bot_bankroll * cfg.bot_risk_pct / 100
+    bankroll = cfg.bot_bankroll if bankroll is None else bankroll
+    risk_dollars = bankroll * cfg.bot_risk_pct / 100
     qty = int(risk_dollars / (price - stop_price))
     # Two ceilings: a share of the account, and a hard dollar figure the
     # position never exceeds however large the account grows.
-    max_notional = cfg.bot_bankroll * cfg.bot_max_notional_pct / 100
+    max_notional = bankroll * cfg.bot_max_notional_pct / 100
     cap = getattr(cfg, "bot_max_notional_dollars", 0)
     if cap:
         max_notional = min(max_notional, cap)

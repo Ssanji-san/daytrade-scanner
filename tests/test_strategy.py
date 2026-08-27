@@ -5,8 +5,9 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from scanner.config import Config
-from scanner.trading.strategy import (exit_levels, in_window, should_enter,
-                                      size_position, split_qty, weighted_exit)
+from scanner.trading.strategy import (bankroll_from, exit_levels, in_window,
+                                      should_enter, size_position, split_qty,
+                                      weighted_exit)
 
 ET = ZoneInfo("America/New_York")
 CFG = Config()
@@ -181,3 +182,38 @@ class TestScoreThresholdOverride:
     def test_config_bar_applies_when_no_override(self):
         take, reasons = should_enter(**ok_kwargs(score=0.30))
         assert not take and "score" in reasons
+
+
+class TestLiveBankroll:
+    """Sizing follows the real balance, up and back down again."""
+
+    def test_risk_scales_with_the_account(self):
+        for equity, want_risk in ((1_000.0, 50.0), (2_000.0, 100.0),
+                                  (5_000.0, 250.0)):
+            bank = bankroll_from({"equity": str(equity)}, CFG)
+            qty, stop = size_position(3.0, CFG, bankroll=bank)
+            assert (3.0 - stop) * qty == pytest.approx(want_risk, abs=1.0)
+
+    def test_it_shrinks_on_a_drawdown_too(self):
+        bank = bankroll_from({"equity": "600"}, CFG, last_known=1_000.0)
+        qty, stop = size_position(3.0, CFG, bankroll=bank)
+        assert (3.0 - stop) * qty == pytest.approx(30.0, abs=1.0)
+
+    def test_the_dollar_ceiling_still_caps_a_large_account(self):
+        bank = bankroll_from({"equity": "500000"}, CFG, last_known=400_000.0)
+        qty, _ = size_position(3.0, CFG, bankroll=bank)
+        assert qty * 3.0 == pytest.approx(CFG.bot_max_notional_dollars, abs=3)
+
+    @pytest.mark.parametrize("account", [
+        None, {}, {"equity": None}, {"equity": "not a number"}, {"equity": "0"},
+    ])
+    def test_an_unreadable_account_falls_back(self, account):
+        assert bankroll_from(account, CFG, last_known=1_500.0) == 1_500.0
+
+    def test_an_implausible_jump_is_refused(self):
+        # A bad parse must not size the next position. 3x in one read is
+        # not a paper account growing, it is a number that went wrong.
+        assert bankroll_from({"equity": "90000"}, CFG,
+                             last_known=1_000.0) == 1_000.0
+        assert bankroll_from({"equity": "2500"}, CFG,
+                             last_known=1_000.0) == 2_500.0
