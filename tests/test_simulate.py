@@ -127,3 +127,31 @@ class TestCaps:
         sim.open.clear()                       # pretend it closed
         sim.enter(et(10, 30), int(et(10, 30).timestamp()), rows)
         assert sim.open == {}
+
+
+class TestTradeReport:
+    """The report is the only place trade results are ever seen.
+
+    It ran a whole 8-month simulation and then died on a missing import,
+    throwing the results away - so it gets executed in the tests.
+    """
+
+    def test_reports_without_blowing_up(self, sim, capsys):
+        ts = int(et(10, 0).timestamp())
+        for i, (exit_price, reason) in enumerate(
+                [(4.00, "stop"), (7.00, "target"), (5.10, "time_stop")]):
+            tid = sim.journal.record_trade_open(
+                ts + i, f"S{i}", qty=50, entry=5.00, stop=4.00,
+                targets=[7.00], features={}, setup="micro_pullback")
+            sim.journal.record_trade_close(tid, ts + 600, exit_price, reason)
+        from scripts.backtest import trade_report
+        trade_report(sim.journal, CFG)
+        out = capsys.readouterr().out
+        assert "3 trades" in out
+        assert "expectancy" in out
+        assert "of notional" in out          # the spread warning survives
+
+    def test_says_so_when_nothing_traded(self, sim, capsys):
+        from scripts.backtest import trade_report
+        trade_report(sim.journal, CFG)
+        assert "no trades were taken" in capsys.readouterr().out
