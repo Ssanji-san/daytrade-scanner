@@ -1,0 +1,61 @@
+name: backtest
+
+# Manual only. Replays historical sessions into cache/backtest.db, which is
+# separate from the live journal on purpose - a biased replay must never be
+# able to poison what the bot learned from real sessions.
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "First session (YYYY-MM-DD)"
+        required: true
+      end:
+        description: "Last session (YYYY-MM-DD)"
+        required: true
+      feed:
+        description: "iex matches live and is what to train on; sip measures what iex misses"
+        required: false
+        default: "iex"
+        type: choice
+        options: ["iex", "sip"]
+      commit:
+        description: "Commit the resulting backtest journal (true/false)"
+        required: false
+        default: "true"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Replay history
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          SEC_CONTACT: ${{ vars.SEC_CONTACT }}
+        run: |
+          python -u scripts/backtest.py \
+            --start "${{ inputs.start }}" \
+            --end "${{ inputs.end }}" \
+            --feed "${{ inputs.feed }}"
+
+      - name: Commit the backtest journal
+        if: ${{ inputs.commit == 'true' }}
+        run: |
+          git config user.name "trade-bot"
+          git config user.email "actions@github.com"
+          git add cache/backtest.db || true
+          if ! git diff --cached --quiet; then
+            git commit -m "backtest ${{ inputs.start }}..${{ inputs.end }} (${{ inputs.feed }}) [skip ci]" --quiet
+            git pull --rebase --autostash --quiet || true
+            git push --quiet
+          fi

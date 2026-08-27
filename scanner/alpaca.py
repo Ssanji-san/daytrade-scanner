@@ -121,32 +121,57 @@ class AlpacaClient:
             out.update(parse_snapshots(raw))
         return out
 
+    async def bars(self, symbols, timeframe, start, end=None, feed=None):
+        """Historical bars, chunked and paginated: {symbol: [bar, ...]}.
+
+        `feed` overrides the configured one. The free plan serves `sip` for
+        anything older than 15 minutes, which is what the backtest uses to
+        measure how much of the real tape the live IEX feed misses.
+        """
+        out = {}
+        symbols = sorted(symbols)
+        for i in range(0, len(symbols), MAX_SYMBOLS_PER_REQUEST):
+            chunk = symbols[i:i + MAX_SYMBOLS_PER_REQUEST]
+            token = None
+            while True:
+                params = {"symbols": ",".join(chunk), "timeframe": timeframe,
+                          "start": start, "limit": 10000,
+                          "feed": feed or self.cfg.feed,
+                          "adjustment": "split"}
+                if end:
+                    params["end"] = end
+                if token:
+                    params["page_token"] = token
+                raw = await self._get("/v2/stocks/bars", params)
+                for sym, rows in (raw.get("bars") or {}).items():
+                    out.setdefault(sym, []).extend(rows)
+                token = raw.get("next_page_token")
+                if not token:
+                    break
+        return out
+
     async def avg_volumes(self, symbols, days=None):
         """30-day average daily volume per symbol (rvol baseline)."""
         days = days or self.cfg.rvol_baseline_days
         start = (dt.date.today() - dt.timedelta(days=days * 2)).isoformat()
-        volumes, token = {}, None
-        while True:
-            params = {"symbols": ",".join(sorted(symbols)), "timeframe": "1Day",
-                      "start": start, "limit": 10000, "feed": self.cfg.feed,
-                      "adjustment": "split"}
-            if token:
-                params["page_token"] = token
-            raw = await self._get("/v2/stocks/bars", params)
-            for sym, bars in (raw.get("bars") or {}).items():
-                volumes.setdefault(sym, []).extend(bars)
-            token = raw.get("next_page_token")
-            if not token:
-                break
-        return {sym: compute_avg_volume(bars[-days:])
-                for sym, bars in volumes.items()}
+        volumes = await self.bars(symbols, "1Day", start)
+        return {sym: compute_avg_volume(rows[-days:])
+                for sym, rows in volumes.items()}
 
-    async def news(self, symbols, limit=50):
+    async def news(self, symbols, limit=50, start=None, end=None):
+        """Headlines for these symbols; defaults to the last news_max_age_hours.
+
+        `start`/`end` let the backtest ask for a specific historical day
+        instead of the trailing window the live loop wants.
+        """
         if not symbols:
             return []
-        start = (dt.datetime.now(dt.timezone.utc)
-                 - dt.timedelta(hours=self.cfg.news_max_age_hours)).isoformat()
-        raw = await self._get("/v1beta1/news",
-                              {"symbols": ",".join(sorted(symbols)),
-                               "start": start, "limit": limit})
+        if start is None:
+            start = (dt.datetime.now(dt.timezone.utc)
+                     - dt.timedelta(hours=self.cfg.news_max_age_hours)).isoformat()
+        params = {"symbols": ",".join(sorted(symbols)),
+                  "start": start, "limit": limit}
+        if end:
+            params["end"] = end
+        raw = await self._get("/v1beta1/news", params)
         return parse_news(raw)

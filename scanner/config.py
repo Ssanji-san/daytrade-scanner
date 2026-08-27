@@ -123,6 +123,11 @@ class Config:
                                          # separates a winner from an
                                          # almost-winner
     bot_journal_path: str = "cache/journal.db"
+    # Simulated results live in their own journal. Mixing them into the live
+    # one would let a biased replay quietly poison what the bot has learned
+    # from real sessions, with no way to tell the two apart afterwards.
+    backtest_journal_path: str = "cache/backtest.db"
+    backtest_cache_dir: str = "cache/backtest"
     bot_forward_marks_min: tuple = (5, 15, 30)   # forward-return checkpoints
 
     # --- data endpoints ---

@@ -54,6 +54,22 @@ def features_from_row(row, now):
     }
 
 
+def journal_alert(journal, ts, row, now, observed, cfg: Config):
+    """Record one scanner row as a graded alert.
+
+    Module-level so the historical replay records alerts exactly the way a
+    live session does - if these two ever diverge, the model trains on one
+    distribution and trades in another.
+    """
+    setup = row.get("setup") or {}
+    stop = setup.get("stop")
+    r_dollars = ((row["price"] - stop) if stop and stop < row["price"]
+                 else row["price"] * cfg.bot_stop_pct / 100)
+    journal.record_alert(ts, row["symbol"], row["price"], r_dollars,
+                         features_from_row(row, now),
+                         setup=setup.get("setup"), observed=observed)
+
+
 def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
                    day_pnl, now, cfg: Config, score_threshold=None):
     """Best-scored qualifying rows first, never exceeding the daily cap."""
@@ -177,13 +193,7 @@ class TradingBot:
                 print(f"[bot] ENTRY REJECTED {pick['symbol']}: {exc}")
 
     def _journal_alert(self, ts, row, now, observed):
-        setup = row.get("setup") or {}
-        stop = setup.get("stop")
-        r_dollars = ((row["price"] - stop) if stop and stop < row["price"]
-                     else row["price"] * self.cfg.bot_stop_pct / 100)
-        self.journal.record_alert(ts, row["symbol"], row["price"], r_dollars,
-                                  features_from_row(row, now),
-                                  setup=setup.get("setup"), observed=observed)
+        journal_alert(self.journal, ts, row, now, observed, self.cfg)
 
     async def _enter(self, pick, ts):
         entry = pick["price"]
