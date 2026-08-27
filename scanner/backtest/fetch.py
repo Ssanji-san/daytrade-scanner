@@ -38,6 +38,18 @@ def day_change_pct(bar, prev_close):
     return 100.0 * (bar["c"] - prev_close) / prev_close
 
 
+def day_high_pct(bar, prev_close):
+    """How far the session ran at its best, measured from the prior close.
+
+    This is what a live gainers screener reacts to. Close-to-close misses a
+    stock that ran 30% and gave it all back, and those are exactly the
+    momentum days the scanner exists to catch.
+    """
+    if not prev_close or not bar or not bar.get("h"):
+        return None
+    return 100.0 * (bar["h"] - prev_close) / prev_close
+
+
 def select_candidates(daily_bars, cfg: Config):
     """{date: [symbol]} - who was worth watching on each session.
 
@@ -45,6 +57,13 @@ def select_candidates(daily_bars, cfg: Config):
     looser than the HOD gate: this only narrows the universe enough to make
     intraday fetching affordable, and the real criteria are applied during
     the replay itself.
+
+    Selection uses the session HIGH, not its close, because that is what a
+    live gainers list reacts to. This is a universe-construction step, not a
+    signal: it decides which symbols are worth pulling minute bars for, and
+    every actual criterion is still evaluated point-in-time during the
+    replay. It carries the same selection bias the live scanner has - only
+    movers are ever looked at - which is the bias we want to reproduce.
     """
     by_day = {}
     for symbol, rows in daily_bars.items():
@@ -52,11 +71,12 @@ def select_candidates(daily_bars, cfg: Config):
         rows.sort(key=lambda r: r["t"])
         for i in range(1, len(rows)):
             bar, prev = rows[i], rows[i - 1]
-            change = day_change_pct(bar, prev.get("c"))
-            if change is None or change < cfg.hod_min_pct_up:
+            run_up = day_high_pct(bar, prev.get("c"))
+            if run_up is None or run_up < cfg.hod_min_pct_up:
                 continue
-            if not cfg.hod_min_price <= bar["c"] <= cfg.hod_max_price:
-                continue
+            low = bar.get("l") or bar["c"]
+            if bar["h"] < cfg.hod_min_price or low > cfg.hod_max_price:
+                continue          # never inside the tradable band all day
             by_day.setdefault(bar["t"][:10], []).append(symbol)
     return {day: sorted(set(symbols)) for day, symbols in by_day.items()}
 

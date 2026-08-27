@@ -96,11 +96,21 @@ class TestCandidateSelection:
                           bar("2026-08-12T00:00:00Z", 6, 7, 6, 7.00)]}
         assert fetch.select_candidates(daily, CFG) == {"2026-08-12": ["MOVR"]}
 
+    def test_a_spike_that_faded_is_still_a_candidate(self):
+        """The live screener sees it while it is running, not at the close.
+
+        Selecting on close-to-close would silently drop the days this
+        scanner exists to catch - ran 40%, gave it all back.
+        """
+        daily = {"FADE": [bar("2026-08-11T00:00:00Z", 5, 5, 5, 5.00),
+                          bar("2026-08-12T00:00:00Z", 5, 7.0, 4.9, 5.10)]}
+        assert fetch.select_candidates(daily, CFG) == {"2026-08-12": ["FADE"]}
+
     def test_drops_a_quiet_day_and_an_out_of_band_price(self):
         daily = {"FLAT": [bar("2026-08-11T00:00:00Z", 5, 5, 5, 5.00),
-                          bar("2026-08-12T00:00:00Z", 5, 5, 5, 5.05)],
+                          bar("2026-08-12T00:00:00Z", 5, 5.05, 4.95, 5.05)],
                  "PRICEY": [bar("2026-08-11T00:00:00Z", 100, 100, 100, 100.0),
-                            bar("2026-08-12T00:00:00Z", 150, 150, 150, 150.0)]}
+                            bar("2026-08-12T00:00:00Z", 150, 150, 149, 150.0)]}
         assert fetch.select_candidates(daily, CFG) == {}
 
     def test_first_session_has_no_baseline_so_is_never_a_candidate(self):
