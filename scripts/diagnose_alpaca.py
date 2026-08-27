@@ -201,6 +201,48 @@ async def history(fills_date=None):
                     print(f"      {d}  equity=${e:>10,.2f}  day P/L={p}")
 
 
+async def bars(symbol):
+    """Read-only: was this gapper actually tradable, and at what size?"""
+    import datetime as _dt
+    async with aiohttp.ClientSession() as session:
+        print("=" * 62)
+        print(f"ASSET {symbol}")
+        print("=" * 62)
+        await show(session, "GET", f"/v2/assets/{symbol}", f"asset {symbol}")
+
+        data = "https://data.alpaca.markets"
+        start = (_dt.date.today() - _dt.timedelta(days=7)).isoformat()
+        print()
+        print("=" * 62)
+        print("DAILY BARS (o/h/l/c and volume)")
+        print("=" * 62)
+        async with session.get(
+                f"{data}/v2/stocks/{symbol}/bars",
+                params={"timeframe": "1Day", "start": start, "feed": "iex"},
+                headers=HEADERS) as resp:
+            payload = await resp.json()
+        for b in (payload.get("bars") or []):
+            print(f"   {b['t'][:10]}  o={b['o']:<9} h={b['h']:<9} "
+                  f"l={b['l']:<9} c={b['c']:<9} vol={b['v']:,}")
+
+        print()
+        print("=" * 62)
+        print("MINUTE BARS AROUND THE OPEN (is there size to trade?)")
+        print("=" * 62)
+        today = _dt.date.today().isoformat()
+        async with session.get(
+                f"{data}/v2/stocks/{symbol}/bars",
+                params={"timeframe": "1Min", "start": today,
+                        "limit": 400, "feed": "iex"},
+                headers=HEADERS) as resp:
+            payload = await resp.json()
+        rows = payload.get("bars") or []
+        print(f"   {len(rows)} minute bars on the IEX feed today")
+        for b in rows[:12]:
+            print(f"   {b['t'][11:16]}Z  o={b['o']:<9} h={b['h']:<9} "
+                  f"l={b['l']:<9} c={b['c']:<9} vol={b['v']:,}")
+
+
 async def cleanup(session, label):
     """Cancel every open order and close every position. Leaves a clean slate."""
     code, orders = await show(session, "GET", "/v2/orders",
@@ -292,6 +334,8 @@ if __name__ == "__main__":
                         help="share quantity for the probe order")
     parser.add_argument("--fills-date", default=None,
                         help="list every fill on this YYYY-MM-DD")
+    parser.add_argument("--bars", default=None,
+                        help="read-only daily+minute bars for a symbol")
     parser.add_argument("--history", action="store_true",
                         help="show account activities + equity by day")
     parser.add_argument("--live-entry", metavar="SYMBOL",
@@ -301,7 +345,9 @@ if __name__ == "__main__":
                         help="reproduce the bot's buy-then-stop entry and "
                              "test the atomic OTO alternative, then clean up")
     args = parser.parse_args()
-    if args.history:
+    if args.bars:
+        asyncio.run(bars(args.bars))
+    elif args.history:
         asyncio.run(history(args.fills_date))
     elif args.live_entry:
         asyncio.run(live_entry(args.live_entry, args.qty))
