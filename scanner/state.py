@@ -83,6 +83,7 @@ class MarketState:
                 "day_volume": data["cum_volume"],
                 "day_high": data.get("day_high"),
                 "rvol": rvol(data["cum_volume"], data.get("avg_volume"), now, self.cfg),
+                "avg_volume": data.get("avg_volume"),
                 "float_shares": data.get("float_shares"),
                 "has_news": self._has_news(sym, now),
                 "changes": {str(w): history.n_minute_change(now, w)

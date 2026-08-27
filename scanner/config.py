@@ -35,6 +35,13 @@ class Config:
     # rows qualified in total. rvol carries the liquidity test instead - it
     # compares IEX to IEX, so the feed's share cancels out of the ratio.
     hod_min_volume: int = 0            # cumulative IEX shares today
+    # Baseline liquidity: does this thing trade AT ALL on a normal day?
+    # Dropping the daily floor let dead instruments through - WVVIP, a
+    # preferred share, printed 0-1,295 shares a DAY yet showed a huge
+    # percentage move, and rvol looks enormous against a near-zero
+    # baseline. An average is not distorted by one quiet session, so it
+    # is the honest way to say "there is someone on the other side".
+    hod_min_avg_volume: int = 10_000    # 30-day average IEX shares
     hod_min_rvol: float = 5.0           # relative volume vs 30-day average
     hod_require_news: bool = False      # UI toggle; badge always shown
     # "Near the high", not "at the high". The entry is the pullback, and a

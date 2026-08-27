@@ -113,7 +113,7 @@ function renderGainers(payload) {
   $("#gainers-empty").classList.toggle("hidden", rows.length > 0);
 }
 
-const FAIL_LABELS = { pct_up: "%day", volume: "volume", rvol: "rvol", float: "float", hod: "off high", news: "no news", vwap: "below VWAP" };
+const FAIL_LABELS = { pct_up: "%day", volume: "volume", rvol: "rvol", float: "float", hod: "off high", news: "no news", vwap: "below VWAP", liquidity: "too illiquid" };
 
 function hodRow(r, cls) {
   const fails = (r.failed || [])

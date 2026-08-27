@@ -106,3 +106,20 @@ def test_volume_floor_is_off_by_default_and_applies_when_set():
     strict = Config(hod_min_volume=25_000)
     qualified, near = scan([thin], strict)
     assert qualified == [] and near[0]["failed"] == ["volume"]
+
+
+def test_an_instrument_that_barely_trades_is_rejected():
+    """A huge % move on a few hundred shares is a quote, not an opportunity.
+
+    Preferred shares and other dead tickers can print big percentage moves
+    on almost no volume, and rvol looks enormous against a near-zero
+    baseline, so the baseline itself has to be the gate.
+    """
+    dead = make_state(avg_volume=300, day_volume=1_295)
+    qualified, near = scan([dead], CFG)
+    assert qualified == []
+    assert near[0]["failed"] == ["liquidity"]
+
+
+def test_a_real_small_cap_still_passes():
+    assert len(scan([make_state(avg_volume=400_000)], CFG)[0]) == 1
