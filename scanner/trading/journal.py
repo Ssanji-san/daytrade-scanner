@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     price REAL, r_dollars REAL,
     features TEXT,
     mfe REAL DEFAULT 0, mae REAL DEFAULT 0,
-    label INTEGER, resolved_ts INTEGER,
+    label INTEGER, resolved_ts INTEGER, resolved_r REAL,
     observed INTEGER DEFAULT 0,
     UNIQUE(day, symbol)
 );
@@ -80,6 +80,10 @@ class Journal:
         try:
             self._db.execute(
                 "ALTER TABLE alerts ADD COLUMN observed INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._db.execute("ALTER TABLE alerts ADD COLUMN resolved_r REAL")
         except sqlite3.OperationalError:
             pass
         self._db.commit()
@@ -141,23 +145,32 @@ class Journal:
         mfe = max(row["mfe"], high - row["price"])
         mae = min(row["mae"], low - row["price"])
         label, resolved = row["label"], row["resolved_ts"]
+        resolved_r = row["resolved_r"]
         # Excursions keep recording after the label is set. Stopping there
         # froze every winner's mfe at the minute it crossed +2R, so a trade
         # that went on to run 10R was filed as exactly 2R and the model had
         # no way to tell a scratch from a monster. The label never changes
         # once decided.
         if label is None:
+            # resolved_r is what the position was actually worth when it
+            # ended, in R. A stop-out exits at the stop and a target exits
+            # at the target, but a timeout exits at whatever the market is
+            # then - and assuming that is break-even was quietly deciding
+            # the answer, since timeouts are the large majority of outcomes.
             if low <= row["price"] - row["r_dollars"]:
-                label = 0                # the wick took the stop first
+                label, resolved_r = 0, -1.0        # the wick took the stop
             elif high >= row["price"] + WIN_R * row["r_dollars"]:
-                label = 1
+                label, resolved_r = 1, WIN_R
             elif now_ts - row["ts"] > self.alert_window_seconds:
-                label = 0
+                label = 0                          # the clock, not the stop
+                resolved_r = ((price - row["price"]) / row["r_dollars"]
+                              if row["r_dollars"] else 0.0)
             if label is not None:
                 resolved = now_ts
         self._execute(
-            "UPDATE alerts SET mfe=?, mae=?, label=?, resolved_ts=? WHERE id=?",
-            (mfe, mae, label, resolved, alert_id))
+            "UPDATE alerts SET mfe=?, mae=?, label=?, resolved_ts=?,"
+            " resolved_r=? WHERE id=?",
+            (mfe, mae, label, resolved, resolved_r, alert_id))
         self._commit()
 
     def open_alerts(self, day=None):
@@ -221,7 +234,8 @@ class Journal:
         """
         rows = self._execute(
             "SELECT day, symbol, setup, price, r_dollars, mfe, mae, label,"
-            " observed FROM alerts WHERE label IS NOT NULL ORDER BY ts"
+            " observed, resolved_r FROM alerts WHERE label IS NOT NULL"
+            " ORDER BY ts"
         ).fetchall()
         return [dict(r) for r in rows]
 

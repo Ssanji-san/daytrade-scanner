@@ -379,10 +379,47 @@ class TestOutcomeSplit:
     def test_timeouts_do_not_cost_a_full_r(self):
         from scripts.backtest import _expectancy
         rows = [self._row(0, -0.3) for _ in range(10)]
-        assert _expectancy(rows, timeout_r=-1.0)[1] == pytest.approx(-1.0)
-        assert _expectancy(rows, timeout_r=0.0)[1] == pytest.approx(0.0)
+        assert _expectancy(rows, timeout_r_value=-1.0)[1] == pytest.approx(-1.0)
+        assert _expectancy(rows, timeout_r_value=0.0)[1] == pytest.approx(0.0)
 
     def test_a_stop_out_costs_a_full_r_either_way(self):
         from scripts.backtest import _expectancy
         rows = [self._row(0, -1.2) for _ in range(10)]
-        assert _expectancy(rows, timeout_r=0.0)[1] == pytest.approx(-1.0)
+        assert _expectancy(rows, timeout_r_value=0.0)[1] == pytest.approx(-1.0)
+
+
+class TestMeasuredTimeoutExit:
+    """The timeout value is recorded, not assumed.
+
+    Timeouts are the large majority of outcomes under a 20% stop, so
+    assuming they scratch at 0R would have decided the result rather than
+    measured it.
+    """
+
+    def test_a_timeout_records_where_it_actually_closed(self, tmp_path):
+        j = Journal(str(tmp_path / "j.db"), alert_window_minutes=240)
+        aid = j.record_alert(1_700_000_000, "HODX", price=5.00,
+                             r_dollars=1.00, features={"rvol": 8.0})
+        # 4h01m later at 4.70: never hit -1R (4.00) or +2R (7.00).
+        j.track_alert(aid, 1_700_000_000 + 14_460, price=4.70,
+                      high=4.75, low=4.65)
+        row = j.outcome_rows()[0]
+        assert row["label"] == 0
+        assert row["resolved_r"] == pytest.approx(-0.30)
+
+    def test_a_stop_out_and_a_win_record_their_levels(self, tmp_path):
+        j = Journal(str(tmp_path / "j.db"), alert_window_minutes=240)
+        loser = j.record_alert(1_700_000_000, "AAA", 5.00, 1.00, {})
+        j.track_alert(loser, 1_700_000_060, price=4.10, high=4.5, low=3.90)
+        winner = j.record_alert(1_700_000_000, "BBB", 5.00, 1.00, {})
+        j.track_alert(winner, 1_700_000_060, price=7.10, high=7.2, low=5.0)
+        by_symbol = {r["symbol"]: r for r in j.outcome_rows()}
+        assert by_symbol["AAA"]["resolved_r"] == pytest.approx(-1.0)
+        assert by_symbol["BBB"]["resolved_r"] == pytest.approx(2.0)
+
+    def test_expectancy_uses_the_measured_value(self):
+        from scripts.backtest import _expectancy
+        rows = [{"label": 0, "mae": -0.3, "mfe": 0.1, "r_dollars": 1.0,
+                 "resolved_r": -0.4} for _ in range(10)]
+        assert _expectancy(rows)[1] == pytest.approx(-0.4)
+        assert _expectancy(rows, timeout_r_value=0.0)[1] == pytest.approx(0.0)

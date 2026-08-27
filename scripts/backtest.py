@@ -126,12 +126,23 @@ def outcome(row):
     return "timeout"
 
 
-def _expectancy(rows, timeout_r):
-    """(hit rate, pure-2R R, runner R), scoring timeouts at `timeout_r`.
+def timeout_r(row):
+    """What a timed-out position was actually worth, in R.
 
-    The runner banks half at +2R and rides the rest, credited with mfe less
-    a rough 1R of trail give-back. mfe is a floor, not a ceiling: it stops
-    at the last bar of the tracking window.
+    Recorded at resolution rather than assumed. Older rows predate the
+    column and fall back to 0R, which is the assumption this replaces.
+    """
+    value = row.get("resolved_r")
+    return 0.0 if value is None else value
+
+
+def _expectancy(rows, timeout_r_value=None):
+    """(hit rate, pure-2R R, runner R).
+
+    `timeout_r_value` scores every timeout at a fixed R; None uses each
+    row's measured exit. The runner banks half at +2R and rides the rest,
+    credited with mfe less a rough 1R of trail give-back. mfe is a floor,
+    not a ceiling: it stops at the last bar of the tracking window.
     """
     if not rows:
         return 0.0, 0.0, 0.0
@@ -147,8 +158,10 @@ def _expectancy(rows, timeout_r):
             pure -= 1
             runner -= 1
         else:
-            pure += timeout_r
-            runner += timeout_r
+            scratch = (timeout_r(row) if timeout_r_value is None
+                       else timeout_r_value)
+            pure += scratch
+            runner += scratch
     n = len(rows)
     return wins / n, pure / n, runner / n
 
@@ -173,25 +186,27 @@ def report(journal, cfg):
           f"trade, {cfg.bot_alert_window_minutes}-minute horizon, "
           f"{cfg.bot_stop_pct:.0f}% stop")
     print("[backtest] 'label' scores a timeout as a full -1R the way the "
-          "journal does;")
-    print("[backtest] 'timestop' scores it at 0R, which is closer to what "
-          "the exit really does.")
+          "journal does; 'measured'")
+    print("[backtest] uses what the position was really worth when the time "
+          "stop closed it.")
     print(f"[backtest] {'month':>8} {'n':>6} {'win':>6} {'stop':>6} "
-          f"{'t/out':>6} {'label':>8} {'timestop':>9} {'runner':>8} "
-          f"{'$/trade':>8}")
+          f"{'t/out':>6} {'t/out R':>8} {'label':>8} {'measured':>9} "
+          f"{'runner':>8} {'$/trade':>8}")
     by_month = {}
     for row in rows:
         by_month.setdefault(row["day"][:7], []).append(row)
     for month in sorted(by_month) + ["ALL"]:
         block = rows if month == "ALL" else by_month[month]
         tally = _counts(block)
-        hit, label_r, _ = _expectancy(block, timeout_r=-1.0)
-        _, stop_r, runner_r = _expectancy(block, timeout_r=0.0)
+        hit, label_r, _ = _expectancy(block, timeout_r_value=-1.0)
+        _, measured_r, runner_r = _expectancy(block)
+        outs = [timeout_r(r) for r in block if outcome(r) == "timeout"]
+        mean_out = sum(outs) / len(outs) if outs else 0.0
         n = len(block)
         print(f"[backtest] {month:>8} {n:>6} {hit:>5.1%} "
               f"{tally['stopped'] / n:>5.1%} {tally['timeout'] / n:>5.1%} "
-              f"{label_r:>+7.2f}R {stop_r:>+8.2f}R {runner_r:>+7.2f}R "
-              f"{runner_r * risk:>+7.0f}")
+              f"{mean_out:>+7.2f}R {label_r:>+7.2f}R {measured_r:>+8.2f}R "
+              f"{runner_r:>+7.2f}R {runner_r * risk:>+7.0f}")
     print("[backtest] break-even on a 2R target needs a 33.3% win rate")
 
     if len(dataset) >= cfg.bot_model_min_samples:
