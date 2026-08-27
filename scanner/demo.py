@@ -10,6 +10,7 @@ always looks live regardless of when it is run.
 import datetime as dt
 
 from .config import Config
+from .history import ET
 
 MINUTES = 25
 STEP_SECONDS = 15
@@ -29,16 +30,16 @@ def _actors():
         """
         run, flag = MINUTES - 7, MINUTES - 4
         if m <= run:
-            return 4.80 + (5.50 - 4.80) * m / run
+            return 2.80 + (3.50 - 2.80) * m / run
         if m <= flag:
-            return 5.50 - 0.14 * (m - run) / (flag - run)      # pull back
-        return 5.36 + 0.34 * (m - flag) / (MINUTES - flag)     # new high
+            return 3.50 - 0.14 * (m - run) / (flag - run)      # pull back
+        return 3.36 + 0.34 * (m - flag) / (MINUTES - flag)     # new high
 
     ramp = lambda lo, hi: (lambda m: lo + (hi - lo) * m / MINUTES)
     return {
         "MOVR":  (movr,              {"prev_close": 9.80, "final_vol": 6_000_000,
                                       "avg_volume": 5_000_000, "float_shares": 45_000_000}),
-        "HODX":  (hodx,            {"prev_close": 4.00, "final_vol": 3_000_000,
+        "HODX":  (hodx,            {"prev_close": 2.40, "final_vol": 3_000_000,
                                       "avg_volume": 400_000, "float_shares": 8_000_000}),
         "NEARX": (ramp(3.30, 3.85),  {"prev_close": 3.30, "final_vol": 150_000,
                                       "avg_volume": 3_000_000, "float_shares": 5_000_000}),
@@ -54,7 +55,14 @@ def _actors():
 
 
 def build_demo_session(cfg: Config, now=None):
-    now = now or dt.datetime.now(dt.timezone.utc)
+    # Anchored to 09:55 ET rather than the wall clock. The opening-drive
+    # criterion only means anything after the bell, so a demo built at 6am
+    # would show every symbol failing for a reason that is about the clock
+    # rather than the data. Starting 25 minutes earlier puts the first bars
+    # in premarket, which is where a real session starts too.
+    if now is None:
+        now = dt.datetime.now(ET).replace(hour=9, minute=55, second=0,
+                                          microsecond=0)
     start = now - dt.timedelta(minutes=MINUTES)
     actors = _actors()
 

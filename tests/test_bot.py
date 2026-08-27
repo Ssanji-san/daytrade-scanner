@@ -19,7 +19,7 @@ def et(hour, minute):
     return dt.datetime(2026, 7, 14, hour, minute, tzinfo=ET)
 
 
-def row(symbol="HODX", price=5.50, rvol=8.0, **kw):
+def row(symbol="HODX", price=3.00, rvol=8.0, **kw):
     state = make_state(symbol=symbol, price=price, rvol=rvol,
                        day_high=kw.pop("day_high", price), **kw)
     state["dist_from_hod"] = 0.0
@@ -49,9 +49,8 @@ class TestChooseEntries:
         assert picks[0]["stop"] < picks[0]["price"]
 
     def test_concurrency_caps_one_cycle_below_the_daily_cap(self):
-        # The daily cap is 10, but four-hour holds mean positions do not
-        # turn over inside a cycle - so what bounds a single pass is the
-        # account, not the day. 4 x $250 is the whole $1,000.
+        # The daily cap is 10, but the whole account goes into a single
+        # trade - so what bounds one pass is the account, not the day.
         rows = [row(f"S{i}") for i in range(8)]
         picks = choose_entries(rows, HeuristicScorer(), trades_today=0,
                                traded_symbols=set(), day_pnl=0.0,
@@ -62,18 +61,19 @@ class TestChooseEntries:
         rows = [row(f"S{i}") for i in range(8)]
         picks = choose_entries(rows, HeuristicScorer(), trades_today=0,
                                traded_symbols=set(), day_pnl=0.0,
-                               now=et(10, 0), cfg=CFG, open_positions=3)
-        assert len(picks) == 1
+                               now=et(10, 0), cfg=CFG,
+                               open_positions=CFG.bot_max_concurrent_positions)
+        assert picks == []
 
     def test_daily_cap_still_binds(self):
         rows = [row(f"S{i}") for i in range(8)]
-        picks = choose_entries(rows, HeuristicScorer(), trades_today=9,
+        picks = choose_entries(rows, HeuristicScorer(), trades_today=10,
                                traded_symbols=set(), day_pnl=0.0,
                                now=et(10, 0), cfg=CFG)
-        assert len(picks) == 1
+        assert picks == []
 
     def test_skips_traded_low_score_and_out_of_band(self):
-        rows = [row("DUP"), row("CHEAP", price=1.50, day_high=1.50),
+        rows = [row("DUP"), row("PRICEY", price=25.0, day_high=25.0),
                 row("WEAK", rvol=0.5, catalyst=None), row("GOOD")]
         picks = choose_entries(rows, HeuristicScorer(), trades_today=0,
                                traded_symbols={"DUP"}, day_pnl=0.0,

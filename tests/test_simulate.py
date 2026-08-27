@@ -16,6 +16,9 @@ from scanner.trading.model import HeuristicScorer
 
 ET = ZoneInfo("America/New_York")
 CFG = Config()
+# The live config scalps. These exercise the swing exits - scale at +2R,
+# trail the runner - which stay reachable by configuration.
+SWING = replace(CFG, bot_scalp_mode=False, bot_time_stop_minutes=20)
 
 
 def et(hour, minute):
@@ -30,6 +33,12 @@ def bar(c, h=None, l=None):
 def sim(tmp_path):
     journal = Journal(str(tmp_path / "sim.db"), CFG.bot_alert_window_minutes)
     return Simulator(CFG, journal, "2026-08-12", HeuristicScorer(), 0.0)
+
+
+@pytest.fixture
+def swing(tmp_path):
+    journal = Journal(str(tmp_path / "swing.db"), CFG.bot_alert_window_minutes)
+    return Simulator(SWING, journal, "2026-08-12", HeuristicScorer(), 0.0)
 
 
 def _open(sim, price=5.00, ts=None):
@@ -66,7 +75,8 @@ class TestExits:
                    {"HODX": bar(5.00, h=7.50, l=3.90)})
         assert sim.journal.all_trades()[0]["exit_reason"] == "stop"
 
-    def test_the_target_banks_half_and_the_runner_trails(self, sim):
+    def test_the_target_banks_half_and_the_runner_trails(self, swing):
+        sim = swing
         pos = _open(sim)
         sim.manage(et(10, 5), int(et(10, 5).timestamp()),
                    {"HODX": bar(7.10, h=7.20, l=5.00)})
@@ -82,9 +92,10 @@ class TestExits:
         assert trade["exit_reason"] == "trailing"
         assert trade["r_multiple"] > 2.0              # the runner paid
 
-    def test_the_time_stop_exits_at_the_market(self, sim):
+    def test_the_time_stop_exits_at_the_market(self, swing):
+        sim = swing
         _open(sim, ts=int(et(10, 0).timestamp()))
-        late = et(10, 0) + dt.timedelta(minutes=CFG.bot_time_stop_minutes)
+        late = et(10, 0) + dt.timedelta(minutes=SWING.bot_time_stop_minutes)
         sim.manage(late, int(late.timestamp()), {"HODX": bar(5.10)})
         trade = sim.journal.all_trades()[0]
         assert trade["exit_reason"] == "time_stop"
@@ -155,3 +166,104 @@ class TestTradeReport:
         from scripts.backtest import trade_report
         trade_report(sim.journal, CFG)
         assert "no trades were taken" in capsys.readouterr().out
+
+
+def _scalp_open(sim, price=3.00, ts=None, cfg=None):
+    """Open a scalp the way the entry path would, at $1,000 notional."""
+    from scanner.trading.strategy import scalp_levels, size_position
+    cfg = cfg or sim.cfg
+    ts = ts or int(et(9, 40).timestamp())
+    qty, _ = size_position(price, cfg)
+    levels = scalp_levels(price, cfg)
+    pick = {"symbol": "HODX", "price": price, "qty": qty, "features": {},
+            "setup": "micro_pullback"}
+    tid = sim.journal.record_trade_open(ts, "HODX", qty=qty, entry=price,
+                                        stop=levels["stop"],
+                                        targets=[levels["target"]],
+                                        features={}, setup="micro_pullback")
+    pos = Position(tid, pick, levels, ts, cfg)
+    sim.open["HODX"] = pos
+    sim.traded.add("HODX")
+    return pos
+
+
+def candle(o, c, h=None, l=None):
+    return {"o": o, "c": c, "h": h if h is not None else max(o, c),
+            "l": l if l is not None else min(o, c)}
+
+
+class TestScalpExits:
+    """Fixed-cent target, 5% stop, out the moment it stalls."""
+
+    def test_the_stop_is_50_dollars_at_any_price(self, sim):
+        for price in (1.0, 2.0, 3.0, 5.0):
+            pos = _scalp_open(sim, price=price)
+            assert (pos.entry - pos.stop) * pos.qty == pytest.approx(50, abs=1)
+            sim.open.clear()
+            sim.traded.clear()
+
+    def test_scaling_out_banks_the_majority_and_runs_the_rest(self, sim):
+        pos = _scalp_open(sim, price=3.00)          # 333 sh, target 3.20
+        assert (pos.bank_qty, pos.runner_qty) == (216, 117)   # 65 / 35
+        sim.manage(et(9, 42), int(et(9, 42).timestamp()),
+                   {"HODX": candle(3.05, 3.18, h=3.25, l=3.04)})
+        assert pos.banked and "HODX" in sim.open
+        assert pos.legs == [(216, 3.20)]
+        # The trade can no longer lose: the stop came up to entry.
+        assert pos.stop == pytest.approx(pos.entry)
+
+    def test_a_scaled_trade_that_reverses_still_makes_money(self, sim):
+        pos = _scalp_open(sim, price=3.00)
+        sim.manage(et(9, 42), int(et(9, 42).timestamp()),
+                   {"HODX": candle(3.05, 3.18, h=3.25, l=3.04)})
+        sim.manage(et(9, 44), int(et(9, 44).timestamp()),
+                   {"HODX": candle(3.10, 2.95, h=3.12, l=2.90)})
+        trade = sim.journal.all_trades()[0]
+        assert trade["exit_reason"] == "breakeven"
+        assert trade["pnl"] > 0                  # the banked 216 shares paid
+
+    def test_taking_the_whole_position_at_the_target(self, sim, tmp_path):
+        cfg = replace(CFG, bot_scalp_scale_out_pct=100.0)
+        j = Journal(str(tmp_path / "full.db"), cfg.bot_alert_window_minutes)
+        full = Simulator(cfg, j, "2026-08-12", HeuristicScorer(), 0.0)
+        _scalp_open(full, price=3.00, cfg=cfg)
+        full.manage(et(9, 42), int(et(9, 42).timestamp()),
+                    {"HODX": candle(3.05, 3.18, h=3.25, l=3.04)})
+        trade = j.all_trades()[0]
+        assert trade["exit_reason"] == "target"
+        assert trade["exit_price"] == pytest.approx(3.20)
+
+    def test_two_dojis_are_a_stall_and_one_is_not(self, sim):
+        _scalp_open(sim, price=3.00)
+        flat = candle(3.05, 3.051, h=3.09, l=3.02)      # tiny body, wide range
+        sim.manage(et(9, 41), int(et(9, 41).timestamp()), {"HODX": flat})
+        assert "HODX" in sim.open                        # one is not enough
+        sim.manage(et(9, 42), int(et(9, 42).timestamp()), {"HODX": flat})
+        assert sim.journal.all_trades()[0]["exit_reason"] == "stall"
+
+    def test_a_real_candle_resets_the_stall_count(self, sim):
+        pos = _scalp_open(sim, price=3.00)
+        flat = candle(3.05, 3.051, h=3.09, l=3.02)
+        drive = candle(3.05, 3.12, h=3.13, l=3.04)       # decisive body
+        sim.manage(et(9, 41), int(et(9, 41).timestamp()), {"HODX": flat})
+        assert pos.dojis == 1
+        sim.manage(et(9, 42), int(et(9, 42).timestamp()), {"HODX": drive})
+        assert pos.dojis == 0
+        sim.manage(et(9, 43), int(et(9, 43).timestamp()), {"HODX": flat})
+        assert "HODX" in sim.open                        # count restarted
+
+    def test_the_stop_still_takes_precedence_over_the_target(self, sim):
+        _scalp_open(sim, price=3.00)
+        sim.manage(et(9, 42), int(et(9, 42).timestamp()),
+                   {"HODX": candle(3.00, 3.00, h=3.30, l=2.80)})
+        trade = sim.journal.all_trades()[0]
+        assert trade["exit_reason"] == "stop"
+        assert trade["r_multiple"] == pytest.approx(-1.0, abs=0.02)
+
+    def test_ten_minutes_is_the_maximum_hold(self, sim):
+        open_ts = int(et(9, 40).timestamp())
+        _scalp_open(sim, price=3.00, ts=open_ts)
+        late = et(9, 40) + dt.timedelta(minutes=CFG.bot_time_stop_minutes)
+        sim.manage(late, int(late.timestamp()),
+                   {"HODX": candle(3.04, 3.05, h=3.06, l=3.03)})
+        assert sim.journal.all_trades()[0]["exit_reason"] == "time_stop"

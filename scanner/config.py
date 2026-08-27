@@ -22,8 +22,8 @@ class Config:
     gainer_rows: int = 20
 
     # --- scanner 2: HOD momentum (Ross Cameron's five criteria) ---
-    hod_min_price: float = 2.0          # $2-$20, matching the bot's band
-    hod_max_price: float = 20.0
+    hod_min_price: float = 1.0          # $1-$5, matching the bot's band
+    hod_max_price: float = 5.0
     # 50M, not Ross's 20M. Across 61 replayed sessions of the whole market
     # only 5 rows cleared all the gates at once, which is not enough trades
     # to learn from. These four numbers are loosened together and measured
@@ -102,23 +102,51 @@ class Config:
     # 5% risk against a 20% stop puts exactly $250 into each position
     # ($50 / (0.20 x price) shares), which is also the 25% notional cap - the
     # two formulas agree, so neither one silently overrides the other.
+    # The whole account goes into one trade, and the stop is 5% of that -
+    # $50 on $1,000. Risk and notional are the same lever here: 5% risk at a
+    # 5% stop is 100% of the bankroll, so the two agree by construction.
     bot_risk_pct: float = 5.0            # % of bankroll risked per trade
-    bot_max_notional_pct: float = 25.0   # position size cap as % of bankroll
+    bot_max_notional_pct: float = 100.0  # position size cap as % of bankroll
+    # A hard ceiling in dollars, whatever the account grows to. Position
+    # size tracks the balance up to here and then stops.
+    bot_max_notional_dollars: float = 15_000.0
     bot_max_trades_per_day: int = 10
+    # --- scalping ---
+    # Take profit at a fixed distance in cents rather than a multiple of
+    # risk. Worth knowing what that implies: with a 5% stop the same 20c is
+    # a 4:1 reward on a $1 stock and 0.8:1 on a $5 one, because $1,000 buys
+    # five times as many shares down there. The price band is deliberately
+    # narrow for that reason, and results are reported by price bucket.
+    bot_scalp_mode: bool = True
+    bot_scalp_target_cents: float = 0.20
+    # Sell this share of the position at the target and let the rest run,
+    # governed by the stall exit below. 0 takes the whole thing off.
+    bot_scalp_scale_out_pct: float = 65.0
+    # After banking, the runner's stop comes up to entry: the trade can no
+    # longer lose, which is the point of scaling out at all.
+    bot_scalp_runner_breakeven: bool = True
+    # A doji is a bar that opens and closes in the same place - buyers and
+    # sellers balanced. Two in a row is the stall to get out on. One-minute
+    # bars are the finest the free feed carries, so a 5-10 second stutter is
+    # not observable and cannot be honestly backtested.
+    bot_doji_exit_bars: int = 2
+    bot_doji_body_pct: float = 20.0      # body <= this % of the bar's range
     bot_max_losses_per_day: int = 4      # the day's kill switch: 4 losers, stop
     # 4 x $250 is the whole account. Without this the bot could hold ten
     # positions at once against a $1,000 balance, since a 4-hour hold does
     # not turn over fast enough for the daily cap to bound exposure.
-    bot_max_concurrent_positions: int = 4
-    bot_min_price: float = 2.0           # bot trades $2-$20 only (user request)
-    bot_max_price: float = 20.0
+    bot_max_concurrent_positions: int = 1   # the whole account, one trade
+    bot_min_price: float = 1.0           # scalping band, $1-$5
+    bot_max_price: float = 5.0
     # Min and max both at 20 collapses the band, so technical_stop returns a
     # flat 20% on every trade and skips anything wider. This deliberately
     # discards the technical stop - the pullback low Ross places the stop at -
     # in favour of a fixed percentage. Restore 1.0/6.0 to undo it.
-    bot_stop_pct: float = 20.0           # fallback stop when no setup low exists
-    bot_min_stop_pct: float = 20.0       # floor: never risk less than noise
-    bot_max_stop_pct: float = 20.0       # skip setups whose stop is this far away
+    # Flat 5%: the stop is a fixed slice of the money at work, not the
+    # setup low. On $1,000 that is exactly $50, at any share price.
+    bot_stop_pct: float = 5.0            # fallback stop when no setup low exists
+    bot_min_stop_pct: float = 5.0        # floor: never risk less than noise
+    bot_max_stop_pct: float = 5.0        # skip setups whose stop is this far away
     bot_limit_slippage_pct: float = 0.3  # marketable limit above the ask
     bot_scale_out_r: float = 2.0         # bank half here
     bot_runner_trail_pct: float = 5.0    # native trailing-stop width for the runner
@@ -126,17 +154,17 @@ class Config:
     # nothing moves 40% in 20 minutes - 186 of 414 replayed losses (45%) were
     # the clock expiring, not the stop being hit. Last entry 11:30 + 4h =
     # 15:30, still inside the 15:50 flatten.
-    bot_time_stop_minutes: int = 240     # only applies before scale-out
+    bot_time_stop_minutes: int = 10      # scalp: in and out
     # The grading horizon must match the holding horizon, or the journal
     # labels a trade a loss while the bot is still holding it.
-    bot_alert_window_minutes: int = 240
+    bot_alert_window_minutes: int = 10
     # 09:30, not 09:35: the first five minutes are often the best move of the
     # day on a gapper, and the opening-range break lives in exactly that slot.
     bot_window_open: str = "09:30"       # ET; no entries before/after the window
     # The first 30 minutes. That is where the opening drive happens and
     # where these setups actually appear; entries after it were a different
     # market from the one this is selected for.
-    bot_window_close: str = "10:00"
+    bot_window_close: str = "10:30"
     bot_flatten_time: str = "15:50"      # ET; close everything before the bell
     # 0 = disabled. The day now ends on a loss COUNT
     # (bot_max_losses_per_day), not a dollar figure. Worth knowing: a count

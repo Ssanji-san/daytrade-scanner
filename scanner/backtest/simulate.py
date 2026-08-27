@@ -23,7 +23,8 @@ import datetime as dt
 from ..config import Config
 from ..history import ET
 from ..trading.bot import choose_entries
-from ..trading.strategy import exit_levels, split_qty, weighted_exit
+from ..trading.strategy import (exit_levels, is_doji, scalp_levels,
+                                scalp_split, split_qty, weighted_exit)
 
 
 def _hhmm(text):
@@ -45,22 +46,30 @@ def _in_entry_window(now, cfg: Config):
 class Position:
     """One simulated open trade, with the same two legs the live bot uses."""
 
-    def __init__(self, trade_id, pick, levels, ts):
+    def __init__(self, trade_id, pick, levels, ts, cfg=None):
         self.trade_id = trade_id
         self.symbol = pick["symbol"]
         self.entry = pick["price"]
         self.stop = levels["stop"]
-        self.scale_out = levels["scale_out"]
+        self.scale_out = levels.get("scale_out") or levels.get("target")
+        self.target = levels.get("target")
         self.qty = pick["qty"]
-        self.bank_qty, self.runner_qty = split_qty(pick["qty"])
+        if cfg is not None and cfg.bot_scalp_mode:
+            self.bank_qty, self.runner_qty = scalp_split(pick["qty"], cfg)
+        else:
+            self.bank_qty, self.runner_qty = split_qty(pick["qty"])
         self.opened_ts = ts
         self.banked = False
         self.trail_high = pick["price"]
+        self.dojis = 0            # consecutive stalled bars
+        self._risk = self.entry - levels["stop"]
         self.legs = []            # (qty, price) as each leg closes
 
+    #: risk is fixed at entry - it must not follow the stop to break-even,
+    #: or a scaled-out trade would report an infinite R multiple.
     @property
     def risk(self):
-        return self.entry - self.stop
+        return self._risk
 
     def close(self, qty, price):
         self.legs.append((qty, price))
@@ -115,6 +124,10 @@ class Simulator:
                 self._finish(pos, ts, "flatten")
                 continue
 
+            if self.cfg.bot_scalp_mode:
+                self._scalp(pos, ts, bar, high, low, close)
+                continue
+
             if not pos.banked:
                 # Stop before target: a bar spanning both is assumed to have
                 # taken the stop first.
@@ -141,6 +154,41 @@ class Simulator:
                 pos.close(pos.runner_qty, trail)
                 self._finish(pos, ts, "trailing")
 
+    def _scalp(self, pos, ts, bar, high, low, close):
+        """Fixed-cent target, flat stop, and out the moment it stalls."""
+        cfg = self.cfg
+        pos.dojis = pos.dojis + 1 if is_doji(bar, cfg) else 0
+        remaining = pos.qty - sum(q for q, _ in pos.legs)
+
+        # Stop before target on a bar that spans both.
+        if low <= pos.stop:
+            pos.close(remaining, pos.stop)
+            self._finish(pos, ts, "breakeven" if pos.banked else "stop")
+            return
+
+        if not pos.banked and high >= pos.target:
+            if pos.runner_qty >= 1:
+                pos.close(pos.bank_qty, pos.target)
+                pos.banked = True
+                if cfg.bot_scalp_runner_breakeven:
+                    # The trade can no longer lose. That is the whole reason
+                    # to take part of it off here.
+                    pos.stop = pos.entry
+                return
+            pos.close(remaining, pos.target)
+            self._finish(pos, ts, "target")
+            return
+
+        # Stalling out: buyers and sellers balanced for N bars running.
+        if pos.dojis >= cfg.bot_doji_exit_bars:
+            pos.close(remaining, close)
+            self._finish(pos, ts, "stall")
+            return
+
+        if (ts - pos.opened_ts) / 60 >= cfg.bot_time_stop_minutes:
+            pos.close(remaining, close)
+            self._finish(pos, ts, "time_stop")
+
     # ----------------------------------------------------------- entries
 
     def enter(self, now, ts, qualified_rows):
@@ -157,15 +205,19 @@ class Simulator:
             losses_today=self.losses,
             open_positions=len(self.open))
         for pick in picks:
-            levels = exit_levels(pick["price"], self.cfg,
-                                 stop_price=pick.get("stop"))
+            levels = (scalp_levels(pick["price"], self.cfg)
+                      if self.cfg.bot_scalp_mode
+                      else exit_levels(pick["price"], self.cfg,
+                                       stop_price=pick.get("stop")))
             if levels["stop"] >= pick["price"]:
                 continue
+            target = levels.get("scale_out") or levels.get("target")
             trade_id = self.journal.record_trade_open(
                 ts, pick["symbol"], qty=pick["qty"], entry=pick["price"],
-                stop=levels["stop"], targets=[levels["scale_out"]],
+                stop=levels["stop"], targets=[target],
                 features=pick["features"], setup=pick.get("setup"))
-            self.open[pick["symbol"]] = Position(trade_id, pick, levels, ts)
+            self.open[pick["symbol"]] = Position(trade_id, pick, levels, ts,
+                                                 self.cfg)
             self.traded.add(pick["symbol"])
 
     def close_out(self, ts, last_bars):

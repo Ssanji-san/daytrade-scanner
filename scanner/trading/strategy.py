@@ -116,9 +116,48 @@ def size_position(price, cfg: Config, stop_price=None):
         return 0, stop_price
     risk_dollars = cfg.bot_bankroll * cfg.bot_risk_pct / 100
     qty = int(risk_dollars / (price - stop_price))
+    # Two ceilings: a share of the account, and a hard dollar figure the
+    # position never exceeds however large the account grows.
     max_notional = cfg.bot_bankroll * cfg.bot_max_notional_pct / 100
+    cap = getattr(cfg, "bot_max_notional_dollars", 0)
+    if cap:
+        max_notional = min(max_notional, cap)
     qty = min(qty, int(max_notional / price))
     return qty, stop_price
+
+
+def is_doji(bar, cfg: Config):
+    """A bar that opened and closed in the same place: nobody winning.
+
+    Two of these in a row is the stall this strategy exits on. A bar with no
+    range at all is the purest version of it.
+    """
+    if not bar:
+        return False
+    open_, close = bar.get("o"), bar.get("c")
+    high, low = bar.get("h"), bar.get("l")
+    if open_ is None or close is None or high is None or low is None:
+        return False
+    span = high - low
+    if span <= 0:
+        return True
+    return abs(close - open_) <= (cfg.bot_doji_body_pct / 100.0) * span
+
+
+def scalp_levels(entry_price, cfg: Config):
+    """Stop a fixed % below, target a fixed number of cents above."""
+    stop = entry_price * (1 - cfg.bot_stop_pct / 100)
+    return {"stop": round(stop, 2),
+            "target": round(entry_price + cfg.bot_scalp_target_cents, 2)}
+
+
+def scalp_split(qty, cfg: Config):
+    """(banked, runner) shares at the target. Runner may be zero."""
+    if cfg.bot_scalp_scale_out_pct >= 100:
+        return qty, 0
+    banked = int(qty * cfg.bot_scalp_scale_out_pct / 100.0)
+    banked = max(0, min(qty, banked))
+    return banked, qty - banked
 
 
 def exit_levels(entry_price, cfg: Config, stop_price=None):

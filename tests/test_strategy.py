@@ -17,7 +17,7 @@ def et(hour, minute):
 
 
 def ok_kwargs(**overrides):
-    kw = dict(price=5.0, score=0.8, trades_today=0, traded_symbols=set(),
+    kw = dict(price=3.0, score=0.8, trades_today=0, traded_symbols=set(),
               day_pnl=0.0, now=et(10, 0), cfg=CFG)
     kw.update(overrides)
     return kw
@@ -26,12 +26,12 @@ def ok_kwargs(**overrides):
 class TestWindow:
     def test_window_edges(self):
         # Opens on the bell and shuts after thirty minutes: the opening
-        # drive is what this strategy selects for, and entries after it are
-        # a different market.
+        # first hour is the volatile one this strategy selects for, and
+        # entries after it are a different market.
         assert not in_window(et(9, 29), CFG)
         assert in_window(et(9, 30), CFG)
-        assert in_window(et(10, 0), CFG)
-        assert not in_window(et(10, 1), CFG)
+        assert in_window(et(10, 30), CFG)
+        assert not in_window(et(10, 31), CFG)
 
     def test_handles_other_timezones(self):
         utc_10et = et(10, 0).astimezone(dt.timezone.utc)
@@ -44,7 +44,7 @@ class TestShouldEnter:
         assert take and reasons == []
 
     @pytest.mark.parametrize("overrides,expected", [
-        ({"price": 1.50}, "price"),
+        ({"price": 0.50}, "price"),
         ({"price": 25.0}, "price"),
         ({"now": et(9, 20)}, "window"),
         ({"now": et(12, 0)}, "window"),
@@ -124,31 +124,39 @@ class TestBrokerState:
 
 
 class TestSizing:
-    def test_position_is_250_dollars_at_a_20pct_stop(self):
-        # $50 risk / (20% of $5.00) = 50 shares = $250, which is also the
-        # 25% notional cap. The two formulas agree, so neither one
-        # silently overrides the other.
+    def test_the_whole_account_goes_in_at_a_5pct_stop(self):
+        # $50 risk / (5% of $5.00) = 200 shares = $1,000, which is also the
+        # 100% notional cap. The two agree, so neither silently overrides
+        # the other - and the risk is $50 at any share price.
         qty, stop = size_position(5.0, CFG)
-        assert qty == 50                       # 250 / 5.00
-        assert stop == pytest.approx(4.00)
+        assert qty == 200                      # 1000 / 5.00
+        assert stop == pytest.approx(4.75)
+        assert (5.0 - stop) * qty == pytest.approx(50.0)
 
-    def test_uncapped_when_risk_is_small(self):
-        cfg = replace(CFG, bot_risk_pct=0.5)   # risk $5 -> 2 sh, under the $250 cap
-        qty, stop = size_position(10.0, cfg)
-        assert qty == 2                        # 5 / 2.00
-        assert stop == pytest.approx(8.00)
+    def test_risk_stays_50_dollars_across_the_price_band(self):
+        for price in (1.0, 2.0, 3.0, 5.0):
+            qty, stop = size_position(price, CFG)
+            assert (price - stop) * qty == pytest.approx(50.0, abs=0.10)
+            assert qty * price == pytest.approx(1000.0, abs=2.0)
+
+    def test_the_dollar_ceiling_caps_a_grown_account(self):
+        # Position size tracks the balance up to the hard $15,000 ceiling
+        # and then stops, however large the account gets.
+        cfg = replace(CFG, bot_bankroll=100_000.0)
+        qty, _ = size_position(5.0, cfg)
+        assert qty * 5.0 == pytest.approx(CFG.bot_max_notional_dollars, abs=5)
 
     def test_zero_when_price_exceeds_notional_cap(self):
-        cfg = replace(CFG, bot_bankroll=10.0)
+        cfg = replace(CFG, bot_bankroll=1.0)
         qty, _ = size_position(5.0, cfg)
         assert qty == 0
 
 
 class TestExits:
     def test_stop_and_scale_out_levels(self):
-        levels = exit_levels(10.0, CFG)          # 1R = 2.00
-        assert levels["stop"] == pytest.approx(8.00)
-        assert levels["scale_out"] == pytest.approx(14.00)   # +2R
+        levels = exit_levels(10.0, CFG)          # 1R = 0.50
+        assert levels["stop"] == pytest.approx(9.50)
+        assert levels["scale_out"] == pytest.approx(11.00)   # +2R
 
     def test_split_qty(self):
         assert split_qty(9) == (5, 4)

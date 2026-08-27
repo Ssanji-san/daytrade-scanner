@@ -13,7 +13,7 @@ def test_qualifying_stock_passes_all_criteria():
     assert len(qualified) == 1 and near == []
     row = qualified[0]
     assert row["failed"] == []
-    assert row["dist_from_hod"] == pytest.approx(100 * (5.55 - 5.50) / 5.55)
+    assert row["dist_from_hod"] == pytest.approx(100 * (3.03 - 3.00) / 3.03)
 
 
 def test_price_band_is_a_hard_gate():
@@ -86,12 +86,12 @@ def test_a_pullback_entry_is_tradable_not_stranded_in_the_near_list():
     whole strategy unreachable: the setup fires and the row lands in the
     'near' list, which the bot never trades.
     """
-    pulling_back = make_state(price=5.38, day_high=5.50,
-                              setup={"setup": "micro_pullback", "stop": 5.35})
+    pulling_back = make_state(price=2.94, day_high=3.03,
+                              setup={"setup": "micro_pullback", "stop": 2.90})
     qualified, near = scan([pulling_back], Config(hod_require_news=True))
     assert [r["symbol"] for r in qualified] == ["TEST"]
     assert near == []
-    assert qualified[0]["dist_from_hod"] == pytest.approx(2.18, abs=0.05)
+    assert qualified[0]["dist_from_hod"] == pytest.approx(2.97, abs=0.05)
 
 
 def test_volume_floor_is_off_by_default_and_applies_when_set():

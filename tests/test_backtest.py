@@ -92,8 +92,8 @@ class TestTimeline:
 
 class TestCandidateSelection:
     def test_keeps_a_real_mover_in_the_price_band(self):
-        daily = {"MOVR": [bar("2026-08-11T00:00:00Z", 5, 5, 5, 5.00),
-                          bar("2026-08-12T00:00:00Z", 6, 7, 6, 7.00)]}
+        daily = {"MOVR": [bar("2026-08-11T00:00:00Z", 2, 2, 2, 2.00),
+                          bar("2026-08-12T00:00:00Z", 2.4, 3.2, 2.4, 3.00)]}
         assert fetch.select_candidates(daily, CFG) == {"2026-08-12": ["MOVR"]}
 
     def test_a_spike_that_faded_is_still_a_candidate(self):

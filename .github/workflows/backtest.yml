@@ -37,6 +37,10 @@ on:
         description: "Drop Ross's catalyst requirement, to see how many more setups exist (true/false)"
         required: false
         default: "false"
+      scale_out:
+        description: "% of the scalp sold at the target; 100 takes it all off, 65 leaves a runner"
+        required: false
+        default: ""
 
 jobs:
   backtest:
@@ -85,7 +89,8 @@ jobs:
             --end "${{ inputs.end }}" \
             --feed "${{ inputs.feed }}" \
             ${{ inputs.trades == 'true' && '--trades' || '' }} \
-            ${{ inputs.no_news == 'true' && '--no-news' || '' }}
+            ${{ inputs.no_news == 'true' && '--no-news' || '' }} \
+            ${{ inputs.scale_out != '' && format('--scale-out {0}', inputs.scale_out) || '' }}
 
       - name: Commit the backtest journal
         if: ${{ inputs.commit == 'true' }}

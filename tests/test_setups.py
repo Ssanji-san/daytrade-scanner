@@ -98,13 +98,13 @@ class TestTechnicalStop:
         assert technical_stop(10.0, None, BAND) == pytest.approx(9.70)
         assert technical_stop(10.0, 10.5, BAND) == pytest.approx(9.70)
 
-    def test_live_config_forces_a_flat_20_percent(self):
-        # min and max both at 20 collapse the band: the setup low is
-        # ignored and every trade risks the same 20%, whatever the chart
-        # says. This deliberately discards the technical stop.
-        assert technical_stop(10.0, 9.85, CFG) == pytest.approx(8.00)
-        assert technical_stop(10.0, None, CFG) == pytest.approx(8.00)
-        assert technical_stop(10.0, 7.00, CFG) is None   # 30% > 20% max
+    def test_live_config_forces_a_flat_5_percent(self):
+        # min and max both at 5 collapse the band: the setup low is ignored
+        # and every trade risks the same 5% of the money at work - $50 on
+        # $1,000, at any share price.
+        assert technical_stop(10.0, 9.85, CFG) == pytest.approx(9.50)
+        assert technical_stop(10.0, None, CFG) == pytest.approx(9.50)
+        assert technical_stop(10.0, 7.00, CFG) is None   # 30% > 5% max
 
 
 class TestOpeningRangeBreak:
