@@ -63,8 +63,14 @@ def journal_alert(journal, ts, row, now, observed, cfg: Config):
     distribution and trades in another.
     """
     setup = row.get("setup") or {}
-    stop = setup.get("stop")
-    r_dollars = ((row["price"] - stop) if stop and stop < row["price"]
+    # Grade against the stop the bot would REALLY have used, not the raw
+    # setup low. technical_stop clamps into the configured risk band - with
+    # the band collapsed to a flat 20% it ignores the setup low entirely -
+    # so reading setup["stop"] here labelled every alert against an R the
+    # bot never risks. That is the train/serve skew this function exists to
+    # prevent. A stop too wide to trade still grades on the fallback.
+    stop = technical_stop(row["price"], setup.get("stop"), cfg)
+    r_dollars = ((row["price"] - stop) if stop
                  else row["price"] * cfg.bot_stop_pct / 100)
     return journal.record_alert(ts, row["symbol"], row["price"], r_dollars,
                                 features_from_row(row, now),

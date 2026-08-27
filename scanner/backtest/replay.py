@@ -125,6 +125,10 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
                cfg: Config):
     """Replay one session, journalling graded alerts. Returns how many.
 
+    The count is distinct alerts, not row-minutes: a symbol that qualifies
+    for ninety consecutive minutes is one alert, and reporting ninety made
+    the daily numbers look forty times larger than the dataset.
+
     `context` supplies the per-symbol facts a live session would already
     know: {"prev_close": {}, "avg_volume": {}, "float_shares": {}}. Those
     must be computed from data strictly before `day` - see
@@ -169,20 +173,20 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
 
         payload = state.payload(now, require_news=True)
         for row in payload["hod"]["qualified"]:
-            _record(journal, tracked, now_ts, row, now, 0, cfg)
-            seen += 1
+            if _record(journal, tracked, now_ts, row, now, 0, cfg):
+                seen += 1
         if cfg.learn_from_near_misses:
             for row in payload["hod"].get("near") or []:
-                _record(journal, tracked, now_ts, row, now, 1, cfg)
-                seen += 1
+                if _record(journal, tracked, now_ts, row, now, 1, cfg):
+                    seen += 1
         if cfg.backtest_sample_all:
             # Every mover, gates or not. A model shown only what the filters
             # already surfaced can rank within that set but never learns
             # what a 2R move looks like in the population it is not seeing.
             for row in state.build_states(now):
                 if row["symbol"] not in tracked:
-                    _record(journal, tracked, now_ts, row, now, 2, cfg)
-                    seen += 1
+                    if _record(journal, tracked, now_ts, row, now, 2, cfg):
+                        seen += 1
 
         last_bar.update(symbol_bars)
         _mark(journal, tracked, now_ts, symbol_bars)

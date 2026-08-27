@@ -109,44 +109,55 @@ async def run(start, end, feed, fetch_only):
     report(journal, cfg)
 
 
-def _expectancy(rows):
-    """(hit rate, pure-2R R, runner R) over graded alerts.
+def outcome(row):
+    """"win", "stopped" or "timeout" for one graded alert.
 
-    Pure 2R: +2 on a win, -1 otherwise. The runner banks half at +2R and
-    rides the rest, so it is credited with mfe less a rough 1R of trail
-    give-back. mfe is a floor here, not a ceiling - it stops at the last bar
-    of the tracking window.
+    The journal's label is binary - anything that is not a win is a 0 - but
+    those two zeros are not the same trade. A stop-out really lost 1R. A
+    timeout is a position the time stop closes at whatever the market is
+    then, which is usually near break-even. Scoring them alike is the
+    difference between a strategy that bleeds and one that mostly does
+    nothing.
+    """
+    if row["label"] == 1:
+        return "win"
+    if row["r_dollars"] and row["mae"] <= -row["r_dollars"]:
+        return "stopped"
+    return "timeout"
+
+
+def _expectancy(rows, timeout_r):
+    """(hit rate, pure-2R R, runner R), scoring timeouts at `timeout_r`.
+
+    The runner banks half at +2R and rides the rest, credited with mfe less
+    a rough 1R of trail give-back. mfe is a floor, not a ceiling: it stops
+    at the last bar of the tracking window.
     """
     if not rows:
         return 0.0, 0.0, 0.0
-    wins = sum(1 for r in rows if r["label"] == 1)
-    pure = sum(2 if r["label"] == 1 else -1 for r in rows) / len(rows)
-    runner = 0.0
-    for r in rows:
-        if r["label"] != 1:
+    wins = pure = runner = 0
+    for row in rows:
+        kind = outcome(row)
+        if kind == "win":
+            wins += 1
+            pure += 2
+            ran = (row["mfe"] / row["r_dollars"]) if row["r_dollars"] else 2.0
+            runner += 1.0 + 0.5 * max(2.0, ran - 1.0)
+        elif kind == "stopped":
+            pure -= 1
             runner -= 1
-            continue
-        ran = (r["mfe"] / r["r_dollars"]) if r["r_dollars"] else 2.0
-        runner += 1.0 + 0.5 * max(2.0, ran - 1.0)
-    return wins / len(rows), pure, runner / len(rows)
-
-
-def _loss_split(rows):
-    """(stopped out, timed out) among the losses.
-
-    A loss whose worst excursion never reached -1R did not lose - the clock
-    ran out on it. That was 45% of losses at the old 30-minute horizon, and
-    it is the number this longer hold is meant to move.
-    """
-    stopped = timed = 0
-    for r in rows:
-        if r["label"] != 0:
-            continue
-        if r["r_dollars"] and r["mae"] <= -r["r_dollars"]:
-            stopped += 1
         else:
-            timed += 1
-    return stopped, timed
+            pure += timeout_r
+            runner += timeout_r
+    n = len(rows)
+    return wins / n, pure / n, runner / n
+
+
+def _counts(rows):
+    tally = {"win": 0, "stopped": 0, "timeout": 0}
+    for row in rows:
+        tally[outcome(row)] += 1
+    return tally
 
 
 def report(journal, cfg):
@@ -158,21 +169,30 @@ def report(journal, cfg):
         print("[backtest] nothing labeled yet")
         return
     risk = cfg.bot_bankroll * cfg.bot_risk_pct / 100
-    print(f"[backtest] {len(rows)} labeled alerts, ${risk:,.0f} risked per "
-          f"trade, {cfg.bot_alert_window_minutes}-minute horizon")
-    print(f"[backtest] {'month':>8} {'n':>5} {'hit':>7} {'2R exp':>9} "
-          f"{'runner':>9} {'$/trade':>9}  {'stopped':>8} {'timeout':>8}")
+    print(f"[backtest] {len(rows)} graded alerts, ${risk:,.0f} risked per "
+          f"trade, {cfg.bot_alert_window_minutes}-minute horizon, "
+          f"{cfg.bot_stop_pct:.0f}% stop")
+    print("[backtest] 'label' scores a timeout as a full -1R the way the "
+          "journal does;")
+    print("[backtest] 'timestop' scores it at 0R, which is closer to what "
+          "the exit really does.")
+    print(f"[backtest] {'month':>8} {'n':>6} {'win':>6} {'stop':>6} "
+          f"{'t/out':>6} {'label':>8} {'timestop':>9} {'runner':>8} "
+          f"{'$/trade':>8}")
     by_month = {}
     for row in rows:
         by_month.setdefault(row["day"][:7], []).append(row)
     for month in sorted(by_month) + ["ALL"]:
         block = rows if month == "ALL" else by_month[month]
-        hit, pure, runner = _expectancy(block)
-        stopped, timed = _loss_split(block)
-        print(f"[backtest] {month:>8} {len(block):>5} {hit:>6.1%} "
-              f"{pure:>+8.2f}R {runner:>+8.2f}R {runner * risk:>+8.0f} "
-              f"{stopped:>8} {timed:>8}")
-    print("[backtest] break-even on a 2R target needs a 33.3% hit rate")
+        tally = _counts(block)
+        hit, label_r, _ = _expectancy(block, timeout_r=-1.0)
+        _, stop_r, runner_r = _expectancy(block, timeout_r=0.0)
+        n = len(block)
+        print(f"[backtest] {month:>8} {n:>6} {hit:>5.1%} "
+              f"{tally['stopped'] / n:>5.1%} {tally['timeout'] / n:>5.1%} "
+              f"{label_r:>+7.2f}R {stop_r:>+8.2f}R {runner_r:>+7.2f}R "
+              f"{runner_r * risk:>+7.0f}")
+    print("[backtest] break-even on a 2R target needs a 33.3% win rate")
 
     if len(dataset) >= cfg.bot_model_min_samples:
         _, meta = train(dataset, min_samples=cfg.bot_model_min_samples,

@@ -361,3 +361,28 @@ class TestBaselineLookback:
         days = [d for d in sorted(candidates) if start <= d <= end]
         assert days == ["2026-02-03", "2026-02-27"]
         assert _lookback_start(start) < "2026-01-05"    # baseline covers it
+
+
+class TestOutcomeSplit:
+    """A stop-out and a timeout are both label 0, and are not the same trade."""
+
+    def _row(self, label, mae, mfe=0.0, r=1.0):
+        return {"day": "2026-08-12", "label": label, "mae": mae, "mfe": mfe,
+                "r_dollars": r}
+
+    def test_classifies_the_three_outcomes(self):
+        from scripts.backtest import outcome
+        assert outcome(self._row(1, -0.2, mfe=2.0)) == "win"
+        assert outcome(self._row(0, -1.5)) == "stopped"
+        assert outcome(self._row(0, -0.3)) == "timeout"
+
+    def test_timeouts_do_not_cost_a_full_r(self):
+        from scripts.backtest import _expectancy
+        rows = [self._row(0, -0.3) for _ in range(10)]
+        assert _expectancy(rows, timeout_r=-1.0)[1] == pytest.approx(-1.0)
+        assert _expectancy(rows, timeout_r=0.0)[1] == pytest.approx(0.0)
+
+    def test_a_stop_out_costs_a_full_r_either_way(self):
+        from scripts.backtest import _expectancy
+        rows = [self._row(0, -1.2) for _ in range(10)]
+        assert _expectancy(rows, timeout_r=0.0)[1] == pytest.approx(-1.0)
