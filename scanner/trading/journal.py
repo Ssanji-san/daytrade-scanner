@@ -12,7 +12,7 @@ import sqlite3
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
-ALERT_WINDOW_SECONDS = 30 * 60
+ALERT_WINDOW_SECONDS = 30 * 60      # default; Config.bot_alert_window_minutes wins
 WIN_R = 2.0   # label 1 = reached +2R before -1R
 
 SCHEMA = """
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     price REAL, r_dollars REAL,
     features TEXT,
     mfe REAL DEFAULT 0, mae REAL DEFAULT 0,
-    label INTEGER, resolved_ts INTEGER,
+    label INTEGER, resolved_ts INTEGER, resolved_r REAL,
     observed INTEGER DEFAULT 0,
     UNIQUE(day, symbol)
 );
@@ -55,7 +55,15 @@ class Journal:
     RECOVERABLE = ("readonly", "moved", "disk i/o", "closed database",
                    "database is locked", "no such table")
 
-    def __init__(self, path):
+    def __init__(self, path, alert_window_minutes=None):
+        # The grading horizon has to match how long the bot actually holds a
+        # trade. Labelling a loss at 30 minutes while the time stop runs for
+        # four hours does not measure the strategy, it measures the timer:
+        # 186 of 414 replayed losses were the 30-minute clock expiring, not
+        # the stop being hit.
+        self.alert_window_seconds = (ALERT_WINDOW_SECONDS
+                                     if alert_window_minutes is None
+                                     else int(alert_window_minutes) * 60)
         self.path = str(path)
         pathlib.Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._connect()
@@ -72,6 +80,10 @@ class Journal:
         try:
             self._db.execute(
                 "ALTER TABLE alerts ADD COLUMN observed INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            self._db.execute("ALTER TABLE alerts ADD COLUMN resolved_r REAL")
         except sqlite3.OperationalError:
             pass
         self._db.commit()
@@ -126,22 +138,39 @@ class Journal:
         """
         row = self._execute("SELECT * FROM alerts WHERE id=?",
                               (alert_id,)).fetchone()
-        if row is None or row["label"] is not None:
+        if row is None:
             return
         high = max(high or price, price)
         low = min(low or price, price)
         mfe = max(row["mfe"], high - row["price"])
         mae = min(row["mae"], low - row["price"])
-        label = None
-        if low <= row["price"] - row["r_dollars"]:
-            label = 0                    # the wick took the stop first
-        elif high >= row["price"] + WIN_R * row["r_dollars"]:
-            label = 1
-        elif now_ts - row["ts"] > ALERT_WINDOW_SECONDS:
-            label = 0
+        label, resolved = row["label"], row["resolved_ts"]
+        resolved_r = row["resolved_r"]
+        # Excursions keep recording after the label is set. Stopping there
+        # froze every winner's mfe at the minute it crossed +2R, so a trade
+        # that went on to run 10R was filed as exactly 2R and the model had
+        # no way to tell a scratch from a monster. The label never changes
+        # once decided.
+        if label is None:
+            # resolved_r is what the position was actually worth when it
+            # ended, in R. A stop-out exits at the stop and a target exits
+            # at the target, but a timeout exits at whatever the market is
+            # then - and assuming that is break-even was quietly deciding
+            # the answer, since timeouts are the large majority of outcomes.
+            if low <= row["price"] - row["r_dollars"]:
+                label, resolved_r = 0, -1.0        # the wick took the stop
+            elif high >= row["price"] + WIN_R * row["r_dollars"]:
+                label, resolved_r = 1, WIN_R
+            elif now_ts - row["ts"] > self.alert_window_seconds:
+                label = 0                          # the clock, not the stop
+                resolved_r = ((price - row["price"]) / row["r_dollars"]
+                              if row["r_dollars"] else 0.0)
+            if label is not None:
+                resolved = now_ts
         self._execute(
-            "UPDATE alerts SET mfe=?, mae=?, label=?, resolved_ts=? WHERE id=?",
-            (mfe, mae, label, now_ts if label is not None else None, alert_id))
+            "UPDATE alerts SET mfe=?, mae=?, label=?, resolved_ts=?,"
+            " resolved_r=? WHERE id=?",
+            (mfe, mae, label, resolved, resolved_r, alert_id))
         self._commit()
 
     def open_alerts(self, day=None):
@@ -157,6 +186,17 @@ class Journal:
             rows = self._execute(
                 "SELECT id, symbol FROM alerts WHERE label IS NULL AND day=?",
                 (day,)).fetchall()
+        return [(r["id"], r["symbol"]) for r in rows]
+
+    def tracking_alerts(self, day, now_ts):
+        """Alerts still worth marking today - labelled ones included.
+
+        A resolved alert keeps getting marked until it falls out of the
+        tracking horizon, so mfe records how far a winner really ran.
+        """
+        rows = self._execute(
+            "SELECT id, symbol FROM alerts WHERE day=? AND ts > ?",
+            (day, now_ts - self.alert_window_seconds)).fetchall()
         return [(r["id"], r["symbol"]) for r in rows]
 
     def recent_alerts(self, limit=40):
@@ -184,6 +224,20 @@ class Journal:
         return {"labeled": row["n"] or 0,
                 "tradable": row["tradable"] or 0,
                 "needed": min_samples}
+
+    def outcome_rows(self):
+        """Graded alerts with their excursions - what a report needs.
+
+        `label` says whether +2R came before -1R; `mfe`/`mae` say how far it
+        actually went, which is what separates a scratch from a runner and a
+        real stop-out from the clock expiring.
+        """
+        rows = self._execute(
+            "SELECT day, symbol, setup, price, r_dollars, mfe, mae, label,"
+            " observed, resolved_r FROM alerts WHERE label IS NOT NULL"
+            " ORDER BY ts"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def labeled_dataset(self):
         rows = self._execute(
@@ -215,10 +269,22 @@ class Journal:
             (ts, exit_price, exit_reason, pnl, r_multiple, trade_id))
         self._commit()
 
+    def all_trades(self):
+        """Every trade ever recorded, for reporting over a whole backtest."""
+        rows = self._execute("SELECT * FROM trades ORDER BY ts").fetchall()
+        return [dict(r) for r in rows]
+
     def trades_today(self, day):
         rows = self._execute(
             "SELECT * FROM trades WHERE day=? ORDER BY ts", (day,)).fetchall()
         return [dict(r) for r in rows]
+
+    def losses_today(self, day):
+        """Closed losing trades today - the day's kill switch counts these."""
+        row = self._execute(
+            "SELECT COUNT(*) n FROM trades WHERE day=? AND exit_ts IS NOT NULL"
+            " AND r_multiple < 0", (day,)).fetchone()
+        return row["n"] or 0
 
     def day_pnl(self, day):
         row = self._execute(

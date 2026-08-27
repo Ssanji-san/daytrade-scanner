@@ -14,13 +14,21 @@ def t(hour, minute, second=0):
     return dt.datetime(2026, 7, 14, hour, minute, second, tzinfo=ET)
 
 
-def snap(price, cum_volume=2_000_000, day_high=None, prev_close=4.0,
-         avg_volume=400_000, float_shares=8_000_000):
+def snap(price, cum_volume=2_000_000, day_high=None, prev_close=2.20,
+         avg_volume=400_000, float_shares=8_000_000, bar_open=None,
+         bar_t="2026-07-14T14:00:00Z"):
+    """One snapshot. The bar is stamped 10:00 ET so it lands after the bell.
+
+    `bar_open` defaults to ~12% below price, which is what freezes a
+    positive open_pct: the opening drive these tests assume is happening.
+    """
     return {"price": price, "cum_volume": cum_volume,
             "day_high": day_high if day_high is not None else price,
             "prev_close": prev_close, "avg_volume": avg_volume,
             "float_shares": float_shares,
-            "minute_bar": {"t": "2026-07-14T12:45:00Z", "o": price,
+            "minute_bar": {"t": bar_t,
+                           "o": bar_open if bar_open is not None
+                                else round(price / 1.12, 4),
                            "h": price, "l": price, "c": price, "v": 5000}}
 
 
@@ -48,13 +56,13 @@ def test_planted_mover_tops_five_minute_gainers():
 def test_planted_low_float_qualifies_for_hod():
     state = MarketState(CFG)
     now = t(12, 45)  # half the session elapsed -> rvol = 2M / 200k = 10
-    state.ingest(now, {"HODX": snap(5.50, day_high=5.55)})
+    state.ingest(now, {"HODX": snap(3.00, day_high=3.03)})
     state.set_news(now, [{"symbol": "HODX", "headline": "FDA approval",
                           "ts": int(now.timestamp()), "url": "u", "source": "bz"}])
     payload = state.payload(now)
     assert [r["symbol"] for r in payload["hod"]["qualified"]] == ["HODX"]
     row = payload["hod"]["qualified"][0]
-    assert row["day_pct"] == pytest.approx(37.5)   # 4.00 -> 5.50
+    assert row["day_pct"] == pytest.approx(36.364, abs=0.01)  # 2.20 -> 3.00
     assert row["rvol"] == pytest.approx(10.0)
     assert row["has_news"] is True
 
@@ -63,7 +71,7 @@ def test_news_older_than_max_age_is_not_a_catalyst():
     state = MarketState(CFG)
     now = t(12, 45)
     old = now - dt.timedelta(hours=CFG.news_max_age_hours + 1)
-    state.ingest(now, {"HODX": snap(5.50, day_high=5.55)})
+    state.ingest(now, {"HODX": snap(3.00, day_high=3.03)})
     state.set_news(now, [{"symbol": "HODX", "headline": "old news",
                           "ts": int(old.timestamp()), "url": "u", "source": "bz"}])
     row = state.payload(now)["hod"]["qualified"][0]
@@ -84,10 +92,10 @@ def test_stale_banner_after_ingest_gap():
 def test_remembers_float_and_avg_volume_once_seen():
     state = MarketState(CFG)
     now = t(12, 45)
-    state.ingest(now, {"HODX": snap(5.50, day_high=5.55)})
+    state.ingest(now, {"HODX": snap(3.00, day_high=3.03)})
     later = now + dt.timedelta(seconds=30)
-    bare = {"price": 5.52, "cum_volume": 2_100_000, "day_high": 5.55,
-            "prev_close": 4.0, "avg_volume": None, "float_shares": None}
+    bare = {"price": 3.02, "cum_volume": 2_100_000, "day_high": 3.03,
+            "prev_close": 2.20, "avg_volume": None, "float_shares": None}
     state.ingest(later, {"HODX": bare})
     row = state.payload(later)["hod"]["qualified"][0]
     assert row["float_shares"] == 8_000_000
@@ -178,3 +186,48 @@ def test_a_flag_takes_precedence_over_the_opening_range():
     row = {s["symbol"]: s for s in state.build_states(breaking)}["GAPR"]
     assert row["setup"]["setup"] == "micro_pullback"
     assert row["setup"]["stop"] > 14.85        # tighter than the range low
+
+
+class TestOpeningDrive:
+    """open_pct measures the move since the 9:30 bell, not since yesterday.
+
+    A stock that gapped 40% overnight and has drifted sideways since is a
+    different trade from one grinding up off the open, and day_pct cannot
+    tell them apart.
+    """
+
+    def test_freezes_the_price_at_the_bell(self):
+        state = MarketState(CFG)
+        now = t(9, 45)
+        state.ingest(now, {"HODX": snap(3.00, bar_open=2.70,
+                                        bar_t="2026-07-14T13:31:00Z")})
+        row = [s for s in state.build_states(now) if s["symbol"] == "HODX"][0]
+        assert row["open_pct"] == pytest.approx(11.111, abs=0.01)
+
+        # Later bars must not move it - it is the OPEN, not the last print.
+        later = t(9, 50)
+        state.ingest(later, {"HODX": snap(3.60, bar_open=3.55,
+                                          bar_t="2026-07-14T13:36:00Z")})
+        row = [s for s in state.build_states(later) if s["symbol"] == "HODX"][0]
+        assert row["open_pct"] == pytest.approx(33.333, abs=0.01)  # 3.60 vs 2.70
+
+    def test_premarket_bars_do_not_set_the_open(self):
+        state = MarketState(CFG)
+        now = t(9, 0)
+        state.ingest(now, {"HODX": snap(3.00, bar_open=2.70,
+                                        bar_t="2026-07-14T13:00:00Z")})
+        row = [s for s in state.build_states(now) if s["symbol"] == "HODX"][0]
+        assert row["open_pct"] is None
+
+    def test_a_gapper_that_drifts_sideways_is_rejected(self):
+        # Gapped from 2.20 to 3.00 (+36% day_pct) but has gone nowhere
+        # since the bell, so the opening-drive gate turns it away.
+        state = MarketState(CFG)
+        now = t(9, 45)
+        state.ingest(now, {"DRIFT": snap(3.00, bar_open=2.99,
+                                         bar_t="2026-07-14T13:31:00Z")})
+        payload = state.payload(now)
+        assert payload["hod"]["qualified"] == []
+        near = payload["hod"]["near"][0]
+        assert "open_drive" in near["failed"]
+        assert near["day_pct"] > 30          # it looked great on day_pct

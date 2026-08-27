@@ -92,8 +92,8 @@ class TestTimeline:
 
 class TestCandidateSelection:
     def test_keeps_a_real_mover_in_the_price_band(self):
-        daily = {"MOVR": [bar("2026-08-11T00:00:00Z", 5, 5, 5, 5.00),
-                          bar("2026-08-12T00:00:00Z", 6, 7, 6, 7.00)]}
+        daily = {"MOVR": [bar("2026-08-11T00:00:00Z", 2, 2, 2, 2.00),
+                          bar("2026-08-12T00:00:00Z", 2.4, 3.2, 2.4, 3.00)]}
         assert fetch.select_candidates(daily, CFG) == {"2026-08-12": ["MOVR"]}
 
     def test_a_spike_that_faded_is_still_a_candidate(self):
@@ -209,14 +209,32 @@ def test_open_alerts_can_be_scoped_to_one_session(tmp_path):
 
 
 class TestSessionWindow:
-    """Only replay the hours the bot is actually awake for."""
+    """Two windows, not one.
 
-    def test_afternoon_bars_are_dropped(self):
-        # 19:00Z = 15:00 ET, hours after the session ends at 12:15.
+    New alerts are only recorded while the live bot could still enter
+    (07:30-12:15 ET), but bars keep flowing to the flatten time so a
+    four-hour hold can be graded on what actually happened. Cutting
+    bars at the entry cutoff would mark every late trade a timeout,
+    which is the artifact the longer horizon exists to remove.
+    """
+
+    def test_bars_run_to_the_flatten_time(self):
+        # 19:00Z = 15:00 ET: past the 12:15 entry cutoff, but the bot
+        # could still be holding, so the bar is kept for grading.
         rows = {"AAA": [bar("2026-08-12T13:35:00Z", 1, 1, 1, 1),   # 09:35 ET
                         bar("2026-08-12T19:00:00Z", 1, 1, 1, 1)]}
         timeline = replay.bars_by_minute(rows, CFG)
-        assert list(timeline) == ["2026-08-12T13:35:00Z"]
+        assert list(timeline) == ["2026-08-12T13:35:00Z",
+                                  "2026-08-12T19:00:00Z"]
+
+    def test_bars_after_the_flatten_are_dropped(self):
+        # 20:00Z = 16:00 ET, after the 15:50 flatten: nothing is held.
+        rows = {"AAA": [bar("2026-08-12T20:00:00Z", 1, 1, 1, 1)]}
+        assert replay.bars_by_minute(rows, CFG) == {}
+
+    def test_entry_cutoff_is_the_narrower_window(self):
+        assert replay.in_session("2026-08-12T16:00:00Z", CFG)      # 12:00 ET
+        assert not replay.in_session("2026-08-12T19:00:00Z", CFG)  # 15:00 ET
 
     def test_premarket_inside_the_window_is_kept(self):
         # 12:00Z = 08:00 ET, after the 07:30 start.
@@ -278,3 +296,130 @@ class TestSweepGates:
                 ("2026-08-01", self._features(rvol=1.0), 1)]   # rejected
         n, rate = sweep.score(rows, self._combo())
         assert (n, rate) == (2, 0.5)
+
+
+def test_grading_continues_past_the_entry_cutoff_but_recording_stops(tmp_path):
+    """The two windows do different jobs.
+
+    A trade opened in the morning has to be graded on the afternoon it
+    actually had - otherwise a four-hour hold is scored as a timeout, which
+    is the artifact the longer horizon exists to remove. But nothing new may
+    be recorded after 12:15 ET, because the live bot could not have entered
+    it.
+    """
+    journal = Journal(str(tmp_path / "backtest.db"),
+                      alert_window_minutes=CFG.bot_alert_window_minutes)
+    day = "2026-08-12"
+
+    morning = []
+    for i in range(12):                       # 09:30-09:41 ET
+        price = 5.00 + i * 0.10
+        morning.append(bar(f"{day}T13:{30 + i:02d}:00Z", price, price + 0.02,
+                           round(price * 0.995, 4), price, v=40_000))
+    # 17:00Z = 13:00 ET: past the entry cutoff, inside the 4-hour hold.
+    morning.append(bar(f"{day}T17:00:00Z", 6.2, 9.00, 6.1, 8.90, v=40_000))
+    # A mover that only shows up in the afternoon must never be recorded.
+    late = [bar(f"{day}T17:00:00Z", 5.0, 9.00, 4.9, 8.90, v=40_000)]
+
+    news = [{"symbol": s, "headline": f"{s} receives FDA approval",
+             "ts": int(dt.datetime.fromisoformat(
+                 f"{day}T13:00:00+00:00").timestamp()),
+             "url": "u", "source": "bz"} for s in ("MOVR", "LATE")]
+    context = {"prev_close": {"MOVR": 4.00, "LATE": 4.00},
+               "avg_volume": {"MOVR": 400_000, "LATE": 400_000},
+               "float_shares": {"MOVR": 8_000_000, "LATE": 8_000_000}}
+
+    replay.replay_day(day, {"MOVR": morning, "LATE": late}, news, context,
+                      journal, CFG)
+
+    symbols = {a["symbol"] for a in journal.recent_alerts(20)}
+    assert "MOVR" in symbols
+    assert "LATE" not in symbols          # arrived after the entry cutoff
+
+    movr = [a for a in journal.recent_alerts(20) if a["symbol"] == "MOVR"][0]
+    assert movr["label"] == 1             # the 13:00 ET bar graded it a win
+
+
+class TestBaselineLookback:
+    """A month-at-a-time schedule must not starve the volume baseline.
+
+    rvol compares today against a 30-session average, and prev_close needs
+    yesterday. Fetching daily bars from the replay's own start date would
+    give the first weeks of every month a baseline of one or two days, so
+    the lookback is fetched and then excluded from the replay itself.
+    """
+
+    def test_lookback_reaches_back_past_thirty_sessions(self):
+        from scripts.backtest import _lookback_start
+        assert _lookback_start("2026-01-01") == "2025-11-02"
+
+    def test_lookback_days_are_never_replayed(self):
+        from scripts.backtest import _lookback_start
+        start, end = "2026-02-01", "2026-02-28"
+        candidates = {"2026-01-05": ["AAA"], "2026-02-03": ["BBB"],
+                      "2026-02-27": ["CCC"], "2026-03-02": ["DDD"]}
+        days = [d for d in sorted(candidates) if start <= d <= end]
+        assert days == ["2026-02-03", "2026-02-27"]
+        assert _lookback_start(start) < "2026-01-05"    # baseline covers it
+
+
+class TestOutcomeSplit:
+    """A stop-out and a timeout are both label 0, and are not the same trade."""
+
+    def _row(self, label, mae, mfe=0.0, r=1.0):
+        return {"day": "2026-08-12", "label": label, "mae": mae, "mfe": mfe,
+                "r_dollars": r}
+
+    def test_classifies_the_three_outcomes(self):
+        from scripts.backtest import outcome
+        assert outcome(self._row(1, -0.2, mfe=2.0)) == "win"
+        assert outcome(self._row(0, -1.5)) == "stopped"
+        assert outcome(self._row(0, -0.3)) == "timeout"
+
+    def test_timeouts_do_not_cost_a_full_r(self):
+        from scripts.backtest import _expectancy
+        rows = [self._row(0, -0.3) for _ in range(10)]
+        assert _expectancy(rows, timeout_r_value=-1.0)[1] == pytest.approx(-1.0)
+        assert _expectancy(rows, timeout_r_value=0.0)[1] == pytest.approx(0.0)
+
+    def test_a_stop_out_costs_a_full_r_either_way(self):
+        from scripts.backtest import _expectancy
+        rows = [self._row(0, -1.2) for _ in range(10)]
+        assert _expectancy(rows, timeout_r_value=0.0)[1] == pytest.approx(-1.0)
+
+
+class TestMeasuredTimeoutExit:
+    """The timeout value is recorded, not assumed.
+
+    Timeouts are the large majority of outcomes under a 20% stop, so
+    assuming they scratch at 0R would have decided the result rather than
+    measured it.
+    """
+
+    def test_a_timeout_records_where_it_actually_closed(self, tmp_path):
+        j = Journal(str(tmp_path / "j.db"), alert_window_minutes=240)
+        aid = j.record_alert(1_700_000_000, "HODX", price=5.00,
+                             r_dollars=1.00, features={"rvol": 8.0})
+        # 4h01m later at 4.70: never hit -1R (4.00) or +2R (7.00).
+        j.track_alert(aid, 1_700_000_000 + 14_460, price=4.70,
+                      high=4.75, low=4.65)
+        row = j.outcome_rows()[0]
+        assert row["label"] == 0
+        assert row["resolved_r"] == pytest.approx(-0.30)
+
+    def test_a_stop_out_and_a_win_record_their_levels(self, tmp_path):
+        j = Journal(str(tmp_path / "j.db"), alert_window_minutes=240)
+        loser = j.record_alert(1_700_000_000, "AAA", 5.00, 1.00, {})
+        j.track_alert(loser, 1_700_000_060, price=4.10, high=4.5, low=3.90)
+        winner = j.record_alert(1_700_000_000, "BBB", 5.00, 1.00, {})
+        j.track_alert(winner, 1_700_000_060, price=7.10, high=7.2, low=5.0)
+        by_symbol = {r["symbol"]: r for r in j.outcome_rows()}
+        assert by_symbol["AAA"]["resolved_r"] == pytest.approx(-1.0)
+        assert by_symbol["BBB"]["resolved_r"] == pytest.approx(2.0)
+
+    def test_expectancy_uses_the_measured_value(self):
+        from scripts.backtest import _expectancy
+        rows = [{"label": 0, "mae": -0.3, "mfe": 0.1, "r_dollars": 1.0,
+                 "resolved_r": -0.4} for _ in range(10)]
+        assert _expectancy(rows)[1] == pytest.approx(-0.4)
+        assert _expectancy(rows, timeout_r_value=0.0)[1] == pytest.approx(0.0)

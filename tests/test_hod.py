@@ -13,7 +13,7 @@ def test_qualifying_stock_passes_all_criteria():
     assert len(qualified) == 1 and near == []
     row = qualified[0]
     assert row["failed"] == []
-    assert row["dist_from_hod"] == pytest.approx(100 * (5.55 - 5.50) / 5.55)
+    assert row["dist_from_hod"] == pytest.approx(100 * (3.03 - 3.00) / 3.03)
 
 
 def test_price_band_is_a_hard_gate():
@@ -86,12 +86,12 @@ def test_a_pullback_entry_is_tradable_not_stranded_in_the_near_list():
     whole strategy unreachable: the setup fires and the row lands in the
     'near' list, which the bot never trades.
     """
-    pulling_back = make_state(price=5.38, day_high=5.50,
-                              setup={"setup": "micro_pullback", "stop": 5.35})
+    pulling_back = make_state(price=2.94, day_high=3.03,
+                              setup={"setup": "micro_pullback", "stop": 2.90})
     qualified, near = scan([pulling_back], Config(hod_require_news=True))
     assert [r["symbol"] for r in qualified] == ["TEST"]
     assert near == []
-    assert qualified[0]["dist_from_hod"] == pytest.approx(2.18, abs=0.05)
+    assert qualified[0]["dist_from_hod"] == pytest.approx(2.97, abs=0.05)
 
 
 def test_volume_floor_is_off_by_default_and_applies_when_set():
@@ -123,3 +123,21 @@ def test_an_instrument_that_barely_trades_is_rejected():
 
 def test_a_real_small_cap_still_passes():
     assert len(scan([make_state(avg_volume=400_000)], CFG)[0]) == 1
+
+
+def test_opening_drive_gate_is_switchable():
+    """0 disables it, the way hod_min_volume is disabled."""
+    from dataclasses import replace
+    drifted = make_state(open_pct=1.0)          # barely moved since the bell
+    q, near = scan([drifted], CFG)
+    assert q == [] and "open_drive" in near[0]["failed"]
+
+    off = replace(CFG, hod_min_open_pct=0.0)
+    q, _ = scan([drifted], off)
+    assert [r["symbol"] for r in q] == ["TEST"]
+
+
+def test_a_missing_open_counts_as_a_failure():
+    """Unknown is not a pass - the same rule the float check follows."""
+    q, near = scan([make_state(open_pct=None)], CFG)
+    assert q == [] and "open_drive" in near[0]["failed"]

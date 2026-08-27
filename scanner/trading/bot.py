@@ -15,11 +15,22 @@ from ..config import Config
 from .broker import Broker
 from .journal import Journal
 from .model import train, scorer_from_weights
-from .strategy import (ET, exit_levels, should_enter, size_position,
+from .strategy import (ET, bankroll_from, exit_levels, is_doji,
+                       scalp_levels, scalp_split, should_enter,
+                       size_position,
                        split_qty, technical_stop, weighted_exit,
                        _parse_hhmm)
 
 MARKET_OPEN = dt.time(9, 30)
+
+
+def _bar_ts(bar):
+    """Epoch seconds for a bar's timestamp, or None."""
+    try:
+        return dt.datetime.fromisoformat(
+            str(bar.get("t")).replace("Z", "+00:00")).timestamp()
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def _minutes_since_open(now):
@@ -47,6 +58,9 @@ def features_from_row(row, now):
         "above_vwap": 1.0 if row.get("above_vwap") else 0.0,
         # How far it gapped: does a big overnight move follow through or fade?
         "gap_pct": row.get("gap_pct") or 0.0,
+        # The move since the 9:30 bell, which is not the same as the gap: a
+        # stock can open +40% and go nowhere, or open flat and drive.
+        "open_pct": row.get("open_pct") or 0.0,
         # How big the reason is, and how fresh - the two things that
         # separate a scalp from a runner.
         "catalyst_score": (row.get("catalyst") or {}).get("score") or 0.0,
@@ -63,17 +77,30 @@ def journal_alert(journal, ts, row, now, observed, cfg: Config):
     distribution and trades in another.
     """
     setup = row.get("setup") or {}
-    stop = setup.get("stop")
-    r_dollars = ((row["price"] - stop) if stop and stop < row["price"]
+    # Grade against the stop the bot would REALLY have used, not the raw
+    # setup low. technical_stop clamps into the configured risk band - with
+    # the band collapsed to a flat 20% it ignores the setup low entirely -
+    # so reading setup["stop"] here labelled every alert against an R the
+    # bot never risks. That is the train/serve skew this function exists to
+    # prevent. A stop too wide to trade still grades on the fallback.
+    stop = technical_stop(row["price"], setup.get("stop"), cfg)
+    r_dollars = ((row["price"] - stop) if stop
                  else row["price"] * cfg.bot_stop_pct / 100)
-    journal.record_alert(ts, row["symbol"], row["price"], r_dollars,
-                         features_from_row(row, now),
-                         setup=setup.get("setup"), observed=observed)
+    return journal.record_alert(ts, row["symbol"], row["price"], r_dollars,
+                                features_from_row(row, now),
+                                setup=setup.get("setup"), observed=observed)
 
 
 def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
-                   day_pnl, now, cfg: Config, score_threshold=None):
-    """Best-scored qualifying rows first, never exceeding the daily cap."""
+                   day_pnl, now, cfg: Config, score_threshold=None,
+                   losses_today=0, open_positions=0, account=None,
+                   bankroll=None):
+    """Best-scored qualifying rows first, never exceeding the daily cap.
+
+    Picks already made in this cycle count against both the daily cap and
+    the concurrency cap, so one pass cannot open more than the account can
+    hold.
+    """
     scored = []
     for row in qualified_rows:
         # The momentum criteria say *what* to trade; the pullback says
@@ -88,18 +115,23 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
     picks, taken = [], set(traded_symbols)
     for score, row, features in scored:
         count = trades_today + len(picks)
-        take, _ = should_enter(row["symbol"], price=row["price"], score=score,
-                               trades_today=count, traded_symbols=taken,
-                               day_pnl=day_pnl, now=now, cfg=cfg,
-                               score_threshold=score_threshold)
-        if not take:
-            continue
         setup = row["setup"]
         stop = technical_stop(row["price"], setup.get("stop"), cfg)
         if stop is None:
             continue                     # risk to the setup low is too wide
-        qty, stop = size_position(row["price"], cfg, stop_price=stop)
+        qty, stop = size_position(row["price"], cfg, stop_price=stop,
+                                  bankroll=bankroll)
         if qty < 1:
+            continue
+        take, _ = should_enter(row["symbol"], price=row["price"], score=score,
+                               trades_today=count, traded_symbols=taken,
+                               day_pnl=day_pnl, now=now, cfg=cfg,
+                               score_threshold=score_threshold,
+                               losses_today=losses_today,
+                               open_positions=open_positions + len(picks),
+                               account=account, notional=qty * row["price"],
+                               bankroll=bankroll)
+        if not take:
             continue
         picks.append({"symbol": row["symbol"], "price": row["price"],
                       "qty": qty, "stop": stop, "score": score,
@@ -124,6 +156,11 @@ class TradingBot:
         self.open_trades = {}     # symbol -> dict
         self.rejected = set()     # symbols whose entry the broker refused today
         self.open_orders = []     # live broker orders, for the dashboard
+        self.account = None       # last good /v2/account snapshot
+        # Sizing follows the real balance: $1,000 risks $50, $2,000 risks
+        # $100. Seeded from config until the first account read lands.
+        self.bankroll = cfg.bot_bankroll
+        self._account_pull = 0.0
         self._rejected_day = None
         self.scorer, self.model_meta = self._retrain()
         self.error = None
@@ -162,7 +199,7 @@ class TradingBot:
             # from an almost-winner, without loosening what it buys.
             for row in payload["hod"].get("near") or []:
                 self._journal_alert(ts, row, now, observed=1)
-        for alert_id, symbol in self.journal.open_alerts():
+        for alert_id, symbol in self.journal.tracking_alerts(day, ts):
             latest = state.latest.get(symbol)
             if latest:
                 bar = latest.get("minute_bar") or {}
@@ -177,6 +214,8 @@ class TradingBot:
             return
         if self._rejected_day != day:      # fresh slate each session
             self.rejected, self._rejected_day = set(), day
+        account = await self._account_snapshot(ts)
+        self.bankroll = bankroll_from(account, self.cfg, self.bankroll)
         trades = self.journal.trades_today(day)
         picks = choose_entries(
             qualified, self.scorer,
@@ -184,7 +223,10 @@ class TradingBot:
             traded_symbols={t["symbol"] for t in trades} | self.rejected,
             day_pnl=self.journal.day_pnl(day),
             now=now, cfg=self.cfg,
-            score_threshold=self.score_threshold)
+            score_threshold=self.score_threshold,
+            losses_today=self.journal.losses_today(day),
+            open_positions=len(self.open_trades),
+            account=account, bankroll=self.bankroll)
         for pick in picks:
             try:
                 await self._enter(pick, ts)
@@ -193,14 +235,40 @@ class TradingBot:
                 self.rejected.add(pick["symbol"])
                 print(f"[bot] ENTRY REJECTED {pick['symbol']}: {exc}")
 
+    async def _account_snapshot(self, ts):
+        """Cached /v2/account, refreshed every 30s. None if never readable.
+
+        Buying power moves with every fill, so it cannot be read once at
+        startup - but it does not need re-reading on a 3-second poll either.
+        A failed refresh keeps the last good snapshot rather than blocking
+        entries: should_enter fails open on a missing account.
+        """
+        if ts - self._account_pull < 30:
+            return self.account
+        self._account_pull = ts
+        try:
+            self.account = await self.broker.account()
+        except Exception as exc:
+            print(f"[bot] account read failed, using last known: {exc}")
+        return self.account
+
     def _journal_alert(self, ts, row, now, observed):
         journal_alert(self.journal, ts, row, now, observed, self.cfg)
 
     async def _enter(self, pick, ts):
         entry = pick["price"]
-        levels = exit_levels(entry, self.cfg, stop_price=pick.get("stop"))
+        # Scalping takes profit a fixed number of cents above entry and
+        # banks most of the position there; the swing path scales at +2R.
+        # This must match scanner.backtest.simulate or the bot trades a
+        # strategy the backtest never measured.
+        if self.cfg.bot_scalp_mode:
+            scalp = scalp_levels(entry, self.cfg)
+            levels = {"stop": scalp["stop"], "scale_out": scalp["target"]}
+            bank_qty, runner_qty = scalp_split(pick["qty"], self.cfg)
+        else:
+            levels = exit_levels(entry, self.cfg, stop_price=pick.get("stop"))
+            bank_qty, runner_qty = split_qty(pick["qty"])
         total_qty = pick["qty"]
-        bank_qty, runner_qty = split_qty(total_qty)
 
         # One atomic order: the stop rides along and Alpaca arms it after the
         # fill. Submitting buy and stop separately is rejected as a wash trade
@@ -262,6 +330,10 @@ class TradingBot:
                 await self._flatten_trade(symbol, trade, ts, pos, "flatten")
                 continue
 
+            if self.cfg.bot_scalp_mode:
+                await self._manage_scalp(symbol, trade, state, ts, pos, price)
+                continue
+
             if not trade["banked"] and price >= trade["scale_out"]:
                 await self.broker.cancel_orders_for(symbol)
                 if trade["runner_qty"] >= 1:
@@ -280,6 +352,50 @@ class TradingBot:
             age_min = (ts - trade["opened_ts"]) / 60
             if not trade["banked"] and age_min >= self.cfg.bot_time_stop_minutes:
                 await self._flatten_trade(symbol, trade, ts, pos, "time_stop")
+
+    def _stalled(self, state, symbol, opened_ts):
+        """Have the last N completed bars all been dojis?
+
+        A doji opens and closes in the same place: buyers and sellers
+        balanced, the move out of steam. Read off completed bars only - the
+        minute in progress is replaced on every poll and would flicker in
+        and out of being a doji. Bars from before the entry do not count.
+        """
+        history = getattr(state, "histories", {}).get(symbol)
+        if history is None:
+            return False
+        want = self.cfg.bot_doji_exit_bars
+        bars = [b for b in history.completed_bars
+                if (_bar_ts(b) or 0) > opened_ts][-want:]
+        return len(bars) == want and all(is_doji(b, self.cfg) for b in bars)
+
+    async def _manage_scalp(self, symbol, trade, state, ts, pos, price):
+        """Fixed-cent target, then out on a stall or the clock."""
+        if not trade["banked"] and price >= trade["scale_out"]:
+            await self.broker.cancel_orders_for(symbol)
+            if trade["runner_qty"] >= 1:
+                await self.broker.submit_market_sell(symbol, trade["bank_qty"])
+                # The runner's stop comes up to entry: having banked the
+                # bulk, the trade must not be allowed to become a loser.
+                await self.broker.submit_stop(symbol, trade["runner_qty"],
+                                              round(trade["entry"], 2))
+                trade["stop"] = round(trade["entry"], 2)
+                trade["banked"] = True
+                print(f"[bot] SCALE-OUT {symbol}: banked {trade['bank_qty']} "
+                      f"@~{price:.2f}, runner {trade['runner_qty']} with the "
+                      f"stop at break-even {trade['entry']:.2f}")
+            else:
+                await self.broker.submit_market_sell(symbol, trade["qty"])
+                trade["banked"] = True
+                print(f"[bot] TARGET {symbol}: sold {trade['qty']} @~{price:.2f}")
+            return
+
+        if self._stalled(state, symbol, trade["opened_ts"]):
+            await self._flatten_trade(symbol, trade, ts, pos, "stall")
+            return
+
+        if (ts - trade["opened_ts"]) / 60 >= self.cfg.bot_time_stop_minutes:
+            await self._flatten_trade(symbol, trade, ts, pos, "time_stop")
 
     async def _flatten_trade(self, symbol, trade, ts, pos, reason):
         # Clear protective orders first: an open sell blocks the close as a
@@ -316,7 +432,7 @@ class TradingBot:
         return {
             "enabled": True,
             "error": self.error,
-            "bankroll": self.cfg.bot_bankroll,
+            "bankroll": self.bankroll,
             "trades_today": len(trades),
             "cap": self.cfg.bot_max_trades_per_day,
             "day_pnl": self.journal.day_pnl(day),
@@ -346,7 +462,7 @@ async def bot_loop(app, cfg: Config):
         account = await broker.account()
         print(f"[bot] paper account ok — equity ${float(account['equity']):,.0f} "
               f"(simulating ${cfg.bot_bankroll:,.0f} bankroll)")
-        journal = Journal(cfg.bot_journal_path)
+        journal = Journal(cfg.bot_journal_path, cfg.bot_alert_window_minutes)
         bot = TradingBot(cfg, journal, broker)
         last_equity_pull = 0.0
 

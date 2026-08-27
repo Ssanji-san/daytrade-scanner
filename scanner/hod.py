@@ -20,6 +20,12 @@ def _criteria(state, cfg: Config):
                   and state["float_shares"] < cfg.hod_max_float),
         ("hod", dist is not None and dist <= cfg.hod_near_high_pct),
     ]
+    if cfg.hod_min_open_pct:
+        # Not "gapped up overnight" but "is being bought right now". A stock
+        # that gapped 40% and has drifted sideways since the bell fails
+        # this; one grinding up off the open passes.
+        checks.append(("open_drive",
+                       (state.get("open_pct") or 0) >= cfg.hod_min_open_pct))
     if cfg.hod_min_avg_volume:
         checks.append(("liquidity",
                        (state.get("avg_volume") or 0) >= cfg.hod_min_avg_volume))

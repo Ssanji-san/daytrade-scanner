@@ -11,19 +11,24 @@ biased replay cannot quietly poison what the bot learned from real sessions.
 """
 import argparse
 import asyncio
+import datetime as dt
+import math
 import os
 import sys
 
 import aiohttp
 
+from dataclasses import replace
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scanner.alpaca import AlpacaClient                       # noqa: E402
 from scanner.backtest import fetch, replay                    # noqa: E402
+from scanner.backtest.simulate import Simulator               # noqa: E402
 from scanner.config import DEFAULT                            # noqa: E402
 from scanner.floats import FloatCache                         # noqa: E402
 from scanner.trading.journal import Journal                   # noqa: E402
-from scanner.trading.model import train                       # noqa: E402
+from scanner.trading.model import HeuristicScorer, train      # noqa: E402
 
 
 def _context_for(day, daily, floats, cfg):
@@ -47,10 +52,25 @@ def _context_for(day, daily, floats, cfg):
             "float_shares": float_shares}
 
 
-async def run(start, end, feed, fetch_only):
-    cfg = DEFAULT
+# rvol is measured against a 30-SESSION baseline, and prev_close needs the
+# day before. Fetching daily bars from the replay's own start date would
+# leave the first weeks of every run with a baseline of one or two days -
+# which is exactly what a month-at-a-time schedule would produce. 60
+# calendar days covers 30 sessions plus holidays.
+BASELINE_LOOKBACK_DAYS = 60
+
+
+def _lookback_start(start, days=BASELINE_LOOKBACK_DAYS):
+    return (dt.date.fromisoformat(start) - dt.timedelta(days=days)).isoformat()
+
+
+async def run(start, end, feed, fetch_only, trades=False, require_news=True,
+              score_bar=0.0, scale_out=None):
+    cfg = replace(DEFAULT, backtest_require_news=require_news)
+    if scale_out is not None:
+        cfg = replace(cfg, bot_scalp_scale_out_pct=scale_out)
     cache = fetch.Cache(cfg)
-    journal = Journal(cfg.backtest_journal_path)
+    journal = Journal(cfg.backtest_journal_path, cfg.bot_alert_window_minutes)
     floats = FloatCache(cfg)
 
     async with aiohttp.ClientSession() as session:
@@ -63,11 +83,15 @@ async def run(start, end, feed, fetch_only):
         print(f"[backtest] {len(symbols)} common-stock symbols "
               f"(of {len(tickers)} in the SEC map)")
 
-        daily = await fetch.daily_bars(client, cache, symbols, start, end, feed)
-        print(f"[backtest] daily bars for {len(daily)} symbols")
+        history_start = _lookback_start(start)
+        daily = await fetch.daily_bars(client, cache, symbols, history_start,
+                                       end, feed)
+        print(f"[backtest] daily bars for {len(daily)} symbols "
+              f"(from {history_start} for the volume baseline)")
 
         candidates = fetch.select_candidates(daily, cfg)
-        days = sorted(candidates)
+        # The lookback feeds the baseline only; never replay those sessions.
+        days = [d for d in sorted(candidates) if start <= d <= end]
         total = sum(len(v) for v in candidates.values())
         print(f"[backtest] {total} symbol-days across {len(days)} sessions")
         if not days:
@@ -83,18 +107,121 @@ async def run(start, end, feed, fetch_only):
                       f"{len(news)} headlines")
                 continue
             context = _context_for(day, daily, floats, cfg)
-            graded = replay.replay_day(day, minute, news, context, journal, cfg)
+            sim = (Simulator(cfg, journal, day, HeuristicScorer(), score_bar)
+                   if trades else None)
+            graded = replay.replay_day(day, minute, news, context, journal,
+                                       cfg, simulator=sim)
+            took = f", {sim.closed:>2} trades" if sim else ""
             print(f"[backtest] {day}: {len(todays):>3} candidates -> "
-                  f"{graded:>4} alerts journalled")
+                  f"{graded:>4} alerts journalled{took}")
 
     if fetch_only:
         return
+    report(journal, cfg)
+    if trades:
+        trade_report(journal, cfg)
+
+
+def outcome(row):
+    """"win", "stopped" or "timeout" for one graded alert.
+
+    The journal's label is binary - anything that is not a win is a 0 - but
+    those two zeros are not the same trade. A stop-out really lost 1R. A
+    timeout is a position the time stop closes at whatever the market is
+    then, which is usually near break-even. Scoring them alike is the
+    difference between a strategy that bleeds and one that mostly does
+    nothing.
+    """
+    if row["label"] == 1:
+        return "win"
+    if row["r_dollars"] and row["mae"] <= -row["r_dollars"]:
+        return "stopped"
+    return "timeout"
+
+
+def timeout_r(row):
+    """What a timed-out position was actually worth, in R.
+
+    Recorded at resolution rather than assumed. Older rows predate the
+    column and fall back to 0R, which is the assumption this replaces.
+    """
+    value = row.get("resolved_r")
+    return 0.0 if value is None else value
+
+
+def _expectancy(rows, timeout_r_value=None):
+    """(hit rate, pure-2R R, runner R).
+
+    `timeout_r_value` scores every timeout at a fixed R; None uses each
+    row's measured exit. The runner banks half at +2R and rides the rest,
+    credited with mfe less a rough 1R of trail give-back. mfe is a floor,
+    not a ceiling: it stops at the last bar of the tracking window.
+    """
+    if not rows:
+        return 0.0, 0.0, 0.0
+    wins = pure = runner = 0
+    for row in rows:
+        kind = outcome(row)
+        if kind == "win":
+            wins += 1
+            pure += 2
+            ran = (row["mfe"] / row["r_dollars"]) if row["r_dollars"] else 2.0
+            runner += 1.0 + 0.5 * max(2.0, ran - 1.0)
+        elif kind == "stopped":
+            pure -= 1
+            runner -= 1
+        else:
+            scratch = (timeout_r(row) if timeout_r_value is None
+                       else timeout_r_value)
+            pure += scratch
+            runner += scratch
+    n = len(rows)
+    return wins / n, pure / n, runner / n
+
+
+def _counts(rows):
+    tally = {"win": 0, "stopped": 0, "timeout": 0}
+    for row in rows:
+        tally[outcome(row)] += 1
+    return tally
+
+
+def report(journal, cfg):
+    """What the replay found, in R and in dollars."""
+    rows = journal.outcome_rows()
     dataset = journal.labeled_dataset()
-    wins = sum(1 for _, y in dataset if y == 1)
     print()
-    print(f"[backtest] {len(dataset)} labeled alerts, {wins} winners "
-          f"({wins / len(dataset):.0%} base rate)" if dataset
-          else "[backtest] nothing labeled yet")
+    if not rows:
+        print("[backtest] nothing labeled yet")
+        return
+    risk = cfg.bot_bankroll * cfg.bot_risk_pct / 100
+    print(f"[backtest] {len(rows)} graded alerts, ${risk:,.0f} risked per "
+          f"trade, {cfg.bot_alert_window_minutes}-minute horizon, "
+          f"{cfg.bot_stop_pct:.0f}% stop")
+    print("[backtest] 'label' scores a timeout as a full -1R the way the "
+          "journal does; 'measured'")
+    print("[backtest] uses what the position was really worth when the time "
+          "stop closed it.")
+    print(f"[backtest] {'month':>8} {'n':>6} {'win':>6} {'stop':>6} "
+          f"{'t/out':>6} {'t/out R':>8} {'label':>8} {'measured':>9} "
+          f"{'runner':>8} {'$/trade':>8}")
+    by_month = {}
+    for row in rows:
+        by_month.setdefault(row["day"][:7], []).append(row)
+    for month in sorted(by_month) + ["ALL"]:
+        block = rows if month == "ALL" else by_month[month]
+        tally = _counts(block)
+        hit, label_r, _ = _expectancy(block, timeout_r_value=-1.0)
+        _, measured_r, runner_r = _expectancy(block)
+        outs = [timeout_r(r) for r in block if outcome(r) == "timeout"]
+        mean_out = sum(outs) / len(outs) if outs else 0.0
+        n = len(block)
+        print(f"[backtest] {month:>8} {n:>6} {hit:>5.1%} "
+              f"{tally['stopped'] / n:>5.1%} {tally['timeout'] / n:>5.1%} "
+              f"{mean_out:>+7.2f}R {label_r:>+7.2f}R {measured_r:>+8.2f}R "
+              f"{runner_r:>+7.2f}R {runner_r * risk:>+7.0f}")
+    print("[backtest] break-even on a 2R target needs a 33.3% win rate")
+
     if len(dataset) >= cfg.bot_model_min_samples:
         _, meta = train(dataset, min_samples=cfg.bot_model_min_samples,
                         percentile=cfg.bot_score_percentile)
@@ -105,6 +232,52 @@ async def run(start, end, feed, fetch_only):
               f"wins={row['wins']} exp_r={row['exp_r']}")
 
 
+def trade_report(journal, cfg):
+    """What the simulated trades did - the only P&L number here."""
+    rows = [r for r in journal.all_trades() if r["exit_ts"] is not None]
+    print()
+    if not rows:
+        print("[trades] no trades were taken")
+        return
+    days = len({r["day"] for r in rows})
+    rs = [r["r_multiple"] or 0.0 for r in rows]
+    pnl = sum(r["pnl"] or 0.0 for r in rows)
+    mean = sum(rs) / len(rs)
+    var = (sum((x - mean) ** 2 for x in rs) / (len(rs) - 1)) if len(rs) > 1 else 0
+    se = math.sqrt(var / len(rs)) if len(rs) > 1 else 0.0
+    wins = sum(1 for x in rs if x > 0)
+    scale = (f", scale-out {cfg.bot_scalp_scale_out_pct:.0f}% at "
+             f"+{cfg.bot_scalp_target_cents * 100:.0f}c"
+             if cfg.bot_scalp_mode else "")
+    print(f"[trades] {len(rows)} trades over {days} sessions "
+          f"({len(rows) / days:.1f}/day), news gate "
+          f"{'ON' if cfg.backtest_require_news else 'OFF'}{scale}")
+    print(f"[trades] win {wins / len(rows):.1%}  expectancy {mean:+.3f}R "
+          f"+/-{se:.3f}  total {pnl:+,.0f} dollars")
+    if se:
+        verdict = ("positive beyond 2 SE" if mean > 2 * se
+                   else "inside the noise")
+        print(f"[trades] t={mean / se:.2f} -> {verdict}")
+    by_reason = {}
+    for row in rows:
+        by_reason.setdefault(row["exit_reason"] or "?", []).append(
+            row["r_multiple"] or 0.0)
+    print(f"[trades] {'exit':>10} {'n':>5} {'share':>7} {'mean R':>8}")
+    for reason, vals in sorted(by_reason.items(),
+                               key=lambda kv: -len(kv[1])):
+        print(f"[trades] {reason:>10} {len(vals):>5} "
+              f"{len(vals) / len(rows):>6.1%} "
+              f"{sum(vals) / len(vals):>+7.2f}R")
+    for row in journal.setup_stats():
+        print(f"[trades]   {row['setup'] or 'none':16} n={row['n']:<4} "
+              f"wins={row['wins']} exp_r={row['exp_r']}")
+    # The edge has to clear the spread, and the spread is not modelled.
+    risk = cfg.bot_bankroll * cfg.bot_risk_pct / 100
+    notional = cfg.bot_bankroll * cfg.bot_max_notional_pct / 100
+    print(f"[trades] edge is {mean * risk / notional:.2%} of notional; a "
+          f"round trip costing more than that loses money")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", required=True, help="YYYY-MM-DD")
@@ -113,8 +286,18 @@ def main():
                         help="iex matches live; sip measures what it misses")
     parser.add_argument("--fetch-only", action="store_true",
                         help="download and cache without replaying")
+    parser.add_argument("--trades", action="store_true",
+                        help="simulate the trades the bot would have taken")
+    parser.add_argument("--no-news", action="store_true",
+                        help="drop Ross's catalyst requirement")
+    parser.add_argument("--score-bar", type=float, default=0.0,
+                        help="model score gate; 0 tests the setups alone")
+    parser.add_argument("--scale-out", type=float, default=None,
+                        help="%% sold at the scalp target; 100 takes it all")
     args = parser.parse_args()
-    asyncio.run(run(args.start, args.end, args.feed, args.fetch_only))
+    asyncio.run(run(args.start, args.end, args.feed, args.fetch_only,
+                    trades=args.trades, require_news=not args.no_news,
+                    score_bar=args.score_bar, scale_out=args.scale_out))
 
 
 if __name__ == "__main__":

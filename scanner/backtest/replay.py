@@ -21,31 +21,43 @@ from ..trading.bot import journal_alert
 from ..trading.journal import Journal
 
 
-def in_session(stamp, cfg: Config):
-    """Is this bar inside the hours a live session actually watches?"""
+def _hhmm(text):
+    hour, minute = text.split(":")
+    return int(hour), int(minute)
+
+
+def in_session(stamp, cfg: Config, close_et=None):
+    """Is this bar inside the hours a live session actually watches?
+
+    `close_et` overrides the entry cutoff. Two different windows matter: new
+    alerts are only recorded while the live bot could still enter, but bars
+    keep flowing afterwards so an open position can be graded to its end.
+    """
     try:
         et = dt.datetime.fromisoformat(
             str(stamp).replace("Z", "+00:00")).astimezone(ET)
     except ValueError:
         return False
-    open_h, open_m = (int(p) for p in cfg.backtest_open_et.split(":"))
-    close_h, close_m = (int(p) for p in cfg.backtest_close_et.split(":"))
-    return (open_h, open_m) <= (et.hour, et.minute) <= (close_h, close_m)
+    close = close_et or cfg.backtest_close_et
+    return _hhmm(cfg.backtest_open_et) <= (et.hour, et.minute) <= _hhmm(close)
 
 
 def bars_by_minute(minute_bars, cfg: Config = None):
-    """{minute: {symbol: bar}}, oldest first, inside the session window.
+    """{minute: {symbol: bar}}, oldest first, inside the tracking window.
 
-    `minute_bars` is Alpaca's {symbol: [bar, ...]} for one session. Bars
-    outside the hours the bot runs are dropped: a setup at 15:00 is not one
-    it could ever have taken.
+    `minute_bars` is Alpaca's {symbol: [bar, ...]} for one session. Bars run
+    to `bot_flatten_time` rather than the entry cutoff - derived from it so
+    the replay and the live exit cannot drift apart. A four-hour hold needs
+    four hours of bars; cutting them at the entry cutoff would grade every
+    late trade as a timeout, which is the artifact this exists to avoid.
     """
     timeline = {}
     for symbol, rows in (minute_bars or {}).items():
         for bar in rows:
             if not bar.get("t") or not bar.get("c"):
                 continue
-            if cfg is not None and not in_session(bar["t"], cfg):
+            if cfg is not None and not in_session(bar["t"], cfg,
+                                                  cfg.bot_flatten_time):
                 continue
             timeline.setdefault(bar["t"], {})[symbol] = bar
     return dict(sorted(timeline.items()))
@@ -85,9 +97,37 @@ class SessionCursor:
         }
 
 
+def _mark(journal, tracked, ts, symbol_bars):
+    """Grade open alerts against this bar's real high and low.
+
+    A wick through the stop counts as the loss it was. Tracked in memory:
+    querying every unresolved alert each minute does not scale once the whole
+    market is being sampled.
+    """
+    for symbol, bar in symbol_bars.items():
+        alert_id = tracked.get(symbol)
+        if alert_id:
+            journal.track_alert(alert_id, ts, bar["c"],
+                                high=bar.get("h"), low=bar.get("l"))
+
+
+def _record(journal, tracked, ts, row, now, observed, cfg):
+    """Journal a row once per session and remember its id for grading."""
+    symbol = row["symbol"]
+    if symbol in tracked:
+        return None
+    alert_id = journal_alert(journal, ts, row, now, observed, cfg)
+    tracked[symbol] = alert_id      # None for a duplicate day+symbol
+    return alert_id
+
+
 def replay_day(day, minute_bars, news_items, context, journal: Journal,
-               cfg: Config):
+               cfg: Config, simulator=None):
     """Replay one session, journalling graded alerts. Returns how many.
+
+    The count is distinct alerts, not row-minutes: a symbol that qualifies
+    for ninety consecutive minutes is one alert, and reporting ninety made
+    the daily numbers look forty times larger than the dataset.
 
     `context` supplies the per-symbol facts a live session would already
     know: {"prev_close": {}, "avg_volume": {}, "float_shares": {}}. Those
@@ -101,6 +141,7 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
     cursor = SessionCursor()
     timeline = bars_by_minute(minute_bars, cfg)
     last_bar = {}
+    tracked = {}          # symbol -> alert id, this session only
     seen = 0
 
     for minute, symbol_bars in timeline.items():
@@ -122,26 +163,43 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
         state.ingest(now, symbol_data)
         state.set_news(now, visible_news(news_items, now_ts))
 
-        payload = state.payload(now, require_news=True)
+        # Past the entry cutoff the replay still steps bars - open alerts
+        # need grading - but it records no new ones, because the live bot
+        # could not have entered them.
+        # Positions are managed on every bar, including after the entry
+        # cutoff - a four-hour hold runs well past it.
+        if simulator is not None:
+            simulator.manage(now, now_ts, symbol_bars)
+
+        if not in_session(minute, cfg):
+            last_bar.update(symbol_bars)
+            _mark(journal, tracked, now_ts, symbol_bars)
+            continue
+
+        payload = state.payload(now, require_news=cfg.backtest_require_news)
         for row in payload["hod"]["qualified"]:
-            journal_alert(journal, now_ts, row, now, 0, cfg)
-            seen += 1
+            if _record(journal, tracked, now_ts, row, now, 0, cfg):
+                seen += 1
         if cfg.learn_from_near_misses:
             for row in payload["hod"].get("near") or []:
-                journal_alert(journal, now_ts, row, now, 1, cfg)
-                seen += 1
+                if _record(journal, tracked, now_ts, row, now, 1, cfg):
+                    seen += 1
+        if cfg.backtest_sample_all:
+            # Every mover, gates or not. A model shown only what the filters
+            # already surfaced can rank within that set but never learns
+            # what a 2R move looks like in the population it is not seeing.
+            for row in state.build_states(now):
+                if row["symbol"] not in tracked:
+                    if _record(journal, tracked, now_ts, row, now, 2, cfg):
+                        seen += 1
+
+        # Entries come after management so a position closing on this bar
+        # frees its slot for the same bar, the way the live cycle orders it.
+        if simulator is not None:
+            simulator.enter(now, now_ts, payload["hod"]["qualified"])
 
         last_bar.update(symbol_bars)
-
-        # Grade what is already open against this bar's real high and low,
-        # so a wick through the stop counts as the loss it was. Scoped to
-        # this session: yesterday's leftovers must not be marked with
-        # today's prices.
-        for alert_id, symbol in journal.open_alerts(day=day):
-            bar = symbol_bars.get(symbol)
-            if bar:
-                journal.track_alert(alert_id, now_ts, bar["c"],
-                                    high=bar.get("h"), low=bar.get("l"))
+        _mark(journal, tracked, now_ts, symbol_bars)
 
     # One last mark at the closing print. A thin symbol can stop printing
     # long before the bell, leaving an alert that never got the update that
@@ -152,9 +210,11 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
         final = dt.datetime.fromisoformat(
             list(timeline)[-1].replace("Z", "+00:00"))
         final_ts = int(final.timestamp())
-        for alert_id, symbol in journal.open_alerts(day=day):
+        for symbol, alert_id in tracked.items():
             bar = last_bar.get(symbol)
-            if bar:
+            if alert_id and bar:
                 journal.track_alert(alert_id, final_ts, bar["c"],
                                     high=bar.get("h"), low=bar.get("l"))
+        if simulator is not None:
+            simulator.close_out(final_ts, last_bar)
     return seen

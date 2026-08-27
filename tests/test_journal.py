@@ -168,3 +168,79 @@ def test_a_real_error_is_not_swallowed_by_the_retry(tmp_path):
     journal = Journal(str(tmp_path / "j.db"))
     with pytest.raises(sqlite3.OperationalError):
         journal._execute("SELECT * FROM does_not_exist_at_all")
+
+
+class TestGradingHorizon:
+    """The label horizon has to match how long the bot actually holds."""
+
+    def test_default_still_times_out_at_thirty_minutes(self, journal):
+        aid = journal.record_alert(epoch(10, 0), "HODX", 5.00, 0.15, FEATURES)
+        journal.track_alert(aid, epoch(10, 45), 5.02)
+        assert journal.labeled_dataset()[0][1] == 0
+
+    def test_a_four_hour_journal_still_grades_a_late_winner(self, tmp_path):
+        # 186 of 414 replayed losses were the 30-minute clock expiring, not
+        # the stop being hit. At a 4-hour horizon this one is the win it was.
+        j = Journal(str(tmp_path / "long.db"), alert_window_minutes=240)
+        aid = j.record_alert(epoch(10, 0), "HODX", 5.00, 0.15, FEATURES)
+        j.track_alert(aid, epoch(11, 0), 5.05)          # still open at 60 min
+        assert j.labeled_dataset() == []
+        j.track_alert(aid, epoch(13, 20), 5.31)         # +2R at minute 200
+        assert j.labeled_dataset()[0][1] == 1
+
+    def test_the_horizon_still_expires(self, tmp_path):
+        j = Journal(str(tmp_path / "long.db"), alert_window_minutes=240)
+        aid = j.record_alert(epoch(10, 0), "HODX", 5.00, 0.15, FEATURES)
+        j.track_alert(aid, epoch(14, 30), 5.02)         # 4h30m, nothing hit
+        assert j.labeled_dataset()[0][1] == 0
+
+
+class TestExcursionsAfterTheLabel:
+    """A winner's mfe used to freeze the minute it crossed +2R.
+
+    That filed every gradual runner as exactly 2R, so the model had no way
+    to tell a scratch from a monster - the one thing the runner exit exists
+    to capture.
+    """
+
+    def test_mfe_keeps_recording_past_the_target(self, journal):
+        aid = journal.record_alert(epoch(10, 0), "HODX", 5.00, 0.15, FEATURES)
+        journal.track_alert(aid, epoch(10, 5), 5.31)          # +2R, label 1
+        journal.track_alert(aid, epoch(10, 20), 6.50)         # ran to +10R
+        row = journal.recent_alerts(1)[0]
+        assert row["label"] == 1
+        assert row["mfe"] == pytest.approx(1.50)              # 10R, not 2R
+
+    def test_the_label_never_changes_once_decided(self, journal):
+        aid = journal.record_alert(epoch(10, 0), "HODX", 5.00, 0.15, FEATURES)
+        journal.track_alert(aid, epoch(10, 5), 5.31)          # win
+        journal.track_alert(aid, epoch(10, 30), 4.00)         # then collapsed
+        row = journal.recent_alerts(1)[0]
+        assert row["label"] == 1
+        assert row["mae"] == pytest.approx(-1.00)             # recorded anyway
+
+
+class TestLossesToday:
+    """The day's kill switch is a count of closed losers."""
+
+    def _closed(self, journal, symbol, r_multiple):
+        tid = journal.record_trade_open(epoch(10, 0), symbol, qty=50,
+                                        entry=5.0, stop=4.0, targets=[7.0],
+                                        features=FEATURES)
+        journal._execute("UPDATE trades SET exit_ts=?, exit_price=?, pnl=?,"
+                         " r_multiple=? WHERE id=?",
+                         (epoch(11, 0), 4.0, r_multiple * 50, r_multiple, tid))
+        journal._commit()
+
+    def test_counts_only_closed_losers(self, journal):
+        day = "2026-07-14"
+        assert journal.losses_today(day) == 0
+        self._closed(journal, "AAA", -1.0)
+        self._closed(journal, "BBB", 2.0)
+        self._closed(journal, "CCC", -1.0)
+        assert journal.losses_today(day) == 2
+
+    def test_an_open_losing_trade_is_not_counted_yet(self, journal):
+        journal.record_trade_open(epoch(10, 0), "OPEN", qty=50, entry=5.0,
+                                  stop=4.0, targets=[7.0], features=FEATURES)
+        assert journal.losses_today("2026-07-14") == 0

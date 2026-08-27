@@ -107,12 +107,12 @@ def test_enter_uses_one_atomic_order_not_two(tmp_path):
     order = broker.orders[0]
     assert order["order_class"] == "oto"
     assert order["side"] == "buy" and order["qty"] == 50
-    assert order["stop_price"] == pytest.approx(4.85)
+    assert order["stop_price"] == pytest.approx(4.75)   # flat 5% scalp stop
     assert not any(o["side"] == "sell" for o in broker.orders)
 
     trade = bot.open_trades["HODX"]
     assert trade["bank_qty"] + trade["runner_qty"] == 50
-    assert trade["scale_out"] == pytest.approx(5.30)   # 5.00 + 2 * 0.15
+    assert trade["scale_out"] == pytest.approx(5.20)   # 5.00 + 20c
     assert trade["banked"] is False
     assert journal.trades_today("2023-11-14")  # record_trade_open persisted
 
@@ -148,7 +148,11 @@ def _open_a_trade(bot, ts, price=5.0, qty=50):
 
 
 def test_scale_out_banks_half_and_starts_trailing(tmp_path):
-    bot, broker, _ = make_bot(tmp_path)
+    # The swing path - scale at +2R, trail the runner. Still reachable by
+    # configuration, though the live default now scalps.
+    bot, broker, _ = make_bot(tmp_path, bot_scalp_mode=False,
+                              bot_stop_pct=3.0, bot_min_stop_pct=1.0,
+                              bot_max_stop_pct=6.0)
     trade = _open_a_trade(bot, ts=int(et(10, 0).timestamp()))
     broker._positions = [{"symbol": "HODX", "current_price": 5.30}]
     state = FakeState({"HODX": {"price": 5.30}})            # at +2R
@@ -170,7 +174,7 @@ def test_time_stop_cuts_a_stalled_trade_before_scale_out(tmp_path):
     _open_a_trade(bot, ts=open_ts)
     broker._positions = [{"symbol": "HODX", "current_price": 5.05}]  # below +2R
     state = FakeState({"HODX": {"price": 5.05}})
-    late = et(10, 21)                                        # 21 min later
+    late = et(14, 5)                                     # 4h05m later
 
     asyncio.run(bot._manage_open(state, now=late, ts=int(late.timestamp())))
 
@@ -180,7 +184,8 @@ def test_time_stop_cuts_a_stalled_trade_before_scale_out(tmp_path):
 
 
 def test_runner_stays_open_past_time_stop(tmp_path):
-    bot, broker, _ = make_bot(tmp_path)
+    bot, broker, _ = make_bot(tmp_path, bot_scalp_mode=False,
+                              bot_time_stop_minutes=20)
     open_ts = int(et(10, 0).timestamp())
     trade = _open_a_trade(bot, ts=open_ts)
     trade["banked"] = True                                  # already a runner
@@ -209,7 +214,7 @@ def test_close_records_blended_r_from_sell_fills(tmp_path):
 
     trade = journal.recent_trades(1)[0]
     assert trade["exit_price"] == pytest.approx(5.45)       # weighted average
-    assert trade["r_multiple"] == pytest.approx(3.0)        # (5.45-5.0)/0.15
+    assert trade["r_multiple"] == pytest.approx(1.8)        # (5.45-5.0)/0.25
 
 
 def test_near_misses_are_learned_from_but_never_traded(tmp_path):
@@ -281,3 +286,97 @@ def test_premarket_is_observed_and_journalled_but_never_traded(tmp_path):
     assert broker.orders == []                        # nothing traded
     assert bot.open_trades == {}
     assert [a["symbol"] for a in journal.recent_alerts(5)] == ["GAPR"]
+
+
+# --------------------------------------------------------------- scalping
+# The live exits have to match scanner.backtest.simulate, or the bot trades
+# a strategy the backtest never measured. These pin the shared behaviour.
+
+def _doji(t, price=5.10):
+    return {"t": t, "o": price, "c": price + 0.002,
+            "h": price + 0.05, "l": price - 0.05, "v": 1000}
+
+
+def _drive(t, price=5.10):
+    return {"t": t, "o": price, "c": price + 0.08,
+            "h": price + 0.09, "l": price - 0.01, "v": 1000}
+
+
+class _BarState(FakeState):
+    """FakeState plus the completed-bar history the stall exit reads."""
+
+    def __init__(self, latest, bars):
+        super().__init__(latest)
+        class _H:
+            def __init__(self, b): self.completed_bars = b
+        self.histories = {"HODX": _H(bars)}
+
+
+def test_scalp_banks_the_majority_and_moves_the_stop_to_breakeven(tmp_path):
+    bot, broker, _ = make_bot(tmp_path)
+    trade = _open_a_trade(bot, ts=int(et(9, 40).timestamp()))
+    assert (trade["bank_qty"], trade["runner_qty"]) == (32, 18)   # 65 / 35
+    broker._positions = [{"symbol": "HODX", "current_price": 5.22}]
+    state = FakeState({"HODX": {"price": 5.22}})                  # past +20c
+
+    asyncio.run(bot._manage_open(state, now=et(9, 42),
+                                 ts=int(et(9, 42).timestamp())))
+
+    sells = [o for o in broker.orders
+             if o["type"] == "market" and o["side"] == "sell"]
+    assert sells and sells[0]["qty"] == 32
+    stops = [o for o in broker.orders if o["type"] == "stop"]
+    assert stops and stops[0]["qty"] == 18
+    assert stops[0]["stop_price"] == pytest.approx(5.00)   # entry: cannot lose
+    assert "HODX" in bot.open_trades                       # runner still on
+
+
+def test_two_dojis_close_the_scalp(tmp_path):
+    bot, broker, journal = make_bot(tmp_path)
+    open_ts = int(et(9, 40).timestamp())
+    _open_a_trade(bot, ts=open_ts)
+    broker._positions = [{"symbol": "HODX", "current_price": 5.05}]
+    bars = [_doji("2026-07-14T13:42:00Z"), _doji("2026-07-14T13:43:00Z")]
+    state = _BarState({"HODX": {"price": 5.05}}, bars)
+
+    asyncio.run(bot._manage_open(state, now=et(9, 44),
+                                 ts=int(et(9, 44).timestamp())))
+
+    assert "HODX" not in bot.open_trades
+    assert journal.recent_trades(1)[0]["exit_reason"] == "stall"
+
+
+def test_a_decisive_candle_keeps_the_scalp_open(tmp_path):
+    bot, broker, _ = make_bot(tmp_path)
+    _open_a_trade(bot, ts=int(et(9, 40).timestamp()))
+    broker._positions = [{"symbol": "HODX", "current_price": 5.05}]
+    bars = [_doji("2026-07-14T13:42:00Z"), _drive("2026-07-14T13:43:00Z")]
+    state = _BarState({"HODX": {"price": 5.05}}, bars)
+
+    asyncio.run(bot._manage_open(state, now=et(9, 44),
+                                 ts=int(et(9, 44).timestamp())))
+    assert "HODX" in bot.open_trades
+
+
+def test_bars_from_before_the_entry_do_not_stall_it(tmp_path):
+    """Otherwise a stock that was quiet before the breakout exits at once."""
+    bot, broker, _ = make_bot(tmp_path)
+    _open_a_trade(bot, ts=int(et(9, 45).timestamp()))
+    broker._positions = [{"symbol": "HODX", "current_price": 5.05}]
+    stale = [_doji("2026-07-14T13:31:00Z"), _doji("2026-07-14T13:32:00Z")]
+    state = _BarState({"HODX": {"price": 5.05}}, stale)
+
+    asyncio.run(bot._manage_open(state, now=et(9, 46),
+                                 ts=int(et(9, 46).timestamp())))
+    assert "HODX" in bot.open_trades
+
+
+def test_the_scalp_time_stop_is_ten_minutes(tmp_path):
+    bot, broker, journal = make_bot(tmp_path)
+    _open_a_trade(bot, ts=int(et(9, 40).timestamp()))
+    broker._positions = [{"symbol": "HODX", "current_price": 5.05}]
+    state = FakeState({"HODX": {"price": 5.05}})
+    late = et(9, 40) + dt.timedelta(minutes=CFG.bot_time_stop_minutes)
+
+    asyncio.run(bot._manage_open(state, now=late, ts=int(late.timestamp())))
+    assert journal.recent_trades(1)[0]["exit_reason"] == "time_stop"

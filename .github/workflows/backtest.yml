@@ -25,6 +25,22 @@ on:
         description: "Commit the resulting backtest journal (true/false)"
         required: false
         default: "true"
+      fresh:
+        description: "Delete the journal before replaying - required whenever grading changed (true/false)"
+        required: false
+        default: "false"
+      trades:
+        description: "Simulate the trades the bot would have taken, not just the alerts (true/false)"
+        required: false
+        default: "false"
+      no_news:
+        description: "Drop Ross's catalyst requirement, to see how many more setups exist (true/false)"
+        required: false
+        default: "false"
+      scale_out:
+        description: "% of the scalp sold at the target; 100 takes it all off, 65 leaves a runner"
+        required: false
+        default: ""
 
 jobs:
   backtest:
@@ -40,15 +56,27 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Bars and news for a date range never change, and refetching thousands
-      # of symbol-days at 200 req/min dominates the runtime. Keyed on the
-      # window and feed so a re-run with different replay logic is instant.
+      # Bars and news for a past date never change, and refetching thousands
+      # of symbol-days at 200 req/min dominates the runtime. The store is
+      # keyed per day internally and only ever grows, so the key is the run
+      # id and the restore-key is the feed: each month restores everything
+      # fetched so far and saves the union. Keying on the window instead
+      # would make every month start from an empty cache.
       - name: Cache fetched history
         uses: actions/cache@v4
         with:
           path: cache/backtest
-          key: bt-${{ inputs.feed }}-${{ inputs.start }}-${{ inputs.end }}
-          restore-keys: bt-${{ inputs.feed }}-${{ inputs.start }}-
+          key: bt-${{ inputs.feed }}-${{ github.run_id }}
+          restore-keys: bt-${{ inputs.feed }}-
+
+      # alerts is UNIQUE(day, symbol), so replaying a day already in the
+      # journal silently keeps its old rows. Any change to how alerts are
+      # graded - stop width, horizon, the R they are measured against -
+      # therefore needs a clean file, or the results average two different
+      # strategies with no way to tell them apart afterwards.
+      - name: Start from a clean journal
+        if: ${{ inputs.fresh == 'true' }}
+        run: rm -f cache/backtest.db
 
       - name: Replay history
         env:
@@ -59,7 +87,10 @@ jobs:
           python -u scripts/backtest.py \
             --start "${{ inputs.start }}" \
             --end "${{ inputs.end }}" \
-            --feed "${{ inputs.feed }}"
+            --feed "${{ inputs.feed }}" \
+            ${{ inputs.trades == 'true' && '--trades' || '' }} \
+            ${{ inputs.no_news == 'true' && '--no-news' || '' }} \
+            ${{ inputs.scale_out != '' && format('--scale-out {0}', inputs.scale_out) || '' }}
 
       - name: Commit the backtest journal
         if: ${{ inputs.commit == 'true' }}
