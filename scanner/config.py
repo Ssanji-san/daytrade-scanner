@@ -123,6 +123,11 @@ class Config:
                                          # separates a winner from an
                                          # almost-winner
     bot_journal_path: str = "cache/journal.db"
+    # The replay must cover the same hours the live session does. Training
+    # on afternoons the bot never trades would teach it a market it does not
+    # see - the same train/serve skew that argues against SIP training data.
+    backtest_open_et: str = "07:30"     # cron-job.org starts the session here
+    backtest_close_et: str = "12:15"    # session.py --until-et
     # Simulated results live in their own journal. Mixing them into the live
     # one would let a biased replay quietly poison what the bot has learned
     # from real sessions, with no way to tell the two apart afterwards.

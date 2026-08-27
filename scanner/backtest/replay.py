@@ -14,21 +14,39 @@ as they happen rather than read off the finished session.
 import datetime as dt
 
 from ..config import Config
+from ..history import ET
 from ..state import MarketState
 from ..trading.bot import journal_alert
 from ..trading.journal import Journal
 
 
-def bars_by_minute(minute_bars):
-    """{minute: {symbol: bar}}, oldest first.
+def in_session(stamp, cfg: Config):
+    """Is this bar inside the hours a live session actually watches?"""
+    try:
+        et = dt.datetime.fromisoformat(
+            str(stamp).replace("Z", "+00:00")).astimezone(ET)
+    except ValueError:
+        return False
+    open_h, open_m = (int(p) for p in cfg.backtest_open_et.split(":"))
+    close_h, close_m = (int(p) for p in cfg.backtest_close_et.split(":"))
+    return (open_h, open_m) <= (et.hour, et.minute) <= (close_h, close_m)
 
-    `minute_bars` is Alpaca's {symbol: [bar, ...]} for one session.
+
+def bars_by_minute(minute_bars, cfg: Config = None):
+    """{minute: {symbol: bar}}, oldest first, inside the session window.
+
+    `minute_bars` is Alpaca's {symbol: [bar, ...]} for one session. Bars
+    outside the hours the bot runs are dropped: a setup at 15:00 is not one
+    it could ever have taken.
     """
     timeline = {}
     for symbol, rows in (minute_bars or {}).items():
         for bar in rows:
-            if bar.get("t") and bar.get("c"):
-                timeline.setdefault(bar["t"], {})[symbol] = bar
+            if not bar.get("t") or not bar.get("c"):
+                continue
+            if cfg is not None and not in_session(bar["t"], cfg):
+                continue
+            timeline.setdefault(bar["t"], {})[symbol] = bar
     return dict(sorted(timeline.items()))
 
 
@@ -77,7 +95,7 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
     """
     state = MarketState(cfg)
     cursor = SessionCursor()
-    timeline = bars_by_minute(minute_bars)
+    timeline = bars_by_minute(minute_bars, cfg)
     last_bar = {}
     seen = 0
 

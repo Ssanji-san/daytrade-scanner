@@ -196,3 +196,28 @@ def test_open_alerts_can_be_scoped_to_one_session(tmp_path):
     assert len(journal.open_alerts()) == 2
     scoped = journal.open_alerts(day="2026-08-18")
     assert [s[1] for s in scoped] == ["BBB"]
+
+
+class TestSessionWindow:
+    """Only replay the hours the bot is actually awake for."""
+
+    def test_afternoon_bars_are_dropped(self):
+        # 19:00Z = 15:00 ET, hours after the session ends at 12:15.
+        rows = {"AAA": [bar("2026-08-12T13:35:00Z", 1, 1, 1, 1),   # 09:35 ET
+                        bar("2026-08-12T19:00:00Z", 1, 1, 1, 1)]}
+        timeline = replay.bars_by_minute(rows, CFG)
+        assert list(timeline) == ["2026-08-12T13:35:00Z"]
+
+    def test_premarket_inside_the_window_is_kept(self):
+        # 12:00Z = 08:00 ET, after the 07:30 start.
+        rows = {"AAA": [bar("2026-08-12T12:00:00Z", 1, 1, 1, 1)]}
+        assert len(replay.bars_by_minute(rows, CFG)) == 1
+
+    def test_overnight_bars_are_dropped(self):
+        # 09:00Z = 05:00 ET, before the session starts.
+        rows = {"AAA": [bar("2026-08-12T09:00:00Z", 1, 1, 1, 1)]}
+        assert replay.bars_by_minute(rows, CFG) == {}
+
+    def test_no_config_means_no_filtering(self):
+        rows = {"AAA": [bar("2026-08-12T19:00:00Z", 1, 1, 1, 1)]}
+        assert len(replay.bars_by_minute(rows)) == 1
