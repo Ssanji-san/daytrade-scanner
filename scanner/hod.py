@@ -14,6 +14,7 @@ def _criteria(state, cfg: Config):
     price, high = state["price"], state["day_high"]
     dist = 100.0 * (high - price) / high if high else None
     checks = [
+        ("price", cfg.hod_min_price <= price <= cfg.hod_max_price),
         ("pct_up", (state["day_pct"] or 0) >= cfg.hod_min_pct_up),
         ("rvol", (state["rvol"] or 0) >= cfg.hod_min_rvol),
         ("float", state["float_shares"] is not None
@@ -46,8 +47,13 @@ def _criteria(state, cfg: Config):
 def scan(states, cfg: Config):
     """Returns (qualified, near) row lists, both sorted by day % desc."""
     qualified, near = [], []
+    # Two bands. The wider one decides what is looked at and graded; the
+    # trading band is a criterion like any other, so a $7 mover lands in the
+    # near list with "price" against its name and teaches the model
+    # something, while never being buyable.
+    ceiling = max(cfg.hod_observe_max_price or 0, cfg.hod_max_price)
     for state in states:
-        if not (cfg.hod_min_price <= state["price"] <= cfg.hod_max_price):
+        if not (cfg.hod_min_price <= state["price"] <= ceiling):
             continue
         checks, dist = _criteria(state, cfg)
         failed = [name for name, ok in checks if not ok]

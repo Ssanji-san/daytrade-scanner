@@ -24,6 +24,11 @@ class Config:
     # --- scanner 2: HOD momentum (Ross Cameron's five criteria) ---
     hod_min_price: float = 1.0          # $1-$5, matching the bot's band
     hod_max_price: float = 5.0
+    # Watched but never bought. Rows priced above hod_max_price and up to
+    # here are graded into the training set with "price" among their failed
+    # criteria, so the model learns what a $5-10 mover does without a cent
+    # being risked on one. 0 means observe only what can be traded.
+    hod_observe_max_price: float = 10.0
     # 50M, not Ross's 20M. Across 61 replayed sessions of the whole market
     # only 5 rows cleared all the gates at once, which is not enough trades
     # to learn from. These four numbers are loosened together and measured
