@@ -25,8 +25,10 @@ def ok_kwargs(**overrides):
 
 class TestWindow:
     def test_window_edges(self):
-        assert not in_window(et(9, 34), CFG)
-        assert in_window(et(9, 35), CFG)
+        # Opens on the bell: the first five minutes are often the best move
+        # of the day on a gapper, and the range break lives in that slot.
+        assert not in_window(et(9, 29), CFG)
+        assert in_window(et(9, 30), CFG)
         assert in_window(et(11, 30), CFG)
         assert not in_window(et(11, 31), CFG)
 

@@ -254,3 +254,30 @@ def test_journal_failure_after_entry_unwinds_the_order(tmp_path):
     assert "HODX" not in bot.open_trades
     assert broker.cancelled                       # entry order pulled
     assert broker._positions == []                # position closed
+
+
+def test_premarket_is_observed_and_journalled_but_never_traded(tmp_path):
+    """Starting the session early must not start trading early.
+
+    Premarket observation needs no separate mode: the entry window gate
+    already refuses entries before the bell, while the alert journal still
+    records what happened - which is exactly the data a premarket strategy
+    would have to be trained on.
+    """
+    bot, broker, journal = make_bot(tmp_path)
+    row = {"symbol": "GAPR", "price": 5.0, "rvol": 30.0, "day_pct": 180.0,
+           "float_shares": 8e6, "has_news": True, "dist_from_hod": 0.0,
+           "day_high": 5.0, "changes": {"5": 20.0}, "above_vwap": True,
+           "gap_pct": 180.0,
+           "setup": {"setup": "opening_range", "stop": 4.85}}
+
+    class State:
+        latest = {}
+        def payload(self, now, require_news=None):
+            return {"hod": {"qualified": [row], "near": []}}
+
+    asyncio.run(bot.cycle(State(), et(7, 45)))       # premarket
+
+    assert broker.orders == []                        # nothing traded
+    assert bot.open_trades == {}
+    assert [a["symbol"] for a in journal.recent_alerts(5)] == ["GAPR"]

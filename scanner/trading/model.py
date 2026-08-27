@@ -10,7 +10,7 @@ import random
 
 FEATURE_ORDER = ["rvol", "day_pct", "float_shares", "has_news",
                  "dist_from_hod", "change_5", "minutes_since_open",
-                 "above_vwap", "catalyst_score", "catalyst_age"]
+                 "above_vwap", "catalyst_score", "catalyst_age", "gap_pct"]
 
 
 def _vector(features):

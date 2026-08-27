@@ -6,7 +6,8 @@ so they get tested as carefully as the risk math.
 import pytest
 
 from scanner.config import Config
-from scanner.setups import detect_pullback, vwap
+from scanner.setups import (detect_opening_range_break, detect_pullback,
+                            vwap)
 from scanner.trading.strategy import technical_stop
 
 CFG = Config()
@@ -90,3 +91,42 @@ class TestTechnicalStop:
     def test_falls_back_when_there_is_no_usable_low(self):
         assert technical_stop(10.0, None, CFG) == pytest.approx(9.70)
         assert technical_stop(10.0, 10.5, CFG) == pytest.approx(9.70)
+
+
+class TestOpeningRangeBreak:
+    """A gapper at the open has no flag yet - it gets the range break."""
+
+    RANGE = {"high": 15.00, "low": 13.20}
+
+    def test_fires_on_a_break_above_the_range_high(self):
+        setup = detect_opening_range_break(self.RANGE, price=15.10,
+                                           gap_pct=180.0, cfg=CFG)
+        assert setup is not None
+        assert setup["setup"] == "opening_range"
+        assert setup["stop"] == pytest.approx(13.20)   # stop at the range low
+        assert setup["trigger"] == pytest.approx(15.00)
+
+    def test_silent_inside_the_range(self):
+        assert detect_opening_range_break(self.RANGE, price=14.50,
+                                          gap_pct=180.0, cfg=CFG) is None
+
+    def test_silent_when_it_did_not_gap(self):
+        # A range break on a stock that did not gap is not this trade.
+        assert detect_opening_range_break(self.RANGE, price=15.10,
+                                          gap_pct=2.0, cfg=CFG) is None
+
+    def test_none_before_the_range_has_formed(self):
+        assert detect_opening_range_break(None, price=15.10,
+                                          gap_pct=180.0, cfg=CFG) is None
+
+    def test_rejects_a_degenerate_range(self):
+        flat = {"high": 15.0, "low": 15.0}
+        assert detect_opening_range_break(flat, price=15.1,
+                                          gap_pct=180.0, cfg=CFG) is None
+
+    def test_the_range_low_still_has_to_pass_the_risk_band(self):
+        # A 12% range is a real setup but too wide to risk; technical_stop
+        # is what rejects it, so the two must agree.
+        wide = detect_opening_range_break({"high": 15.0, "low": 13.2},
+                                          price=15.1, gap_pct=180.0, cfg=CFG)
+        assert technical_stop(15.1, wide["stop"], CFG) is None

@@ -53,6 +53,11 @@ class Config:
     near_filter_max_failures: int = 1   # dimmed "about to qualify" section
 
     # --- entry setups (Ross Cameron micro-pullback / flat top) ---
+    # A gapper at the open has no session bars behind it, so it gets its own
+    # trigger: the first few minutes form a range, then the break of that
+    # range's high is the entry and its low is the stop.
+    orb_minutes: int = 5                 # opening range = first N min from 9:30
+    gap_min_pct: float = 10.0            # gap-up size that makes it a gapper
     setup_lookback_bars: int = 10        # 1-min bars scanned for the swing high
     setup_max_pullback_bars: int = 3     # 1-3 red candles, then the break
     setup_min_pullback_pct: float = 0.4  # below this it's noise, not a pullback
@@ -98,7 +103,9 @@ class Config:
     bot_scale_out_r: float = 2.0         # bank half here
     bot_runner_trail_pct: float = 5.0    # native trailing-stop width for the runner
     bot_time_stop_minutes: int = 20      # only applies before scale-out
-    bot_window_open: str = "09:35"       # ET; no entries before/after the window
+    # 09:30, not 09:35: the first five minutes are often the best move of the
+    # day on a gapper, and the opening-range break lives in exactly that slot.
+    bot_window_open: str = "09:30"       # ET; no entries before/after the window
     bot_window_close: str = "11:30"
     bot_flatten_time: str = "15:50"      # ET; close everything before the bell
     bot_daily_loss_pct: float = 3.0      # kill switch: stop entering for the day

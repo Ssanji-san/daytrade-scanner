@@ -93,6 +93,20 @@ One-time setup:
 4. Actions tab → enable workflows. Test with "Run workflow" on
    `trading-session` during market hours.
 
+### Premarket observation
+
+The session may be started before the bell (cron-job.org fires it at 07:30
+ET). No separate mode is needed: the bot's entry window is 09:30-11:30 ET, so
+premarket it scans and journals but **cannot** place an order. Those rows land
+in the alert journal as observation-only data, which is what a premarket
+strategy would have to be trained on - the bot has never seen that regime, so
+it is being recorded before anything is built on it.
+
+Note the two different news sources: the red/orange **economic calendar**
+(ForexFactory) is macro - CPI, FOMC - and moves the whole market. Per-stock
+catalysts come from **Benzinga** headlines and are what `scanner/catalyst.py`
+scores. A premarket catalyst strategy runs on the Benzinga path.
+
 Notes: GitHub cron can start a few minutes late (fine — the bot's entry
 window is enforced in ET regardless). The trade journal
 (`cache/journal.db`) is committed by the workflows so learning persists

@@ -104,3 +104,77 @@ def test_calendar_and_news_feed_in_payload():
     payload = state.payload(now)
     assert payload["calendar"][0]["title"] == "CPI"
     assert payload["news"][0]["symbol"] == "FLAT"
+
+
+def _gapper_snap(price, when, prev_close=5.0):
+    return {"price": price, "cum_volume": 500_000, "day_high": price,
+            "prev_close": prev_close, "avg_volume": 400_000,
+            "float_shares": 8_000_000,
+            "minute_bar": {"t": when.astimezone(dt.timezone.utc).isoformat(),
+                           "o": price, "h": price, "l": round(price * 0.99, 4),
+                           "c": price, "v": 20_000}}
+
+
+def test_freezes_the_gap_and_the_opening_range_at_the_bell():
+    """Both are captured live because they cannot be recovered later.
+
+    SymbolHistory keeps only the last 180 one-minute bars, so on a session
+    that starts premarket the opening bars roll off well before noon.
+    """
+    state = MarketState(CFG)
+
+    premarket = t(8, 0)                       # gapped to 15.00 from a 5.00 close
+    state.ingest(premarket, {"GAPR": _gapper_snap(15.00, premarket)})
+    assert state._gap_pct["GAPR"] == pytest.approx(200.0)
+
+    for i in range(5):                        # 9:30-9:34 carve the range
+        when = t(9, 30 + i)
+        state.ingest(when, {"GAPR": _gapper_snap(15.00 + i * 0.10, when)})
+    assert "GAPR" not in state._opening_range  # still forming
+
+    after = t(9, 36)
+    state.ingest(after, {"GAPR": _gapper_snap(15.60, after)})
+    opening = state._opening_range["GAPR"]
+    assert opening["high"] == pytest.approx(15.40)
+    assert opening["low"] == pytest.approx(14.85)
+    assert state._gap_pct["GAPR"] == pytest.approx(200.0)   # still the gap
+
+
+def test_a_gapper_breaking_its_opening_range_becomes_a_setup():
+    """No flag has formed yet, so the range break is what fires.
+
+    Price runs straight up out of the range, so the swing high is the newest
+    bar and detect_pullback has nothing to work with - which is exactly the
+    gap-and-go case the opening range exists to cover.
+    """
+    state = MarketState(CFG)
+    premarket = t(8, 0)
+    state.ingest(premarket, {"GAPR": _gapper_snap(15.00, premarket)})
+    for i in range(5):                         # 9:30-9:34, range high 15.40
+        when = t(9, 30 + i)
+        state.ingest(when, {"GAPR": _gapper_snap(15.00 + i * 0.10, when)})
+
+    breaking = t(9, 36)
+    state.ingest(breaking, {"GAPR": _gapper_snap(15.60, breaking)})
+    row = {s["symbol"]: s for s in state.build_states(breaking)}["GAPR"]
+    assert row["setup"]["setup"] == "opening_range"
+    assert row["setup"]["stop"] == pytest.approx(14.85)   # the range low
+    assert row["gap_pct"] == pytest.approx(200.0)
+
+
+def test_a_flag_takes_precedence_over_the_opening_range():
+    """When both are available the pullback wins - it has the tighter stop."""
+    state = MarketState(CFG)
+    premarket = t(8, 0)
+    state.ingest(premarket, {"GAPR": _gapper_snap(15.00, premarket)})
+    for i in range(5):
+        when = t(9, 30 + i)
+        state.ingest(when, {"GAPR": _gapper_snap(15.00 + i * 0.10, when)})
+    dip = t(9, 36)                             # pulls back, then makes a high
+    state.ingest(dip, {"GAPR": _gapper_snap(15.20, dip)})
+    breaking = t(9, 37)
+    state.ingest(breaking, {"GAPR": _gapper_snap(15.60, breaking)})
+
+    row = {s["symbol"]: s for s in state.build_states(breaking)}["GAPR"]
+    assert row["setup"]["setup"] == "micro_pullback"
+    assert row["setup"]["stop"] > 14.85        # tighter than the range low

@@ -127,6 +127,7 @@ function hodRow(r, cls) {
     <td class="num">${fmtBig(r.day_volume)}</td>
     <td class="num">${r.rvol == null ? "–" : r.rvol.toFixed(1)}</td>
     ${floatCell(r.float_shares, true)}
+    <td class="num ${r.gap_pct >= 10 ? "hot" : ""}">${r.gap_pct == null ? "–" : fmtPct(r.gap_pct)}</td>
     <td class="num ${r.above_vwap ? "up" : "down"}">${r.vwap == null ? "–" : (r.above_vwap ? "above" : "below")}</td>
     <td>${r.setup ? `<span class="setup-chip">${r.setup.setup.replace("_", " ")}</span>` : '<span class="waiting">waiting</span>'}</td>
     ${catalystCell(r)}
