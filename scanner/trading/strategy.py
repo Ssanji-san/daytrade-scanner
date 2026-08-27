@@ -22,8 +22,43 @@ def in_window(now, cfg: Config):
     return _parse_hhmm(cfg.bot_window_open) <= t <= _parse_hhmm(cfg.bot_window_close)
 
 
+def broker_state_reasons(account, notional, cfg: Config):
+    """Why the broker itself would refuse this order, from /v2/account.
+
+    Deliberately reads what Alpaca reports rather than re-implementing the
+    day-trading rules: the old "$25k or 3 day trades a week" regime is being
+    replaced by real-time margin exposure, and broker rollout runs into 2027,
+    so any regulation hardcoded here would be wrong for someone. A flagged
+    account has its day-trading buying power computed by the broker; we just
+    read the number.
+
+    A missing or unreadable snapshot returns no reasons. Failing open keeps a
+    network hiccup from halting the session - a genuinely refused order is
+    already handled once, by TradingBot.rejected.
+    """
+    if not account:
+        return []
+    reasons = []
+    if account.get("trading_blocked") or account.get("account_blocked"):
+        reasons.append("broker_blocked")
+    if account.get("buying_power") is None or not notional:
+        return reasons           # nothing to compare against; fail open
+    try:
+        power = float(account["buying_power"])
+        if account.get("pattern_day_trader"):
+            power = min(power,
+                        float(account.get("daytrading_buying_power") or 0))
+    except (TypeError, ValueError):
+        return reasons
+    if power < notional:
+        reasons.append("buying_power")
+    return reasons
+
+
 def should_enter(symbol="", *, price, score, trades_today, traded_symbols,
-                 day_pnl, now, cfg: Config, score_threshold=None):
+                 day_pnl, now, cfg: Config, score_threshold=None,
+                 losses_today=0, open_positions=0, account=None,
+                 notional=None):
     """Returns (take, rejection_reasons). Empty reasons == take the trade.
 
     `score_threshold` overrides the config bar once a trained model sets
@@ -38,12 +73,19 @@ def should_enter(symbol="", *, price, score, trades_today, traded_symbols,
         reasons.append("window")
     if trades_today >= cfg.bot_max_trades_per_day:
         reasons.append("daily_cap")
+    if losses_today >= cfg.bot_max_losses_per_day:
+        reasons.append("loss_cap")
+    if open_positions >= cfg.bot_max_concurrent_positions:
+        reasons.append("concurrency")
     if symbol in traded_symbols:
         reasons.append("already_traded")
     if score < threshold:
         reasons.append("score")
-    if day_pnl <= -cfg.bot_bankroll * cfg.bot_daily_loss_pct / 100:
+    # 0 disables the dollar rule; the loss count is the kill switch now.
+    if (cfg.bot_daily_loss_pct > 0
+            and day_pnl <= -cfg.bot_bankroll * cfg.bot_daily_loss_pct / 100):
         reasons.append("kill_switch")
+    reasons.extend(broker_state_reasons(account, notional, cfg))
     return not reasons, reasons
 
 

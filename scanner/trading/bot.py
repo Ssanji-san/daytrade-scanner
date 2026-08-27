@@ -66,14 +66,20 @@ def journal_alert(journal, ts, row, now, observed, cfg: Config):
     stop = setup.get("stop")
     r_dollars = ((row["price"] - stop) if stop and stop < row["price"]
                  else row["price"] * cfg.bot_stop_pct / 100)
-    journal.record_alert(ts, row["symbol"], row["price"], r_dollars,
-                         features_from_row(row, now),
-                         setup=setup.get("setup"), observed=observed)
+    return journal.record_alert(ts, row["symbol"], row["price"], r_dollars,
+                                features_from_row(row, now),
+                                setup=setup.get("setup"), observed=observed)
 
 
 def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
-                   day_pnl, now, cfg: Config, score_threshold=None):
-    """Best-scored qualifying rows first, never exceeding the daily cap."""
+                   day_pnl, now, cfg: Config, score_threshold=None,
+                   losses_today=0, open_positions=0, account=None):
+    """Best-scored qualifying rows first, never exceeding the daily cap.
+
+    Picks already made in this cycle count against both the daily cap and
+    the concurrency cap, so one pass cannot open more than the account can
+    hold.
+    """
     scored = []
     for row in qualified_rows:
         # The momentum criteria say *what* to trade; the pullback says
@@ -88,18 +94,21 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
     picks, taken = [], set(traded_symbols)
     for score, row, features in scored:
         count = trades_today + len(picks)
-        take, _ = should_enter(row["symbol"], price=row["price"], score=score,
-                               trades_today=count, traded_symbols=taken,
-                               day_pnl=day_pnl, now=now, cfg=cfg,
-                               score_threshold=score_threshold)
-        if not take:
-            continue
         setup = row["setup"]
         stop = technical_stop(row["price"], setup.get("stop"), cfg)
         if stop is None:
             continue                     # risk to the setup low is too wide
         qty, stop = size_position(row["price"], cfg, stop_price=stop)
         if qty < 1:
+            continue
+        take, _ = should_enter(row["symbol"], price=row["price"], score=score,
+                               trades_today=count, traded_symbols=taken,
+                               day_pnl=day_pnl, now=now, cfg=cfg,
+                               score_threshold=score_threshold,
+                               losses_today=losses_today,
+                               open_positions=open_positions + len(picks),
+                               account=account, notional=qty * row["price"])
+        if not take:
             continue
         picks.append({"symbol": row["symbol"], "price": row["price"],
                       "qty": qty, "stop": stop, "score": score,
@@ -124,6 +133,8 @@ class TradingBot:
         self.open_trades = {}     # symbol -> dict
         self.rejected = set()     # symbols whose entry the broker refused today
         self.open_orders = []     # live broker orders, for the dashboard
+        self.account = None       # last good /v2/account snapshot
+        self._account_pull = 0.0
         self._rejected_day = None
         self.scorer, self.model_meta = self._retrain()
         self.error = None
@@ -162,7 +173,7 @@ class TradingBot:
             # from an almost-winner, without loosening what it buys.
             for row in payload["hod"].get("near") or []:
                 self._journal_alert(ts, row, now, observed=1)
-        for alert_id, symbol in self.journal.open_alerts():
+        for alert_id, symbol in self.journal.tracking_alerts(day, ts):
             latest = state.latest.get(symbol)
             if latest:
                 bar = latest.get("minute_bar") or {}
@@ -184,7 +195,10 @@ class TradingBot:
             traded_symbols={t["symbol"] for t in trades} | self.rejected,
             day_pnl=self.journal.day_pnl(day),
             now=now, cfg=self.cfg,
-            score_threshold=self.score_threshold)
+            score_threshold=self.score_threshold,
+            losses_today=self.journal.losses_today(day),
+            open_positions=len(self.open_trades),
+            account=await self._account_snapshot(ts))
         for pick in picks:
             try:
                 await self._enter(pick, ts)
@@ -192,6 +206,23 @@ class TradingBot:
                 # Don't re-hammer a symbol the broker refused; one line, once.
                 self.rejected.add(pick["symbol"])
                 print(f"[bot] ENTRY REJECTED {pick['symbol']}: {exc}")
+
+    async def _account_snapshot(self, ts):
+        """Cached /v2/account, refreshed every 30s. None if never readable.
+
+        Buying power moves with every fill, so it cannot be read once at
+        startup - but it does not need re-reading on a 3-second poll either.
+        A failed refresh keeps the last good snapshot rather than blocking
+        entries: should_enter fails open on a missing account.
+        """
+        if ts - self._account_pull < 30:
+            return self.account
+        self._account_pull = ts
+        try:
+            self.account = await self.broker.account()
+        except Exception as exc:
+            print(f"[bot] account read failed, using last known: {exc}")
+        return self.account
 
     def _journal_alert(self, ts, row, now, observed):
         journal_alert(self.journal, ts, row, now, observed, self.cfg)
@@ -346,7 +377,7 @@ async def bot_loop(app, cfg: Config):
         account = await broker.account()
         print(f"[bot] paper account ok — equity ${float(account['equity']):,.0f} "
               f"(simulating ${cfg.bot_bankroll:,.0f} bankroll)")
-        journal = Journal(cfg.bot_journal_path)
+        journal = Journal(cfg.bot_journal_path, cfg.bot_alert_window_minutes)
         bot = TradingBot(cfg, journal, broker)
         last_equity_pull = 0.0
 

@@ -50,7 +50,7 @@ def _context_for(day, daily, floats, cfg):
 async def run(start, end, feed, fetch_only):
     cfg = DEFAULT
     cache = fetch.Cache(cfg)
-    journal = Journal(cfg.backtest_journal_path)
+    journal = Journal(cfg.backtest_journal_path, cfg.bot_alert_window_minutes)
     floats = FloatCache(cfg)
 
     async with aiohttp.ClientSession() as session:
@@ -89,12 +89,74 @@ async def run(start, end, feed, fetch_only):
 
     if fetch_only:
         return
+    report(journal, cfg)
+
+
+def _expectancy(rows):
+    """(hit rate, pure-2R R, runner R) over graded alerts.
+
+    Pure 2R: +2 on a win, -1 otherwise. The runner banks half at +2R and
+    rides the rest, so it is credited with mfe less a rough 1R of trail
+    give-back. mfe is a floor here, not a ceiling - it stops at the last bar
+    of the tracking window.
+    """
+    if not rows:
+        return 0.0, 0.0, 0.0
+    wins = sum(1 for r in rows if r["label"] == 1)
+    pure = sum(2 if r["label"] == 1 else -1 for r in rows) / len(rows)
+    runner = 0.0
+    for r in rows:
+        if r["label"] != 1:
+            runner -= 1
+            continue
+        ran = (r["mfe"] / r["r_dollars"]) if r["r_dollars"] else 2.0
+        runner += 1.0 + 0.5 * max(2.0, ran - 1.0)
+    return wins / len(rows), pure, runner / len(rows)
+
+
+def _loss_split(rows):
+    """(stopped out, timed out) among the losses.
+
+    A loss whose worst excursion never reached -1R did not lose - the clock
+    ran out on it. That was 45% of losses at the old 30-minute horizon, and
+    it is the number this longer hold is meant to move.
+    """
+    stopped = timed = 0
+    for r in rows:
+        if r["label"] != 0:
+            continue
+        if r["r_dollars"] and r["mae"] <= -r["r_dollars"]:
+            stopped += 1
+        else:
+            timed += 1
+    return stopped, timed
+
+
+def report(journal, cfg):
+    """What the replay found, in R and in dollars."""
+    rows = journal.outcome_rows()
     dataset = journal.labeled_dataset()
-    wins = sum(1 for _, y in dataset if y == 1)
     print()
-    print(f"[backtest] {len(dataset)} labeled alerts, {wins} winners "
-          f"({wins / len(dataset):.0%} base rate)" if dataset
-          else "[backtest] nothing labeled yet")
+    if not rows:
+        print("[backtest] nothing labeled yet")
+        return
+    risk = cfg.bot_bankroll * cfg.bot_risk_pct / 100
+    print(f"[backtest] {len(rows)} labeled alerts, ${risk:,.0f} risked per "
+          f"trade, {cfg.bot_alert_window_minutes}-minute horizon")
+    print(f"[backtest] {'month':>8} {'n':>5} {'hit':>7} {'2R exp':>9} "
+          f"{'runner':>9} {'$/trade':>9}  {'stopped':>8} {'timeout':>8}")
+    by_month = {}
+    for row in rows:
+        by_month.setdefault(row["day"][:7], []).append(row)
+    for month in sorted(by_month) + ["ALL"]:
+        block = rows if month == "ALL" else by_month[month]
+        hit, pure, runner = _expectancy(block)
+        stopped, timed = _loss_split(block)
+        print(f"[backtest] {month:>8} {len(block):>5} {hit:>6.1%} "
+              f"{pure:>+8.2f}R {runner:>+8.2f}R {runner * risk:>+8.0f} "
+              f"{stopped:>8} {timed:>8}")
+    print("[backtest] break-even on a 2R target needs a 33.3% hit rate")
+
     if len(dataset) >= cfg.bot_model_min_samples:
         _, meta = train(dataset, min_samples=cfg.bot_model_min_samples,
                         percentile=cfg.bot_score_percentile)

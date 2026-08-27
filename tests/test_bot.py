@@ -41,19 +41,36 @@ class TestFeatures:
 class TestChooseEntries:
     def test_takes_best_scored_within_remaining_cap(self):
         rows = [row("AAA", rvol=6.0), row("BBB", rvol=14.0), row("CCC", rvol=9.0)]
-        picks = choose_entries(rows, HeuristicScorer(), trades_today=3,
+        picks = choose_entries(rows, HeuristicScorer(), trades_today=9,
                                traded_symbols=set(), day_pnl=0.0,
                                now=et(10, 0), cfg=CFG)
         assert [p["symbol"] for p in picks] == ["BBB"]   # 1 slot left, best rvol
         assert picks[0]["qty"] > 0
         assert picks[0]["stop"] < picks[0]["price"]
 
-    def test_cap_never_exceeded_in_one_cycle(self):
+    def test_concurrency_caps_one_cycle_below_the_daily_cap(self):
+        # The daily cap is 10, but four-hour holds mean positions do not
+        # turn over inside a cycle - so what bounds a single pass is the
+        # account, not the day. 4 x $250 is the whole $1,000.
         rows = [row(f"S{i}") for i in range(8)]
         picks = choose_entries(rows, HeuristicScorer(), trades_today=0,
                                traded_symbols=set(), day_pnl=0.0,
                                now=et(10, 0), cfg=CFG)
-        assert len(picks) == CFG.bot_max_trades_per_day
+        assert len(picks) == CFG.bot_max_concurrent_positions
+
+    def test_already_open_positions_count_against_concurrency(self):
+        rows = [row(f"S{i}") for i in range(8)]
+        picks = choose_entries(rows, HeuristicScorer(), trades_today=0,
+                               traded_symbols=set(), day_pnl=0.0,
+                               now=et(10, 0), cfg=CFG, open_positions=3)
+        assert len(picks) == 1
+
+    def test_daily_cap_still_binds(self):
+        rows = [row(f"S{i}") for i in range(8)]
+        picks = choose_entries(rows, HeuristicScorer(), trades_today=9,
+                               traded_symbols=set(), day_pnl=0.0,
+                               now=et(10, 0), cfg=CFG)
+        assert len(picks) == 1
 
     def test_skips_traded_low_score_and_out_of_band(self):
         rows = [row("DUP"), row("CHEAP", price=1.50, day_high=1.50),
@@ -63,9 +80,16 @@ class TestChooseEntries:
                                now=et(10, 0), cfg=CFG)
         assert [p["symbol"] for p in picks] == ["GOOD"]
 
-    def test_nothing_outside_window_or_after_kill_switch(self):
+    def test_nothing_outside_the_window(self):
         rows = [row()]
         assert choose_entries(rows, HeuristicScorer(), 0, set(), 0.0,
                               et(9, 20), CFG) == []
+
+    def test_four_losses_ends_the_day(self):
+        # The kill switch is a loss count now, not a dollar figure, so a
+        # big paper drawdown alone no longer stops entries.
+        rows = [row()]
         assert choose_entries(rows, HeuristicScorer(), 0, set(), -200.0,
-                              et(10, 0), CFG) == []
+                              et(10, 0), CFG) != []
+        assert choose_entries(rows, HeuristicScorer(), 0, set(), 0.0,
+                              et(10, 0), CFG, losses_today=4) == []

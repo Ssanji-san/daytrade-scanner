@@ -24,7 +24,11 @@ class Config:
     # --- scanner 2: HOD momentum (Ross Cameron's five criteria) ---
     hod_min_price: float = 1.0
     hod_max_price: float = 20.0
-    hod_max_float: float = 20_000_000   # shares (approximated by shares outstanding)
+    # 50M, not Ross's 20M. Across 61 replayed sessions of the whole market
+    # only 5 rows cleared all the gates at once, which is not enough trades
+    # to learn from. These four numbers are loosened together and measured
+    # by scripts/sweep.py; they are a starting point, not a claim.
+    hod_max_float: float = 50_000_000   # shares (approximated by shares outstanding)
     hod_min_pct_up: float = 10.0        # % up vs previous close
     # Disabled (0 = no check). An absolute share count measures the wrong
     # thing here: Ross's "100k traded" assumes the consolidated tape, but
@@ -42,13 +46,13 @@ class Config:
     # baseline. An average is not distorted by one quiet session, so it
     # is the honest way to say "there is someone on the other side".
     hod_min_avg_volume: int = 10_000    # 30-day average IEX shares
-    hod_min_rvol: float = 5.0           # relative volume vs 30-day average
+    hod_min_rvol: float = 3.0           # relative volume vs 30-day average
     hod_require_news: bool = False      # UI toggle; badge always shown
     # "Near the high", not "at the high". The entry is the pullback, and a
     # healthy flag pulls back 2-5% - a 1% gate rejected most of them and
     # only let the trade through after price had already run past the
     # signal, which is the chasing this strategy exists to avoid.
-    hod_near_high_pct: float = 4.0      # within this % of the day high
+    hod_near_high_pct: float = 6.0      # within this % of the day high
     hod_rows: int = 20
     near_filter_max_failures: int = 1   # dimmed "about to qualify" section
 
@@ -74,7 +78,7 @@ class Config:
     # --- news / catalyst quality ---
     news_max_age_hours: float = 24.0    # headline this recent => catalyst badge
     news_per_symbol: int = 3
-    catalyst_min_score: float = 0.30    # below this the "news" is not a reason
+    catalyst_min_score: float = 0.15    # below this the "news" is not a reason
     catalyst_fresh_minutes: float = 60.0   # full weight while it is breaking
     catalyst_veto: tuple = ("offering",)   # dilution kills the runner
 
@@ -91,24 +95,48 @@ class Config:
     # this bot must never touch a live account.
     trading_base: str = "https://paper-api.alpaca.markets"
     bot_bankroll: float = 1_000.0        # simulated account (paper balance ignored)
-    bot_risk_pct: float = 1.0            # % of bankroll risked per trade
+    # 5% risk against a 20% stop puts exactly $250 into each position
+    # ($50 / (0.20 x price) shares), which is also the 25% notional cap - the
+    # two formulas agree, so neither one silently overrides the other.
+    bot_risk_pct: float = 5.0            # % of bankroll risked per trade
     bot_max_notional_pct: float = 25.0   # position size cap as % of bankroll
-    bot_max_trades_per_day: int = 4
+    bot_max_trades_per_day: int = 10
+    bot_max_losses_per_day: int = 4      # the day's kill switch: 4 losers, stop
+    # 4 x $250 is the whole account. Without this the bot could hold ten
+    # positions at once against a $1,000 balance, since a 4-hour hold does
+    # not turn over fast enough for the daily cap to bound exposure.
+    bot_max_concurrent_positions: int = 4
     bot_min_price: float = 2.0           # bot trades $2-$20 only (user request)
     bot_max_price: float = 20.0
-    bot_stop_pct: float = 3.0            # fallback stop when no setup low exists
-    bot_min_stop_pct: float = 1.0        # floor: never risk less than noise
-    bot_max_stop_pct: float = 6.0        # skip setups whose stop is this far away
+    # Min and max both at 20 collapses the band, so technical_stop returns a
+    # flat 20% on every trade and skips anything wider. This deliberately
+    # discards the technical stop - the pullback low Ross places the stop at -
+    # in favour of a fixed percentage. Restore 1.0/6.0 to undo it.
+    bot_stop_pct: float = 20.0           # fallback stop when no setup low exists
+    bot_min_stop_pct: float = 20.0       # floor: never risk less than noise
+    bot_max_stop_pct: float = 20.0       # skip setups whose stop is this far away
     bot_limit_slippage_pct: float = 0.3  # marketable limit above the ask
     bot_scale_out_r: float = 2.0         # bank half here
     bot_runner_trail_pct: float = 5.0    # native trailing-stop width for the runner
-    bot_time_stop_minutes: int = 20      # only applies before scale-out
+    # 4 hours, not 20 minutes. A 20% stop implies a +40% target, and almost
+    # nothing moves 40% in 20 minutes - 186 of 414 replayed losses (45%) were
+    # the clock expiring, not the stop being hit. Last entry 11:30 + 4h =
+    # 15:30, still inside the 15:50 flatten.
+    bot_time_stop_minutes: int = 240     # only applies before scale-out
+    # The grading horizon must match the holding horizon, or the journal
+    # labels a trade a loss while the bot is still holding it.
+    bot_alert_window_minutes: int = 240
     # 09:30, not 09:35: the first five minutes are often the best move of the
     # day on a gapper, and the opening-range break lives in exactly that slot.
     bot_window_open: str = "09:30"       # ET; no entries before/after the window
     bot_window_close: str = "11:30"
     bot_flatten_time: str = "15:50"      # ET; close everything before the bell
-    bot_daily_loss_pct: float = 3.0      # kill switch: stop entering for the day
+    # 0 = disabled. The day now ends on a loss COUNT
+    # (bot_max_losses_per_day), not a dollar figure. Worth knowing: a count
+    # bounds how many losers close, not how much is open - with 4 concurrent
+    # slots the bot can still hold 3 positions when the 4th loss trips the
+    # cap. Set this above 0 to restore a hard dollar floor.
+    bot_daily_loss_pct: float = 0.0      # kill switch: stop entering for the day
     # Fixed bar for the hand-written heuristic only. A TRAINED model emits
     # a calibrated probability, and with roughly a quarter of setups
     # reaching +2R its scores sit far below 0.55 - keeping that bar made
@@ -136,6 +164,11 @@ class Config:
     # otherwise it can never see what loosening a pair of gates would admit,
     # and would only ever explore what the current settings already allow.
     backtest_near_failures: int = 3
+    # Sample every mover, not only the ones that cleared the gates. Training
+    # solely on rows the filters already surfaced means the model can only
+    # rank within them - it never learns what a 2R move looks like in the
+    # population it is not being shown. observed=2 marks these.
+    backtest_sample_all: bool = False
     backtest_journal_path: str = "cache/backtest.db"
     backtest_cache_dir: str = "cache/backtest"
     bot_forward_marks_min: tuple = (5, 15, 30)   # forward-return checkpoints

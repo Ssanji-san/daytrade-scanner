@@ -3,6 +3,8 @@
 These encode the difference between chasing a high and trading a pullback,
 so they get tested as carefully as the risk math.
 """
+from dataclasses import replace
+
 import pytest
 
 from scanner.config import Config
@@ -11,6 +13,10 @@ from scanner.setups import (detect_opening_range_break, detect_pullback,
 from scanner.trading.strategy import technical_stop
 
 CFG = Config()
+# The live config collapses the stop band to a flat 20% (bot_min_stop_pct).
+# These tests exercise the clamping logic itself, so they keep a real band.
+BAND = replace(CFG, bot_stop_pct=3.0, bot_min_stop_pct=1.0,
+               bot_max_stop_pct=6.0)
 
 
 def bar(o, h, l, c, v=10_000, t="t"):
@@ -79,18 +85,26 @@ class TestPullbackTrigger:
 
 class TestTechnicalStop:
     def test_uses_the_setup_low(self):
-        assert technical_stop(5.48, 5.35, CFG) == pytest.approx(5.35)
+        assert technical_stop(5.48, 5.35, BAND) == pytest.approx(5.35)
 
     def test_widens_a_stop_tighter_than_noise(self):
-        stop = technical_stop(10.0, 9.98, CFG)          # 0.2% -> floor 1%
+        stop = technical_stop(10.0, 9.98, BAND)         # 0.2% -> floor 1%
         assert stop == pytest.approx(9.90)
 
     def test_refuses_a_setup_whose_risk_is_too_wide(self):
-        assert technical_stop(10.0, 9.00, CFG) is None  # 10% > 6% max
+        assert technical_stop(10.0, 9.00, BAND) is None  # 10% > 6% max
 
     def test_falls_back_when_there_is_no_usable_low(self):
-        assert technical_stop(10.0, None, CFG) == pytest.approx(9.70)
-        assert technical_stop(10.0, 10.5, CFG) == pytest.approx(9.70)
+        assert technical_stop(10.0, None, BAND) == pytest.approx(9.70)
+        assert technical_stop(10.0, 10.5, BAND) == pytest.approx(9.70)
+
+    def test_live_config_forces_a_flat_20_percent(self):
+        # min and max both at 20 collapse the band: the setup low is
+        # ignored and every trade risks the same 20%, whatever the chart
+        # says. This deliberately discards the technical stop.
+        assert technical_stop(10.0, 9.85, CFG) == pytest.approx(8.00)
+        assert technical_stop(10.0, None, CFG) == pytest.approx(8.00)
+        assert technical_stop(10.0, 7.00, CFG) is None   # 30% > 20% max
 
 
 class TestOpeningRangeBreak:
@@ -129,4 +143,4 @@ class TestOpeningRangeBreak:
         # is what rejects it, so the two must agree.
         wide = detect_opening_range_break({"high": 15.0, "low": 13.2},
                                           price=15.1, gap_pct=180.0, cfg=CFG)
-        assert technical_stop(15.1, wide["stop"], CFG) is None
+        assert technical_stop(15.1, wide["stop"], BAND) is None

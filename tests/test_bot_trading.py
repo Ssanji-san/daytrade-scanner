@@ -170,7 +170,7 @@ def test_time_stop_cuts_a_stalled_trade_before_scale_out(tmp_path):
     _open_a_trade(bot, ts=open_ts)
     broker._positions = [{"symbol": "HODX", "current_price": 5.05}]  # below +2R
     state = FakeState({"HODX": {"price": 5.05}})
-    late = et(10, 21)                                        # 21 min later
+    late = et(14, 5)                                     # 4h05m later
 
     asyncio.run(bot._manage_open(state, now=late, ts=int(late.timestamp())))
 

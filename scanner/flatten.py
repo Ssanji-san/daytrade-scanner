@@ -59,7 +59,7 @@ async def run(force=False):
     async with aiohttp.ClientSession() as session:
         broker = Broker(session, cfg)
         positions = await broker.positions()
-        journal = Journal(cfg.bot_journal_path)
+        journal = Journal(cfg.bot_journal_path, cfg.bot_alert_window_minutes)
         await reconcile(broker, journal, {p["symbol"] for p in positions},
                         now_ts)
 

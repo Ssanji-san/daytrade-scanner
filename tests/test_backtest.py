@@ -209,14 +209,32 @@ def test_open_alerts_can_be_scoped_to_one_session(tmp_path):
 
 
 class TestSessionWindow:
-    """Only replay the hours the bot is actually awake for."""
+    """Two windows, not one.
 
-    def test_afternoon_bars_are_dropped(self):
-        # 19:00Z = 15:00 ET, hours after the session ends at 12:15.
+    New alerts are only recorded while the live bot could still enter
+    (07:30-12:15 ET), but bars keep flowing to the flatten time so a
+    four-hour hold can be graded on what actually happened. Cutting
+    bars at the entry cutoff would mark every late trade a timeout,
+    which is the artifact the longer horizon exists to remove.
+    """
+
+    def test_bars_run_to_the_flatten_time(self):
+        # 19:00Z = 15:00 ET: past the 12:15 entry cutoff, but the bot
+        # could still be holding, so the bar is kept for grading.
         rows = {"AAA": [bar("2026-08-12T13:35:00Z", 1, 1, 1, 1),   # 09:35 ET
                         bar("2026-08-12T19:00:00Z", 1, 1, 1, 1)]}
         timeline = replay.bars_by_minute(rows, CFG)
-        assert list(timeline) == ["2026-08-12T13:35:00Z"]
+        assert list(timeline) == ["2026-08-12T13:35:00Z",
+                                  "2026-08-12T19:00:00Z"]
+
+    def test_bars_after_the_flatten_are_dropped(self):
+        # 20:00Z = 16:00 ET, after the 15:50 flatten: nothing is held.
+        rows = {"AAA": [bar("2026-08-12T20:00:00Z", 1, 1, 1, 1)]}
+        assert replay.bars_by_minute(rows, CFG) == {}
+
+    def test_entry_cutoff_is_the_narrower_window(self):
+        assert replay.in_session("2026-08-12T16:00:00Z", CFG)      # 12:00 ET
+        assert not replay.in_session("2026-08-12T19:00:00Z", CFG)  # 15:00 ET
 
     def test_premarket_inside_the_window_is_kept(self):
         # 12:00Z = 08:00 ET, after the 07:30 start.
@@ -278,3 +296,45 @@ class TestSweepGates:
                 ("2026-08-01", self._features(rvol=1.0), 1)]   # rejected
         n, rate = sweep.score(rows, self._combo())
         assert (n, rate) == (2, 0.5)
+
+
+def test_grading_continues_past_the_entry_cutoff_but_recording_stops(tmp_path):
+    """The two windows do different jobs.
+
+    A trade opened in the morning has to be graded on the afternoon it
+    actually had - otherwise a four-hour hold is scored as a timeout, which
+    is the artifact the longer horizon exists to remove. But nothing new may
+    be recorded after 12:15 ET, because the live bot could not have entered
+    it.
+    """
+    journal = Journal(str(tmp_path / "backtest.db"),
+                      alert_window_minutes=CFG.bot_alert_window_minutes)
+    day = "2026-08-12"
+
+    morning = []
+    for i in range(12):                       # 09:30-09:41 ET
+        price = 5.00 + i * 0.10
+        morning.append(bar(f"{day}T13:{30 + i:02d}:00Z", price, price + 0.02,
+                           round(price * 0.995, 4), price, v=40_000))
+    # 17:00Z = 13:00 ET: past the entry cutoff, inside the 4-hour hold.
+    morning.append(bar(f"{day}T17:00:00Z", 6.2, 9.00, 6.1, 8.90, v=40_000))
+    # A mover that only shows up in the afternoon must never be recorded.
+    late = [bar(f"{day}T17:00:00Z", 5.0, 9.00, 4.9, 8.90, v=40_000)]
+
+    news = [{"symbol": s, "headline": f"{s} receives FDA approval",
+             "ts": int(dt.datetime.fromisoformat(
+                 f"{day}T13:00:00+00:00").timestamp()),
+             "url": "u", "source": "bz"} for s in ("MOVR", "LATE")]
+    context = {"prev_close": {"MOVR": 4.00, "LATE": 4.00},
+               "avg_volume": {"MOVR": 400_000, "LATE": 400_000},
+               "float_shares": {"MOVR": 8_000_000, "LATE": 8_000_000}}
+
+    replay.replay_day(day, {"MOVR": morning, "LATE": late}, news, context,
+                      journal, CFG)
+
+    symbols = {a["symbol"] for a in journal.recent_alerts(20)}
+    assert "MOVR" in symbols
+    assert "LATE" not in symbols          # arrived after the entry cutoff
+
+    movr = [a for a in journal.recent_alerts(20) if a["symbol"] == "MOVR"][0]
+    assert movr["label"] == 1             # the 13:00 ET bar graded it a win

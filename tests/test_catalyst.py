@@ -1,4 +1,6 @@
 """Catalyst quality: the size of the reason behind the move."""
+from dataclasses import replace
+
 import pytest
 
 from scanner.catalyst import classify, freshness, is_tradable, score_news
@@ -77,8 +79,20 @@ class TestIsTradable:
     def test_real_catalyst_passes(self):
         assert is_tradable(score_news([item("FDA approval", 10)], NOW, CFG), CFG)
 
-    def test_weak_stale_filler_fails(self):
+    def test_stale_filler_now_clears_the_loosened_bar(self):
+        # A real consequence of dropping catalyst_min_score to 0.15: an
+        # unremarkable headline scores 0.35 and decays to 0.19 after 15
+        # hours, above the new bar and below the old 0.30. Loosening the
+        # gate to find more trades admits weaker reasons - that is the
+        # trade being made, and scripts/sweep.py measures whether it paid.
         weak = score_news([item("XYZ publishes shareholder letter", 900)],
                           NOW, CFG)
-        assert weak["score"] < CFG.catalyst_min_score
-        assert not is_tradable(weak, CFG)
+        assert weak["score"] == pytest.approx(0.19, abs=0.01)
+        assert is_tradable(weak, CFG)
+        assert not is_tradable(weak, replace(CFG, catalyst_min_score=0.30))
+
+    def test_an_offering_is_still_vetoed_at_any_score(self):
+        # The one gate that did not loosen: dilution kills the runner.
+        fresh = score_news([item("XYZ announces $50M public offering", 2)],
+                           NOW, CFG)
+        assert not is_tradable(fresh, CFG)
