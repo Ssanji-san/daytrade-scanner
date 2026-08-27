@@ -146,3 +146,13 @@ def test_a_symbol_without_a_previous_close_is_skipped(tmp_path):
                                {"prev_close": {}}, journal, CFG)
     assert graded == 0
     assert journal.recent_alerts(5) == []
+
+
+class TestSymbolFilter:
+    def test_keeps_common_stock(self):
+        assert fetch.tradable_symbols(["AAPL", "F", "MOVR"]) == ["AAPL", "F", "MOVR"]
+
+    def test_drops_preferreds_warrants_and_units(self):
+        """These break the bars endpoint and are not this strategy's trade."""
+        messy = ["AAPL", "ABR-PD", "ACHR-WT", "AAC-UN", "AGM-A"]
+        assert fetch.tradable_symbols(messy) == ["AAPL"]

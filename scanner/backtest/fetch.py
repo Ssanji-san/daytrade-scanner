@@ -12,8 +12,21 @@ often while the logic is being tuned.
 import datetime as dt
 import json
 import pathlib
+import re
 
 from ..config import Config
+
+# Common stock only: 1-5 plain letters. The SEC map also lists preferreds,
+# warrants and units (ABR-PD, ACHR-WT, AAC-UN), which the bars endpoint
+# rejects and which this strategy would not trade anyway - WVVIP was the
+# lesson that a preferred can print a huge percentage move on no volume.
+COMMON_STOCK = re.compile(r"^[A-Z]{1,5}$")
+
+
+def tradable_symbols(tickers):
+    """Drop the share classes this strategy has no business trading."""
+    return sorted(s for s in tickers if COMMON_STOCK.match(s))
+
 
 # Pure helpers first - these are what the tests exercise.
 

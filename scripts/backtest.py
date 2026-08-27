@@ -59,8 +59,9 @@ async def run(start, end, feed, fetch_only):
         print(f"[backtest] universe from daily bars ({feed}) {start} -> {end}")
         from scanner.floats import fetch_ticker_map
         tickers = await fetch_ticker_map(session, cfg)
-        symbols = sorted(tickers)
-        print(f"[backtest] {len(symbols)} symbols in the SEC ticker map")
+        symbols = fetch.tradable_symbols(tickers)
+        print(f"[backtest] {len(symbols)} common-stock symbols "
+              f"(of {len(tickers)} in the SEC map)")
 
         daily = await fetch.daily_bars(client, cache, symbols, start, end, feed)
         print(f"[backtest] daily bars for {len(daily)} symbols")

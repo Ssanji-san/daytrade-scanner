@@ -11,6 +11,7 @@ import os
 from .config import Config
 
 MAX_SYMBOLS_PER_REQUEST = 500
+BARS_SYMBOLS_PER_REQUEST = 100
 
 
 # --- parsers (pure) ---
@@ -130,8 +131,11 @@ class AlpacaClient:
         """
         out = {}
         symbols = sorted(symbols)
-        for i in range(0, len(symbols), MAX_SYMBOLS_PER_REQUEST):
-            chunk = symbols[i:i + MAX_SYMBOLS_PER_REQUEST]
+        # Smaller chunks than snapshots take: bar requests carry a longer
+        # query string and the API rejects the whole batch with a 400 if it
+        # grows too large.
+        for i in range(0, len(symbols), BARS_SYMBOLS_PER_REQUEST):
+            chunk = symbols[i:i + BARS_SYMBOLS_PER_REQUEST]
             token = None
             while True:
                 params = {"symbols": ",".join(chunk), "timeframe": timeframe,
