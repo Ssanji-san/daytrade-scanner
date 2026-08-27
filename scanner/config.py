@@ -51,7 +51,11 @@ class Config:
     # baseline. An average is not distorted by one quiet session, so it
     # is the honest way to say "there is someone on the other side".
     hod_min_avg_volume: int = 10_000    # 30-day average IEX shares
-    hod_min_rvol: float = 3.0           # relative volume vs 30-day average
+    # Back to Ross's 5x. It was dropped to 3x to manufacture more trades
+    # and bought almost nothing - the strategy still only fired once every
+    # ten days - while admitting materially weaker action. Lower it again
+    # only with a measurement showing what the weaker rows are worth.
+    hod_min_rvol: float = 5.0           # relative volume vs 30-day average
     # % gained since the 9:30 bell, not since yesterday's close. 0 disables.
     # This is the opening drive: the stock being bought right now, rather
     # than one that gapped overnight and has drifted since.
