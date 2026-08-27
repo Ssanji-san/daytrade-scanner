@@ -40,6 +40,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Bars and news for a date range never change, and refetching thousands
+      # of symbol-days at 200 req/min dominates the runtime. Keyed on the
+      # window and feed so a re-run with different replay logic is instant.
+      - name: Cache fetched history
+        uses: actions/cache@v4
+        with:
+          path: cache/backtest
+          key: bt-${{ inputs.feed }}-${{ inputs.start }}-${{ inputs.end }}
+          restore-keys: bt-${{ inputs.feed }}-${{ inputs.start }}-
+
       - name: Replay history
         env:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
