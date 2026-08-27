@@ -23,6 +23,19 @@ from .strategy import (ET, bankroll_from, exit_levels, is_doji,
 
 MARKET_OPEN = dt.time(9, 30)
 
+# A textbook setup for this strategy: heavy relative volume, a real fresh
+# catalyst, up strongly on the day and since the bell, holding above VWAP
+# near the high. Whatever the model has learned, it must be willing to buy
+# THIS - if it is not, the bot is silently shut and nobody finds out until
+# a week of empty sessions has gone by. That has happened, so it is checked
+# out loud at startup.
+REFERENCE_SETUP = {
+    "rvol": 8.0, "day_pct": 15.0, "float_shares": 8e6, "has_news": 1.0,
+    "dist_from_hod": 0.5, "change_5": 3.0, "minutes_since_open": 12.0,
+    "above_vwap": 1.0, "catalyst_score": 1.0, "catalyst_age": 20.0,
+    "gap_pct": 0.0, "open_pct": 8.0,
+}
+
 
 def _bar_ts(bar):
     """Epoch seconds for a bar's timestamp, or None."""
@@ -174,6 +187,19 @@ class TradingBot:
         # A trained model sets its own bar; the fixed one only fits the
         # heuristic's score range.
         self.score_threshold = meta.get("threshold") or self.cfg.bot_score_threshold
+        self.reference_score = scorer.score(REFERENCE_SETUP)
+        if self.reference_score < self.score_threshold:
+            # Trained on the wrong distribution - stale rows from a previous
+            # strategy will teach it that this one's own signals are bad.
+            print(f"[bot] !! MODEL REJECTS ITS OWN TEXTBOOK SETUP: "
+                  f"scores {self.reference_score:.4f} against a bar of "
+                  f"{self.score_threshold:.4f} ({meta['samples']} samples).")
+            print("[bot]    Nothing will trade. The training data probably "
+                  "predates the current strategy; archive it and let the "
+                  "heuristic run until new rows accumulate.")
+        else:
+            print(f"[bot] scoring: {meta['kind']} bar={self.score_threshold} "
+                  f"reference setup scores {self.reference_score:.4f} (passes)")
         if meta["kind"] == "logreg":
             last = self.journal.latest_model()
             if not last or last["samples"] != meta["samples"]:
