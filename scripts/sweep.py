@@ -22,6 +22,7 @@ Two limits worth knowing:
 import argparse
 import itertools
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -141,22 +142,47 @@ def main():
     hn, hrate = score(holdout, best)
     print()
     print("The honest read:")
-    print(f"  best on train      {best_rate:.0%} over {best_n} alerts "
-          f"(base {base_train:.0%})")
+    print(f"  best on train       {best_rate:.0%} over {best_n} alerts "
+          f"(base {base_train:.0%}, lift {best_rate - base_train:+.1%})")
     if hrate is None:
-        print("  on the holdout     admitted nothing - the edge was noise")
+        print("  on the holdout      admitted nothing - the edge was noise")
+        return
+
+    # A win rate measured over a few dozen alerts carries real sampling
+    # noise, so quote the lift against it rather than treating any positive
+    # number as an edge.
+    stderr = math.sqrt(max(hrate * (1 - hrate), 1e-9) / hn)
+    lift = hrate - base_hold
+    print(f"  same gates held out {hrate:.0%} over {hn} alerts "
+          f"(base {base_hold:.0%}, lift {lift:+.1%} +/- {stderr:.1%})")
+
+    if lift <= stderr:
+        print("  -> inside the noise. This is not an edge, it is a fit.")
+    elif lift <= 2 * stderr:
+        print("  -> positive but within two standard errors. Suggestive at "
+              "best; do not trade it on this evidence.")
     else:
-        print(f"  same gates held out {hrate:.0%} over {hn} alerts "
-              f"(base {base_hold:.0%})")
-        lift = hrate - base_hold
-        if lift <= 0:
-            print("  -> no better than taking everything. Curve-fitted.")
-        elif hrate < best_rate * 0.6:
-            print("  -> most of the train edge did not survive. Treat with "
-                  "suspicion.")
-        else:
-            print("  -> the edge survived data it was never tuned on. "
-                  "Worth a closer look, still not proof.")
+        print("  -> survived data it was never tuned on by more than two "
+              "standard errors. Worth a closer look, still not proof.")
+
+    # If the train ranking cannot pick the holdout winner, the ranking is
+    # mostly noise - which is the most useful thing a sweep can tell you.
+    scored_holdout = []
+    for rate, n, combo in ranked[:args.top]:
+        hn2, hrate2 = score(holdout, combo)
+        if hrate2 is not None:
+            scored_holdout.append((hrate2, hn2, rate, combo))
+    if scored_holdout:
+        best_out = max(scored_holdout, key=lambda t: (t[0], t[1]))
+        if best_out[3] != best:
+            print()
+            print("  Note: the best combination on the holdout was NOT the "
+                  "one the search picked.")
+            print(f"        it scored {best_out[0]:.0%} over {best_out[1]} "
+                  f"alerts while ranking {best_out[2]:.0%} on train:")
+            print(f"        {describe(best_out[3])}")
+            print("        A ranking that cannot pick its own winner is "
+                  "fitting noise, not finding strategy.")
 
 
 if __name__ == "__main__":
