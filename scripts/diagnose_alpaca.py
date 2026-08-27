@@ -63,13 +63,20 @@ async def main(probe_symbols, qty=1):
             for field in ACCOUNT_FIELDS:
                 if field in acct:
                     print(f"    {field:26} = {acct[field]}")
-            equity = float(acct.get("equity") or 0)
-            if equity < 25_000 and not acct.get("pattern_day_trader"):
-                print("    NOTE: equity < $25,000 -> PDT rule caps day trades "
-                      "at 3 per 5 business days.")
-            if acct.get("pattern_day_trader"):
-                print("    !! FLAGGED PATTERN DAY TRADER: with equity < $25k "
-                      "Alpaca will REJECT further day-trade orders.")
+            # Which day-trading regime is this account on? The old rule
+            # ("under $25k = 3 day trades per 5 business days") was replaced
+            # around mid-2026 by real-time margin exposure, and brokers have
+            # until October 2027 to implement it - so report what the account
+            # actually exposes rather than inferring a rule from equity.
+            if "pattern_day_trader" not in acct and "daytrade_count" not in acct:
+                print("    NOTE: no pattern_day_trader / daytrade_count field "
+                      "-> this account is not on the old PDT count regime.")
+                print("          Buying power is the binding constraint; see "
+                      "buying_power above.")
+            elif acct.get("pattern_day_trader"):
+                print("    !! FLAGGED PATTERN DAY TRADER: the broker's own "
+                      "daytrading_buying_power is what limits entries.")
+                print(f"       daytrade_count = {acct.get('daytrade_count')}")
 
         print()
         print("=" * 62)
