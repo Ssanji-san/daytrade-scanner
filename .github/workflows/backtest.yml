@@ -40,15 +40,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Bars and news for a date range never change, and refetching thousands
-      # of symbol-days at 200 req/min dominates the runtime. Keyed on the
-      # window and feed so a re-run with different replay logic is instant.
+      # Bars and news for a past date never change, and refetching thousands
+      # of symbol-days at 200 req/min dominates the runtime. The store is
+      # keyed per day internally and only ever grows, so the key is the run
+      # id and the restore-key is the feed: each month restores everything
+      # fetched so far and saves the union. Keying on the window instead
+      # would make every month start from an empty cache.
       - name: Cache fetched history
         uses: actions/cache@v4
         with:
           path: cache/backtest
-          key: bt-${{ inputs.feed }}-${{ inputs.start }}-${{ inputs.end }}
-          restore-keys: bt-${{ inputs.feed }}-${{ inputs.start }}-
+          key: bt-${{ inputs.feed }}-${{ github.run_id }}
+          restore-keys: bt-${{ inputs.feed }}-
 
       - name: Replay history
         env:

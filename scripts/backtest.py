@@ -11,6 +11,7 @@ biased replay cannot quietly poison what the bot learned from real sessions.
 """
 import argparse
 import asyncio
+import datetime as dt
 import os
 import sys
 
@@ -47,6 +48,18 @@ def _context_for(day, daily, floats, cfg):
             "float_shares": float_shares}
 
 
+# rvol is measured against a 30-SESSION baseline, and prev_close needs the
+# day before. Fetching daily bars from the replay's own start date would
+# leave the first weeks of every run with a baseline of one or two days -
+# which is exactly what a month-at-a-time schedule would produce. 60
+# calendar days covers 30 sessions plus holidays.
+BASELINE_LOOKBACK_DAYS = 60
+
+
+def _lookback_start(start, days=BASELINE_LOOKBACK_DAYS):
+    return (dt.date.fromisoformat(start) - dt.timedelta(days=days)).isoformat()
+
+
 async def run(start, end, feed, fetch_only):
     cfg = DEFAULT
     cache = fetch.Cache(cfg)
@@ -63,11 +76,15 @@ async def run(start, end, feed, fetch_only):
         print(f"[backtest] {len(symbols)} common-stock symbols "
               f"(of {len(tickers)} in the SEC map)")
 
-        daily = await fetch.daily_bars(client, cache, symbols, start, end, feed)
-        print(f"[backtest] daily bars for {len(daily)} symbols")
+        history_start = _lookback_start(start)
+        daily = await fetch.daily_bars(client, cache, symbols, history_start,
+                                       end, feed)
+        print(f"[backtest] daily bars for {len(daily)} symbols "
+              f"(from {history_start} for the volume baseline)")
 
         candidates = fetch.select_candidates(daily, cfg)
-        days = sorted(candidates)
+        # The lookback feeds the baseline only; never replay those sessions.
+        days = [d for d in sorted(candidates) if start <= d <= end]
         total = sum(len(v) for v in candidates.values())
         print(f"[backtest] {total} symbol-days across {len(days)} sessions")
         if not days:

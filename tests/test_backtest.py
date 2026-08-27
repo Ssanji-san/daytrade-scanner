@@ -338,3 +338,26 @@ def test_grading_continues_past_the_entry_cutoff_but_recording_stops(tmp_path):
 
     movr = [a for a in journal.recent_alerts(20) if a["symbol"] == "MOVR"][0]
     assert movr["label"] == 1             # the 13:00 ET bar graded it a win
+
+
+class TestBaselineLookback:
+    """A month-at-a-time schedule must not starve the volume baseline.
+
+    rvol compares today against a 30-session average, and prev_close needs
+    yesterday. Fetching daily bars from the replay's own start date would
+    give the first weeks of every month a baseline of one or two days, so
+    the lookback is fetched and then excluded from the replay itself.
+    """
+
+    def test_lookback_reaches_back_past_thirty_sessions(self):
+        from scripts.backtest import _lookback_start
+        assert _lookback_start("2026-01-01") == "2025-11-02"
+
+    def test_lookback_days_are_never_replayed(self):
+        from scripts.backtest import _lookback_start
+        start, end = "2026-02-01", "2026-02-28"
+        candidates = {"2026-01-05": ["AAA"], "2026-02-03": ["BBB"],
+                      "2026-02-27": ["CCC"], "2026-03-02": ["DDD"]}
+        days = [d for d in sorted(candidates) if start <= d <= end]
+        assert days == ["2026-02-03", "2026-02-27"]
+        assert _lookback_start(start) < "2026-01-05"    # baseline covers it
