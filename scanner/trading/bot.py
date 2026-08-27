@@ -15,12 +15,22 @@ from ..config import Config
 from .broker import Broker
 from .journal import Journal
 from .model import train, scorer_from_weights
-from .strategy import (ET, bankroll_from, exit_levels, should_enter,
+from .strategy import (ET, bankroll_from, exit_levels, is_doji,
+                       scalp_levels, scalp_split, should_enter,
                        size_position,
                        split_qty, technical_stop, weighted_exit,
                        _parse_hhmm)
 
 MARKET_OPEN = dt.time(9, 30)
+
+
+def _bar_ts(bar):
+    """Epoch seconds for a bar's timestamp, or None."""
+    try:
+        return dt.datetime.fromisoformat(
+            str(bar.get("t")).replace("Z", "+00:00")).timestamp()
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def _minutes_since_open(now):
@@ -247,9 +257,18 @@ class TradingBot:
 
     async def _enter(self, pick, ts):
         entry = pick["price"]
-        levels = exit_levels(entry, self.cfg, stop_price=pick.get("stop"))
+        # Scalping takes profit a fixed number of cents above entry and
+        # banks most of the position there; the swing path scales at +2R.
+        # This must match scanner.backtest.simulate or the bot trades a
+        # strategy the backtest never measured.
+        if self.cfg.bot_scalp_mode:
+            scalp = scalp_levels(entry, self.cfg)
+            levels = {"stop": scalp["stop"], "scale_out": scalp["target"]}
+            bank_qty, runner_qty = scalp_split(pick["qty"], self.cfg)
+        else:
+            levels = exit_levels(entry, self.cfg, stop_price=pick.get("stop"))
+            bank_qty, runner_qty = split_qty(pick["qty"])
         total_qty = pick["qty"]
-        bank_qty, runner_qty = split_qty(total_qty)
 
         # One atomic order: the stop rides along and Alpaca arms it after the
         # fill. Submitting buy and stop separately is rejected as a wash trade
@@ -311,6 +330,10 @@ class TradingBot:
                 await self._flatten_trade(symbol, trade, ts, pos, "flatten")
                 continue
 
+            if self.cfg.bot_scalp_mode:
+                await self._manage_scalp(symbol, trade, state, ts, pos, price)
+                continue
+
             if not trade["banked"] and price >= trade["scale_out"]:
                 await self.broker.cancel_orders_for(symbol)
                 if trade["runner_qty"] >= 1:
@@ -329,6 +352,50 @@ class TradingBot:
             age_min = (ts - trade["opened_ts"]) / 60
             if not trade["banked"] and age_min >= self.cfg.bot_time_stop_minutes:
                 await self._flatten_trade(symbol, trade, ts, pos, "time_stop")
+
+    def _stalled(self, state, symbol, opened_ts):
+        """Have the last N completed bars all been dojis?
+
+        A doji opens and closes in the same place: buyers and sellers
+        balanced, the move out of steam. Read off completed bars only - the
+        minute in progress is replaced on every poll and would flicker in
+        and out of being a doji. Bars from before the entry do not count.
+        """
+        history = getattr(state, "histories", {}).get(symbol)
+        if history is None:
+            return False
+        want = self.cfg.bot_doji_exit_bars
+        bars = [b for b in history.completed_bars
+                if (_bar_ts(b) or 0) > opened_ts][-want:]
+        return len(bars) == want and all(is_doji(b, self.cfg) for b in bars)
+
+    async def _manage_scalp(self, symbol, trade, state, ts, pos, price):
+        """Fixed-cent target, then out on a stall or the clock."""
+        if not trade["banked"] and price >= trade["scale_out"]:
+            await self.broker.cancel_orders_for(symbol)
+            if trade["runner_qty"] >= 1:
+                await self.broker.submit_market_sell(symbol, trade["bank_qty"])
+                # The runner's stop comes up to entry: having banked the
+                # bulk, the trade must not be allowed to become a loser.
+                await self.broker.submit_stop(symbol, trade["runner_qty"],
+                                              round(trade["entry"], 2))
+                trade["stop"] = round(trade["entry"], 2)
+                trade["banked"] = True
+                print(f"[bot] SCALE-OUT {symbol}: banked {trade['bank_qty']} "
+                      f"@~{price:.2f}, runner {trade['runner_qty']} with the "
+                      f"stop at break-even {trade['entry']:.2f}")
+            else:
+                await self.broker.submit_market_sell(symbol, trade["qty"])
+                trade["banked"] = True
+                print(f"[bot] TARGET {symbol}: sold {trade['qty']} @~{price:.2f}")
+            return
+
+        if self._stalled(state, symbol, trade["opened_ts"]):
+            await self._flatten_trade(symbol, trade, ts, pos, "stall")
+            return
+
+        if (ts - trade["opened_ts"]) / 60 >= self.cfg.bot_time_stop_minutes:
+            await self._flatten_trade(symbol, trade, ts, pos, "time_stop")
 
     async def _flatten_trade(self, symbol, trade, ts, pos, reason):
         # Clear protective orders first: an open sell blocks the close as a
