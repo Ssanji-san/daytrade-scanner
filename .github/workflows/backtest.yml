@@ -25,6 +25,10 @@ on:
         description: "Commit the resulting backtest journal (true/false)"
         required: false
         default: "true"
+      fresh:
+        description: "Delete the journal before replaying - required whenever grading changed (true/false)"
+        required: false
+        default: "false"
 
 jobs:
   backtest:
@@ -52,6 +56,15 @@ jobs:
           path: cache/backtest
           key: bt-${{ inputs.feed }}-${{ github.run_id }}
           restore-keys: bt-${{ inputs.feed }}-
+
+      # alerts is UNIQUE(day, symbol), so replaying a day already in the
+      # journal silently keeps its old rows. Any change to how alerts are
+      # graded - stop width, horizon, the R they are measured against -
+      # therefore needs a clean file, or the results average two different
+      # strategies with no way to tell them apart afterwards.
+      - name: Start from a clean journal
+        if: ${{ inputs.fresh == 'true' }}
+        run: rm -f cache/backtest.db
 
       - name: Replay history
         env:
