@@ -156,3 +156,43 @@ class TestSymbolFilter:
         """These break the bars endpoint and are not this strategy's trade."""
         messy = ["AAPL", "ABR-PD", "ACHR-WT", "AAC-UN", "AGM-A"]
         assert fetch.tradable_symbols(messy) == ["AAPL"]
+
+
+def test_a_thin_symbol_still_gets_resolved_at_the_close(tmp_path):
+    """A symbol that stops printing must not leave an unlabeled alert.
+
+    Unlabeled alerts teach the model nothing, and a setup that never
+    reached +2R in the session did not work - that is a loss, not missing
+    data, once the 30-minute window has passed.
+    """
+    journal = Journal(str(tmp_path / "backtest.db"))
+    day = "2026-08-12"
+    rows = []
+    for i in range(3):                       # prints, then goes quiet
+        stamp = f"{day}T13:{30 + i:02d}:00Z"
+        rows.append(bar(stamp, 5.0, 5.02, 4.98, 5.0, v=60_000))
+    rows.append(bar(f"{day}T15:00:00Z", 5.0, 5.02, 4.98, 5.0, v=60_000))
+    context = {"prev_close": {"THIN": 4.00},
+               "avg_volume": {"THIN": 400_000},
+               "float_shares": {"THIN": 8_000_000}}
+    news = [{"symbol": "THIN", "headline": "THIN receives FDA approval",
+             "ts": int(dt.datetime.fromisoformat(
+                 f"{day}T13:00:00+00:00").timestamp())}]
+
+    replay.replay_day(day, {"THIN": rows}, news, context, journal, CFG)
+
+    alerts = [a for a in journal.recent_alerts(10) if a["symbol"] == "THIN"]
+    assert alerts, "the setup should have been journalled"
+    assert alerts[0]["label"] is not None, "flat for 90 minutes is a loss"
+
+
+def test_open_alerts_can_be_scoped_to_one_session(tmp_path):
+    journal = Journal(str(tmp_path / "backtest.db"))
+    monday = int(dt.datetime.fromisoformat("2026-08-17T14:00:00+00:00").timestamp())
+    tuesday = int(dt.datetime.fromisoformat("2026-08-18T14:00:00+00:00").timestamp())
+    journal.record_alert(monday, "AAA", 5.0, 0.15, {})
+    journal.record_alert(tuesday, "BBB", 6.0, 0.18, {})
+
+    assert len(journal.open_alerts()) == 2
+    scoped = journal.open_alerts(day="2026-08-18")
+    assert [s[1] for s in scoped] == ["BBB"]

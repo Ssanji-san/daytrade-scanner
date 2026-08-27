@@ -3,6 +3,9 @@ name: backtest
 # Manual only. Replays historical sessions into cache/backtest.db, which is
 # separate from the live journal on purpose - a biased replay must never be
 # able to poison what the bot learned from real sessions.
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
     inputs:

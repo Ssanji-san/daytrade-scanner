@@ -78,6 +78,7 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
     state = MarketState(cfg)
     cursor = SessionCursor()
     timeline = bars_by_minute(minute_bars)
+    last_bar = {}
     seen = 0
 
     for minute, symbol_bars in timeline.items():
@@ -108,11 +109,30 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
                 journal_alert(journal, now_ts, row, now, 1, cfg)
                 seen += 1
 
+        last_bar.update(symbol_bars)
+
         # Grade what is already open against this bar's real high and low,
-        # so a wick through the stop counts as the loss it was.
-        for alert_id, symbol in journal.open_alerts():
+        # so a wick through the stop counts as the loss it was. Scoped to
+        # this session: yesterday's leftovers must not be marked with
+        # today's prices.
+        for alert_id, symbol in journal.open_alerts(day=day):
             bar = symbol_bars.get(symbol)
             if bar:
                 journal.track_alert(alert_id, now_ts, bar["c"],
+                                    high=bar.get("h"), low=bar.get("l"))
+
+    # One last mark at the closing print. A thin symbol can stop printing
+    # long before the bell, leaving an alert that never got the update that
+    # would time it out - and an unlabeled alert teaches the model nothing.
+    # Anything still inside its 30-minute window stays open, because that is
+    # missing data rather than a loss.
+    if timeline:
+        final = dt.datetime.fromisoformat(
+            list(timeline)[-1].replace("Z", "+00:00"))
+        final_ts = int(final.timestamp())
+        for alert_id, symbol in journal.open_alerts(day=day):
+            bar = last_bar.get(symbol)
+            if bar:
+                journal.track_alert(alert_id, final_ts, bar["c"],
                                     high=bar.get("h"), low=bar.get("l"))
     return seen
