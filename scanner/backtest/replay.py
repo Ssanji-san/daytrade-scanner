@@ -122,7 +122,7 @@ def _record(journal, tracked, ts, row, now, observed, cfg):
 
 
 def replay_day(day, minute_bars, news_items, context, journal: Journal,
-               cfg: Config):
+               cfg: Config, simulator=None):
     """Replay one session, journalling graded alerts. Returns how many.
 
     The count is distinct alerts, not row-minutes: a symbol that qualifies
@@ -166,12 +166,17 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
         # Past the entry cutoff the replay still steps bars - open alerts
         # need grading - but it records no new ones, because the live bot
         # could not have entered them.
+        # Positions are managed on every bar, including after the entry
+        # cutoff - a four-hour hold runs well past it.
+        if simulator is not None:
+            simulator.manage(now, now_ts, symbol_bars)
+
         if not in_session(minute, cfg):
             last_bar.update(symbol_bars)
             _mark(journal, tracked, now_ts, symbol_bars)
             continue
 
-        payload = state.payload(now, require_news=True)
+        payload = state.payload(now, require_news=cfg.backtest_require_news)
         for row in payload["hod"]["qualified"]:
             if _record(journal, tracked, now_ts, row, now, 0, cfg):
                 seen += 1
@@ -187,6 +192,11 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
                 if row["symbol"] not in tracked:
                     if _record(journal, tracked, now_ts, row, now, 2, cfg):
                         seen += 1
+
+        # Entries come after management so a position closing on this bar
+        # frees its slot for the same bar, the way the live cycle orders it.
+        if simulator is not None:
+            simulator.enter(now, now_ts, payload["hod"]["qualified"])
 
         last_bar.update(symbol_bars)
         _mark(journal, tracked, now_ts, symbol_bars)
@@ -205,4 +215,6 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
             if alert_id and bar:
                 journal.track_alert(alert_id, final_ts, bar["c"],
                                     high=bar.get("h"), low=bar.get("l"))
+        if simulator is not None:
+            simulator.close_out(final_ts, last_bar)
     return seen

@@ -17,14 +17,17 @@ import sys
 
 import aiohttp
 
+from dataclasses import replace
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scanner.alpaca import AlpacaClient                       # noqa: E402
 from scanner.backtest import fetch, replay                    # noqa: E402
+from scanner.backtest.simulate import Simulator               # noqa: E402
 from scanner.config import DEFAULT                            # noqa: E402
 from scanner.floats import FloatCache                         # noqa: E402
 from scanner.trading.journal import Journal                   # noqa: E402
-from scanner.trading.model import train                       # noqa: E402
+from scanner.trading.model import HeuristicScorer, train      # noqa: E402
 
 
 def _context_for(day, daily, floats, cfg):
@@ -60,8 +63,9 @@ def _lookback_start(start, days=BASELINE_LOOKBACK_DAYS):
     return (dt.date.fromisoformat(start) - dt.timedelta(days=days)).isoformat()
 
 
-async def run(start, end, feed, fetch_only):
-    cfg = DEFAULT
+async def run(start, end, feed, fetch_only, trades=False, require_news=True,
+              score_bar=0.0):
+    cfg = replace(DEFAULT, backtest_require_news=require_news)
     cache = fetch.Cache(cfg)
     journal = Journal(cfg.backtest_journal_path, cfg.bot_alert_window_minutes)
     floats = FloatCache(cfg)
@@ -100,13 +104,19 @@ async def run(start, end, feed, fetch_only):
                       f"{len(news)} headlines")
                 continue
             context = _context_for(day, daily, floats, cfg)
-            graded = replay.replay_day(day, minute, news, context, journal, cfg)
+            sim = (Simulator(cfg, journal, day, HeuristicScorer(), score_bar)
+                   if trades else None)
+            graded = replay.replay_day(day, minute, news, context, journal,
+                                       cfg, simulator=sim)
+            took = f", {sim.closed:>2} trades" if sim else ""
             print(f"[backtest] {day}: {len(todays):>3} candidates -> "
-                  f"{graded:>4} alerts journalled")
+                  f"{graded:>4} alerts journalled{took}")
 
     if fetch_only:
         return
     report(journal, cfg)
+    if trades:
+        trade_report(journal, cfg)
 
 
 def outcome(row):
@@ -219,6 +229,49 @@ def report(journal, cfg):
               f"wins={row['wins']} exp_r={row['exp_r']}")
 
 
+def trade_report(journal, cfg):
+    """What the simulated trades did - the only P&L number here."""
+    rows = [r for r in journal.all_trades() if r["exit_ts"] is not None]
+    print()
+    if not rows:
+        print("[trades] no trades were taken")
+        return
+    days = len({r["day"] for r in rows})
+    rs = [r["r_multiple"] or 0.0 for r in rows]
+    pnl = sum(r["pnl"] or 0.0 for r in rows)
+    mean = sum(rs) / len(rs)
+    var = (sum((x - mean) ** 2 for x in rs) / (len(rs) - 1)) if len(rs) > 1 else 0
+    se = math.sqrt(var / len(rs)) if len(rs) > 1 else 0.0
+    wins = sum(1 for x in rs if x > 0)
+    print(f"[trades] {len(rows)} trades over {days} sessions "
+          f"({len(rows) / days:.1f}/day), news gate "
+          f"{'ON' if cfg.backtest_require_news else 'OFF'}")
+    print(f"[trades] win {wins / len(rows):.1%}  expectancy {mean:+.3f}R "
+          f"+/-{se:.3f}  total {pnl:+,.0f} dollars")
+    if se:
+        verdict = ("positive beyond 2 SE" if mean > 2 * se
+                   else "inside the noise")
+        print(f"[trades] t={mean / se:.2f} -> {verdict}")
+    by_reason = {}
+    for row in rows:
+        by_reason.setdefault(row["exit_reason"] or "?", []).append(
+            row["r_multiple"] or 0.0)
+    print(f"[trades] {'exit':>10} {'n':>5} {'share':>7} {'mean R':>8}")
+    for reason, vals in sorted(by_reason.items(),
+                               key=lambda kv: -len(kv[1])):
+        print(f"[trades] {reason:>10} {len(vals):>5} "
+              f"{len(vals) / len(rows):>6.1%} "
+              f"{sum(vals) / len(vals):>+7.2f}R")
+    for row in journal.setup_stats():
+        print(f"[trades]   {row['setup'] or 'none':16} n={row['n']:<4} "
+              f"wins={row['wins']} exp_r={row['exp_r']}")
+    # The edge has to clear the spread, and the spread is not modelled.
+    risk = cfg.bot_bankroll * cfg.bot_risk_pct / 100
+    notional = cfg.bot_bankroll * cfg.bot_max_notional_pct / 100
+    print(f"[trades] edge is {mean * risk / notional:.2%} of notional; a "
+          f"round trip costing more than that loses money")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", required=True, help="YYYY-MM-DD")
@@ -227,8 +280,16 @@ def main():
                         help="iex matches live; sip measures what it misses")
     parser.add_argument("--fetch-only", action="store_true",
                         help="download and cache without replaying")
+    parser.add_argument("--trades", action="store_true",
+                        help="simulate the trades the bot would have taken")
+    parser.add_argument("--no-news", action="store_true",
+                        help="drop Ross's catalyst requirement")
+    parser.add_argument("--score-bar", type=float, default=0.0,
+                        help="model score gate; 0 tests the setups alone")
     args = parser.parse_args()
-    asyncio.run(run(args.start, args.end, args.feed, args.fetch_only))
+    asyncio.run(run(args.start, args.end, args.feed, args.fetch_only,
+                    trades=args.trades, require_news=not args.no_news,
+                    score_bar=args.score_bar))
 
 
 if __name__ == "__main__":

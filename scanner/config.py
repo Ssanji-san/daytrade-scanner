@@ -164,6 +164,10 @@ class Config:
     # otherwise it can never see what loosening a pair of gates would admit,
     # and would only ever explore what the current settings already allow.
     backtest_near_failures: int = 3
+    # Ross requires a catalyst, and it is the single most restrictive gate.
+    # Turning it off measures how many more setups exist without one - and
+    # whether they are worth taking, which is a different question.
+    backtest_require_news: bool = True
     # Sample every mover, not only the ones that cleared the gates. Training
     # solely on rows the filters already surfaced means the model can only
     # rank within them - it never learns what a 2R move looks like in the

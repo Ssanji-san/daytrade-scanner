@@ -269,6 +269,11 @@ class Journal:
             (ts, exit_price, exit_reason, pnl, r_multiple, trade_id))
         self._commit()
 
+    def all_trades(self):
+        """Every trade ever recorded, for reporting over a whole backtest."""
+        rows = self._execute("SELECT * FROM trades ORDER BY ts").fetchall()
+        return [dict(r) for r in rows]
+
     def trades_today(self, day):
         rows = self._execute(
             "SELECT * FROM trades WHERE day=? ORDER BY ts", (day,)).fetchall()

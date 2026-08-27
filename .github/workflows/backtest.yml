@@ -29,6 +29,14 @@ on:
         description: "Delete the journal before replaying - required whenever grading changed (true/false)"
         required: false
         default: "false"
+      trades:
+        description: "Simulate the trades the bot would have taken, not just the alerts (true/false)"
+        required: false
+        default: "false"
+      no_news:
+        description: "Drop Ross's catalyst requirement, to see how many more setups exist (true/false)"
+        required: false
+        default: "false"
 
 jobs:
   backtest:
@@ -75,7 +83,9 @@ jobs:
           python -u scripts/backtest.py \
             --start "${{ inputs.start }}" \
             --end "${{ inputs.end }}" \
-            --feed "${{ inputs.feed }}"
+            --feed "${{ inputs.feed }}" \
+            ${{ inputs.trades == 'true' && '--trades' || '' }} \
+            ${{ inputs.no_news == 'true' && '--no-news' || '' }}
 
       - name: Commit the backtest journal
         if: ${{ inputs.commit == 'true' }}
