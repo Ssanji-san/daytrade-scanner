@@ -333,6 +333,54 @@ async def sequence(symbol, qty):
         await cleanup(session, "after")
 
 
+async def news_probe(symbols):
+    """Does a small-cap catalyst survive being asked for in a crowd?
+
+    The live loop asks for ONE page of 50 articles covering every candidate
+    at once - roughly 150 symbols, including the megacaps that most-actives
+    drags in. Alpaca returns newest first and never paginates here, so a
+    7am press release on a small cap can be buried by lunchtime under names
+    that publish all day. This asks both ways and compares.
+    """
+    import datetime as _dt
+    crowd = ["AAPL", "AMZN", "MSFT", "NVDA", "TSLA", "SPY", "META", "GOOGL",
+             "AMD", "CRM", "MRVL", "NFLX", "BAC", "F", "INTC", "PLTR"]
+    since = (_dt.datetime.now(_dt.timezone.utc)
+             - _dt.timedelta(hours=24)).isoformat()
+    data = "https://data.alpaca.markets"
+
+    async with aiohttp.ClientSession(headers=HEADERS) as session:
+        async def ask(syms, limit):
+            params = {"symbols": ",".join(sorted(syms)), "start": since,
+                      "limit": limit}
+            async with session.get(f"{data}/v1beta1/news", params=params) as r:
+                body = await r.json(content_type=None)
+            return body.get("news") or []
+
+        print("=" * 62)
+        print("NEWS CROWDING PROBE")
+        print("=" * 62)
+        alone = await ask(symbols, 50)
+        print(f"  {symbols} asked ALONE: {len(alone)} articles")
+        for a in alone[:6]:
+            print(f"    {str(a.get('created_at'))[:16]}  "
+                  f"{','.join(a.get('symbols') or [])[:22]:<22} "
+                  f"{str(a.get('headline'))[:54]}")
+
+        together = await ask(list(symbols) + crowd, 50)
+        hits = [a for a in together if set(a.get("symbols") or []) & set(symbols)]
+        print()
+        print(f"  asked with {len(crowd)} megacaps at limit 50: "
+              f"{len(together)} articles back, {len(hits)} of them ours")
+        if alone and not hits:
+            print("    !! the catalyst EXISTS but is crowded out of the batch")
+            print("       the live loop would score this symbol as newsless")
+        elif alone and hits:
+            print("    the catalyst survives the crowd at this hour")
+        else:
+            print("    no news for these symbols at all in the last 24h")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--probe", nargs="*", default=["AAPL"],
@@ -348,11 +396,17 @@ if __name__ == "__main__":
     parser.add_argument("--live-entry", metavar="SYMBOL",
                         help="run the real Broker entry path on this symbol, "
                              "then cancel/close it again")
+    parser.add_argument("--news", default=None,
+                        help="headlines for these symbols (comma separated), "
+                             "asked alone and then alongside the megacaps")
     parser.add_argument("--sequence", metavar="SYMBOL",
                         help="reproduce the bot's buy-then-stop entry and "
                              "test the atomic OTO alternative, then clean up")
     args = parser.parse_args()
-    if args.bars:
+    if args.news:
+        asyncio.run(news_probe([x.strip().upper()
+                                for x in args.news.split(",") if x.strip()]))
+    elif args.bars:
         asyncio.run(bars(args.bars))
     elif args.history:
         asyncio.run(history(args.fills_date))

@@ -17,6 +17,10 @@ on:
         description: "Symbol to reproduce the buy-then-stop entry on (blank = plain probe)"
         required: false
         default: ""
+      news:
+        description: "Symbols (comma separated) to test for news crowding"
+        required: false
+        default: ""
       bars:
         description: "Read-only: daily+minute bars for a symbol"
         required: false
@@ -53,7 +57,9 @@ jobs:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: |
-          if [ -n "${{ inputs.bars }}" ]; then
+          if [ -n "${{ inputs.news }}" ]; then
+            python scripts/diagnose_alpaca.py --news "${{ inputs.news }}"
+          elif [ -n "${{ inputs.bars }}" ]; then
             python scripts/diagnose_alpaca.py --bars ${{ inputs.bars }}
           elif [ "${{ inputs.history }}" = "true" ]; then
             python scripts/diagnose_alpaca.py --history --fills-date "${{ inputs.fills_date }}"
