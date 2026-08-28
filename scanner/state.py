@@ -179,6 +179,19 @@ class MarketState:
             "gainers": {str(w): top_gainers(states, w, cfg)
                         for w in cfg.gainer_windows},
             "hod": {"qualified": qualified, "near": near},
+            # Rendered in the panel header. It used to be hardcoded in the
+            # HTML and drifted two config changes out of date, advertising
+            # $1-$20 while the bot traded $1-$5 - which reads as a broken
+            # scanner rather than a stale label.
+            "criteria": {
+                "min_price": cfg.hod_min_price,
+                "max_price": cfg.hod_max_price,
+                "observe_max_price": cfg.hod_observe_max_price,
+                "max_float": cfg.hod_max_float,
+                "min_rvol": cfg.hod_min_rvol,
+                "min_pct_up": cfg.hod_min_pct_up,
+                "min_open_pct": cfg.hod_min_open_pct,
+            },
             "news": self.news,
             "calendar": self.calendar,
         }

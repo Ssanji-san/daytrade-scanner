@@ -67,7 +67,13 @@ class Config:
     # signal, which is the chasing this strategy exists to avoid.
     hod_near_high_pct: float = 6.0      # within this % of the day high
     hod_rows: int = 20
-    near_filter_max_failures: int = 1   # dimmed "about to qualify" section
+    # 2, not 1. The near list is the only thing on the dashboard that says
+    # WHY nothing qualified, and with gates this tight almost nothing misses
+    # by exactly one - a 769% mover failing on float and news vanished
+    # entirely, leaving a blank panel that reads as a broken scanner. Near
+    # rows are graded for learning and never traded, so widening this
+    # changes what is seen, not what is bought.
+    near_filter_max_failures: int = 2   # dimmed "about to qualify" section
 
     # --- entry setups (Ross Cameron micro-pullback / flat top) ---
     # A gapper at the open has no session bars behind it, so it gets its own

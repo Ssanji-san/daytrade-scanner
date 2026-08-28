@@ -231,3 +231,19 @@ class TestOpeningDrive:
         near = payload["hod"]["near"][0]
         assert "open_drive" in near["failed"]
         assert near["day_pct"] > 30          # it looked great on day_pct
+
+
+def test_payload_states_the_gates_actually_in_force():
+    """The panel header used to be hardcoded and drifted two config changes
+    out of date - advertising $1-$20 while the bot traded $1-$5, which
+    reads as a broken scanner rather than a stale label."""
+    state = MarketState(CFG)
+    now = t(9, 45)
+    state.ingest(now, {"HODX": snap(3.00)})
+    c = state.payload(now)["criteria"]
+    assert c["min_price"] == CFG.hod_min_price
+    assert c["max_price"] == CFG.hod_max_price
+    assert c["observe_max_price"] == CFG.hod_observe_max_price
+    assert c["max_float"] == CFG.hod_max_float
+    assert c["min_rvol"] == CFG.hod_min_rvol
+    assert c["min_open_pct"] == CFG.hod_min_open_pct

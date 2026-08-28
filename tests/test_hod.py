@@ -43,8 +43,17 @@ def test_unknown_float_counts_as_failure():
     assert near[0]["failed"] == ["float"]
 
 
-def test_two_failures_excluded_entirely():
+def test_two_failures_are_shown_as_near_misses():
+    """The near list is the only place the dashboard says WHY nothing
+    qualified, and with these gates almost nothing misses by exactly one."""
     qualified, near = scan([make_state(rvol=1.0, day_pct=3.0)], CFG)
+    assert qualified == []
+    assert sorted(near[0]["failed"]) == ["pct_up", "rvol"]
+
+
+def test_three_failures_are_still_excluded():
+    qualified, near = scan([make_state(rvol=1.0, day_pct=3.0,
+                                       float_shares=None)], CFG)
     assert qualified == [] and near == []
 
 

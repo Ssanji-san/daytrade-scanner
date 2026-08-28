@@ -115,6 +115,24 @@ function renderGainers(payload) {
 
 const FAIL_LABELS = { pct_up: "%day", volume: "volume", rvol: "rvol", float: "float", hod: "off high", news: "no news", vwap: "below VWAP", liquidity: "too illiquid" };
 
+// The header states the gates actually in force. Hardcoding them let the
+// page claim a price band the bot had stopped trading.
+function renderCriteria(c) {
+  const el = $("#hod-criteria");
+  if (!el || !c) return;
+  const watched =
+    c.observe_max_price > c.max_price
+      ? ` · watching to $${c.observe_max_price.toFixed(0)}`
+      : "";
+  el.textContent =
+    `$${c.min_price.toFixed(0)}–$${c.max_price.toFixed(0)}` +
+    ` · float <${(c.max_float / 1e6).toFixed(0)}M` +
+    ` · rvol ≥${c.min_rvol.toFixed(0)}×` +
+    ` · +${c.min_pct_up.toFixed(0)}% day` +
+    (c.min_open_pct ? ` · +${c.min_open_pct.toFixed(0)}% off the open` : "") +
+    watched;
+}
+
 function hodRow(r, cls) {
   const fails = (r.failed || [])
     .map((f) => `<span class="fail-chip">${FAIL_LABELS[f] || f}</span>`)
@@ -136,6 +154,7 @@ function hodRow(r, cls) {
 }
 
 function renderHod(payload) {
+  renderCriteria(payload.criteria);
   const q = payload.hod.qualified || [];
   const near = payload.hod.near || [];
   const tbody = $("#hod tbody");
