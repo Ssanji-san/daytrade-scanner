@@ -4,7 +4,7 @@ Thresholds follow Ross Cameron's stock-selection criteria (float, % up
 today, volume, relative volume, news). Change values here, not in the
 scanner logic.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -96,7 +96,6 @@ class Config:
 
     # --- news / catalyst quality ---
     news_max_age_hours: float = 24.0    # headline this recent => catalyst badge
-    news_per_symbol: int = 3
     catalyst_min_score: float = 0.15    # below this the "news" is not a reason
     catalyst_fresh_minutes: float = 60.0   # full weight while it is breaking
     catalyst_veto: tuple = ("offering",)   # dilution kills the runner
@@ -218,14 +217,8 @@ class Config:
     # Turning it off measures how many more setups exist without one - and
     # whether they are worth taking, which is a different question.
     backtest_require_news: bool = True
-    # Sample every mover, not only the ones that cleared the gates. Training
-    # solely on rows the filters already surfaced means the model can only
-    # rank within them - it never learns what a 2R move looks like in the
-    # population it is not being shown. observed=2 marks these.
-    backtest_sample_all: bool = False
     backtest_journal_path: str = "cache/backtest.db"
     backtest_cache_dir: str = "cache/backtest"
-    bot_forward_marks_min: tuple = (5, 15, 30)   # forward-return checkpoints
 
     # --- data endpoints ---
     data_base: str = "https://data.alpaca.markets"

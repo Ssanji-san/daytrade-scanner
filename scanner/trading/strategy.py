@@ -3,7 +3,6 @@
 No I/O here — the bot loop feeds in current state, this answers what to do.
 Every threshold comes from config.
 """
-import datetime as dt
 from zoneinfo import ZoneInfo
 
 from ..config import Config

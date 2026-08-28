@@ -129,5 +129,14 @@ trades, or the journals will fight.
   needs paid data; treat the ≈ column as an upper bound.
 - **Premarket** coverage is best-effort: Alpaca's movers list resets at
   the open.
+- **Backtested scalp results are an upper bound.** The simulator fills the
+  +20c target off the bar HIGH; a live session can only compare the last
+  polled price, and cannot see the high of a minute still in progress. A
+  wick that tags the target and retreats inside the same minute pays in the
+  backtest and does not pay live. Both functions carry a comment saying so.
+- **Spread and slippage are not modelled at all.** On $1-5 low-float names
+  the round trip can be a full percent or more, and the measured edge has
+  been the same order of magnitude - so a backtest that clears break-even
+  is not evidence that live trading would.
 - This finds *candidates*, not trades. It doesn't validate entries, risk,
   or any strategy. Not financial advice.

@@ -124,8 +124,7 @@ async def live_entry(symbol, qty):
               "- the real bot entry path")
         levels = None
         try:
-            snap = await broker._request(
-                "GET", "/v2/positions")   # cheap auth check
+            await broker._request("GET", "/v2/positions")  # cheap auth check
             price_resp = await session.get(
                 f"https://data.alpaca.markets/v2/stocks/{symbol}/trades/latest",
                 headers=broker.headers)

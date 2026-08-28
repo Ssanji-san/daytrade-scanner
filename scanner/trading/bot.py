@@ -7,14 +7,13 @@ orchestration around them plus two pure, tested helpers
 import asyncio
 import datetime as dt
 import traceback
-from zoneinfo import ZoneInfo
 
 import aiohttp
 
 from ..config import Config
 from .broker import Broker
 from .journal import Journal
-from .model import train, scorer_from_weights
+from .model import train
 from .strategy import (ET, bankroll_from, exit_levels, is_doji,
                        scalp_levels, scalp_split, should_enter,
                        size_position,
@@ -396,7 +395,15 @@ class TradingBot:
         return len(bars) == want and all(is_doji(b, self.cfg) for b in bars)
 
     async def _manage_scalp(self, symbol, trade, state, ts, pos, price):
-        """Fixed-cent target, then out on a stall or the clock."""
+        """Fixed-cent target, then out on a stall or the clock.
+
+        Deliberately different from the simulator in two places. The stop is
+        not checked here because it is a live broker order riding along with
+        the entry OTO, which fires without us. And the target is compared
+        against the last polled price rather than the bar high, because a
+        session cannot see the high of a minute still in progress - the
+        backtest can, which is why its scalp results are an upper bound.
+        """
         if not trade["banked"] and price >= trade["scale_out"]:
             await self.broker.cancel_orders_for(symbol)
             if trade["runner_qty"] >= 1:

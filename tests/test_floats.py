@@ -52,8 +52,6 @@ def test_cache_roundtrip_and_staleness(tmp_path):
 
 import asyncio
 
-import pytest
-
 from scanner.floats import SHARE_CONCEPTS, fetch_shares
 
 CFG = Config()

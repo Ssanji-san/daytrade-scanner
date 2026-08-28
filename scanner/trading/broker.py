@@ -33,22 +33,6 @@ class Broker:
     # ---- payload builders (pure, tested) ----
 
     @staticmethod
-    def bracket_payload(symbol, qty, limit_price, stop_price, target_price):
-        payload = {
-            "symbol": symbol,
-            "qty": str(qty),
-            "side": "buy",
-            "type": "limit" if limit_price else "market",
-            "time_in_force": "day",
-            "order_class": "bracket",
-            "take_profit": {"limit_price": f"{target_price:.2f}"},
-            "stop_loss": {"stop_price": f"{stop_price:.2f}"},
-        }
-        if limit_price:
-            payload["limit_price"] = f"{limit_price:.2f}"
-        return payload
-
-    @staticmethod
     def market_payload(symbol, qty, side):
         return {"symbol": symbol, "qty": str(qty), "side": side,
                 "type": "market", "time_in_force": "day"}
@@ -115,20 +99,6 @@ class Broker:
 
     async def open_orders(self):
         return await self._request("GET", "/v2/orders", params={"status": "open"})
-
-    async def order(self, order_id):
-        return await self._request("GET", f"/v2/orders/{order_id}")
-
-    async def submit_bracket(self, symbol, qty, stop_price, target_price,
-                             limit_price=None):
-        return await self._request("POST", "/v2/orders",
-                                   json=self.bracket_payload(
-                                       symbol, qty, limit_price,
-                                       stop_price, target_price))
-
-    async def submit_market_buy(self, symbol, qty):
-        return await self._request("POST", "/v2/orders",
-                                   json=self.market_payload(symbol, qty, "buy"))
 
     async def submit_market_sell(self, symbol, qty):
         return await self._request("POST", "/v2/orders",

@@ -213,7 +213,7 @@ class TestScalpExits:
         assert pos.stop == pytest.approx(pos.entry)
 
     def test_a_scaled_trade_that_reverses_still_makes_money(self, sim):
-        pos = _scalp_open(sim, price=3.00)
+        _scalp_open(sim, price=3.00)
         sim.manage(et(9, 42), int(et(9, 42).timestamp()),
                    {"HODX": candle(3.05, 3.18, h=3.25, l=3.04)})
         sim.manage(et(9, 44), int(et(9, 44).timestamp()),

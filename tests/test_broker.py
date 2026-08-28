@@ -19,18 +19,6 @@ def test_accepts_paper_endpoint():
     assert "paper-api" in broker.base
 
 
-def test_bracket_order_payload():
-    broker = Broker(session=None, cfg=CFG)
-    payload = broker.bracket_payload("HODX", qty=9, limit_price=None,
-                                     stop_price=5.34, target_price=5.83)
-    assert payload == {
-        "symbol": "HODX", "qty": "9", "side": "buy", "type": "market",
-        "time_in_force": "day", "order_class": "bracket",
-        "take_profit": {"limit_price": "5.83"},
-        "stop_loss": {"stop_price": "5.34"},
-    }
-
-
 def test_market_payload():
     broker = Broker(session=None, cfg=CFG)
     assert broker.market_payload("HODX", qty=50, side="buy") == {

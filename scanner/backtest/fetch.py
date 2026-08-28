@@ -9,7 +9,6 @@ Everything is cached under `Config.backtest_cache_dir`. Refetching thousands
 of symbol-days at 200 requests a minute is slow, and a replay gets re-run
 often while the logic is being tuned.
 """
-import datetime as dt
 import json
 import pathlib
 import re
@@ -29,13 +28,6 @@ def tradable_symbols(tickers):
 
 
 # Pure helpers first - these are what the tests exercise.
-
-
-def day_change_pct(bar, prev_close):
-    """Close-to-close move for one daily bar, or None without a baseline."""
-    if not prev_close or not bar or not bar.get("c"):
-        return None
-    return 100.0 * (bar["c"] - prev_close) / prev_close
 
 
 def day_high_pct(bar, prev_close):
@@ -153,17 +145,3 @@ async def day_news(client, cache: Cache, symbols, day):
                               start=f"{day}T00:00:00Z",
                               end=f"{day}T23:59:59Z")
     return cache.put(items, *key)
-
-
-def trading_days(daily_bars_by_symbol):
-    """Sessions that actually have data, oldest first."""
-    days = set()
-    for rows in daily_bars_by_symbol.values():
-        for row in rows:
-            if row.get("t"):
-                days.add(row["t"][:10])
-    return sorted(days)
-
-
-def parse_day(text):
-    return dt.datetime.strptime(text, "%Y-%m-%d").date()

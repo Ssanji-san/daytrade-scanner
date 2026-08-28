@@ -173,21 +173,6 @@ class Journal:
             (mfe, mae, label, resolved, resolved_r, alert_id))
         self._commit()
 
-    def open_alerts(self, day=None):
-        """Unresolved alerts, optionally only one session's.
-
-        A multi-day replay must not mark Monday's leftovers with Tuesday's
-        prices, so it scopes this by day; live runs want them all.
-        """
-        if day is None:
-            rows = self._execute(
-                "SELECT id, symbol FROM alerts WHERE label IS NULL").fetchall()
-        else:
-            rows = self._execute(
-                "SELECT id, symbol FROM alerts WHERE label IS NULL AND day=?",
-                (day,)).fetchall()
-        return [(r["id"], r["symbol"]) for r in rows]
-
     def tracking_alerts(self, day, now_ts):
         """Alerts still worth marking today - labelled ones included.
 

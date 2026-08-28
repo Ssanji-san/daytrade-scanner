@@ -38,9 +38,6 @@ class FakeBroker:
     async def positions(self):
         return list(self._positions)
 
-    async def submit_market_buy(self, symbol, qty):
-        return self._new(side="buy", type="market", symbol=symbol, qty=qty)
-
     async def submit_market_sell(self, symbol, qty):
         return self._new(side="sell", type="market", symbol=symbol, qty=qty)
 

@@ -184,14 +184,6 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
             for row in payload["hod"].get("near") or []:
                 if _record(journal, tracked, now_ts, row, now, 1, cfg):
                     seen += 1
-        if cfg.backtest_sample_all:
-            # Every mover, gates or not. A model shown only what the filters
-            # already surfaced can rank within that set but never learns
-            # what a 2R move looks like in the population it is not seeing.
-            for row in state.build_states(now):
-                if row["symbol"] not in tracked:
-                    if _record(journal, tracked, now_ts, row, now, 2, cfg):
-                        seen += 1
 
         # Entries come after management so a position closing on this bar
         # frees its slot for the same bar, the way the live cycle orders it.

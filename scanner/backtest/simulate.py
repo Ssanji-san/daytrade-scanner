@@ -18,8 +18,6 @@ how backtests come to promise what they cannot pay.
 Spread and slippage are NOT modelled. On these prices they are the same size
 as the edge, so treat every number here as an upper bound.
 """
-import datetime as dt
-
 from ..config import Config
 from ..history import ET
 from ..trading.bot import choose_entries
@@ -166,6 +164,13 @@ class Simulator:
             self._finish(pos, ts, "breakeven" if pos.banked else "stop")
             return
 
+        # KNOWN OPTIMISM, and the reason every scalp figure here is an
+        # upper bound: this fills the target off the bar HIGH, while the
+        # live bot (TradingBot._manage_scalp) can only compare the last
+        # polled price. A wick that tags +20c and retreats inside the same
+        # minute pays here and does not pay live. It is not fixable by
+        # making the two agree - a live session cannot see the high of a
+        # minute that has not finished - so it is written down instead.
         if not pos.banked and high >= pos.target:
             if pos.runner_qty >= 1:
                 pos.close(pos.bank_qty, pos.target)

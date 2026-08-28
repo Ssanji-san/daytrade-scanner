@@ -196,18 +196,6 @@ def test_a_thin_symbol_still_gets_resolved_at_the_close(tmp_path):
     assert alerts[0]["label"] is not None, "flat for 90 minutes is a loss"
 
 
-def test_open_alerts_can_be_scoped_to_one_session(tmp_path):
-    journal = Journal(str(tmp_path / "backtest.db"))
-    monday = int(dt.datetime.fromisoformat("2026-08-17T14:00:00+00:00").timestamp())
-    tuesday = int(dt.datetime.fromisoformat("2026-08-18T14:00:00+00:00").timestamp())
-    journal.record_alert(monday, "AAA", 5.0, 0.15, {})
-    journal.record_alert(tuesday, "BBB", 6.0, 0.18, {})
-
-    assert len(journal.open_alerts()) == 2
-    scoped = journal.open_alerts(day="2026-08-18")
-    assert [s[1] for s in scoped] == ["BBB"]
-
-
 class TestSessionWindow:
     """Two windows, not one.
 
