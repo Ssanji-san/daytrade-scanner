@@ -232,6 +232,10 @@ class Config:
     feed: str = "iex"                   # snapshots/bars feed on the free plan
     sec_tickers_url: str = "https://www.sec.gov/files/company_tickers.json"
     float_cache_days: int = 7
+    # A float we could not fetch is retried within the hour, not written off
+    # for a week. Unknown float is an automatic rejection, so caching a
+    # timeout as "no float" silently removes the stock from the strategy.
+    float_retry_minutes: int = 60
     float_cache_path: str = "cache/floats.json"
 
 

@@ -69,8 +69,9 @@ async def live_loop(app, cfg: Config):
                 to_fetch = [s for s in snaps if float_cache.is_stale(s)
                             and s in ticker_map][:FLOAT_FETCHES_PER_CYCLE]
                 for sym in to_fetch:
-                    shares = await fetch_shares(session, ticker_map[sym])
-                    float_cache.put(sym, shares)
+                    shares, answered = await fetch_shares(
+                        session, ticker_map[sym])
+                    float_cache.put(sym, shares, answered=answered)
                     await asyncio.sleep(0.15)   # stay polite with SEC
 
                 for sym, data in snaps.items():

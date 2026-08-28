@@ -4,6 +4,7 @@ True float needs paid data; shares outstanding (dei:
 EntityCommonStockSharesOutstanding via the companyconcept API) is a free,
 close-enough upper bound. The UI labels it with an approx sign.
 """
+import asyncio
 import datetime as dt
 import json
 import os
@@ -22,13 +23,49 @@ async def fetch_ticker_map(session, cfg: Config):
         return parse_ticker_map(await resp.json())
 
 
+# Companies file shares outstanding under more than one taxonomy. Trying
+# only the dei concept threw away every issuer that reports the us-gaap one.
+SHARE_CONCEPTS = (
+    "dei/EntityCommonStockSharesOutstanding",
+    "us-gaap/CommonStockSharesOutstanding",
+    "us-gaap/CommonStockSharesIssued",
+)
+
+
 async def fetch_shares(session, cik):
-    url = ("https://data.sec.gov/api/xbrl/companyconcept/"
-           f"CIK{cik:010d}/dei/EntityCommonStockSharesOutstanding.json")
-    async with session.get(url, headers=SEC_HEADERS) as resp:
-        if resp.status != 200:
-            return None
-        return parse_shares(await resp.json())
+    """(shares, answered). `answered` is False when the REQUEST failed.
+
+    The distinction is the whole point. SEC returning 404 means this issuer
+    genuinely does not file that concept - worth remembering. A 403, a 429
+    or a timeout means we simply did not get an answer, and remembering
+    THAT as "no float" locks the stock out for a week over a moment's rate
+    limiting. An unknown float is an automatic rejection, so a cached
+    failure is indistinguishable from a company that does not exist.
+    """
+    answered = False
+    for i, concept in enumerate(SHARE_CONCEPTS):
+        if i:
+            # Only reached when the previous taxonomy 404'd. SEC throttles
+            # at 10 requests a second and answers 403 when crossed - which
+            # is what filled a fifth of the cache with false "no float"
+            # verdicts in the first place.
+            await asyncio.sleep(0.12)
+        url = ("https://data.sec.gov/api/xbrl/companyconcept/"
+               f"CIK{cik:010d}/{concept}.json")
+        try:
+            async with session.get(url, headers=SEC_HEADERS) as resp:
+                if resp.status == 404:
+                    answered = True      # SEC spoke: not under this taxonomy
+                    continue
+                if resp.status != 200:
+                    return None, False   # 403 / 429 / 5xx - ask again later
+                shares = parse_shares(await resp.json(content_type=None))
+        except Exception:
+            return None, False
+        if shares:
+            return shares, True
+        answered = True
+    return None, answered
 
 
 def parse_ticker_map(payload):
@@ -56,9 +93,10 @@ class FloatCache:
         entry = self._data.get(symbol)
         return entry["shares"] if entry else None
 
-    def put(self, symbol, shares, now=None):
+    def put(self, symbol, shares, now=None, answered=True):
         now = now or dt.datetime.now(dt.timezone.utc)
-        self._data[symbol] = {"shares": shares, "fetched": now.isoformat()}
+        self._data[symbol] = {"shares": shares, "fetched": now.isoformat(),
+                              "answered": bool(answered)}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self._data), encoding="utf-8")
 
@@ -67,5 +105,11 @@ class FloatCache:
         if not entry:
             return True
         now = now or dt.datetime.now(dt.timezone.utc)
-        fetched = dt.datetime.fromisoformat(entry["fetched"])
-        return (now - fetched).days > self.cfg.float_cache_days
+        age = now - dt.datetime.fromisoformat(entry["fetched"])
+        if entry.get("shares") is None and not entry.get("answered"):
+            # A miss we never got an answer for. Retry within the hour
+            # instead of writing the stock off for a week. Entries from
+            # before this distinction have no "answered" key and are retried
+            # too, which clears the poisoned ones on their own.
+            return age >= dt.timedelta(minutes=self.cfg.float_retry_minutes)
+        return age.days > self.cfg.float_cache_days
