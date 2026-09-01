@@ -563,13 +563,21 @@ class TestCapitalIsSpentInUnits:
         assert notionals[2] == pytest.approx(474.0, abs=3)
         assert sum(notionals) <= 2473.74
 
-    def test_risk_per_position_stays_50_dollars(self, tmp_path):
+    def test_a_tight_stop_risks_less_not_more(self, tmp_path):
+        """The unit caps notional, so a tight stop takes LESS risk.
+
+        These rows carry a 3% stop. Sizing for the full $50 would want
+        $1,666 of stock; the $1,000 unit binds first and the position ends
+        up risking about $30. Tight setups are cheap, which is the whole
+        reason the method waits for one.
+        """
         bot, broker, _ = make_bot(tmp_path)
         broker.equity = "2473.74"
         asyncio.run(bot.cycle(self._state(self._rows(2)), et(10, 0)))
+        assert bot.open_trades
         for trade in bot.open_trades.values():
             risk = (trade["entry"] - trade["stop"]) * trade["qty"]
-            assert risk == pytest.approx(50.0, abs=1.0)
+            assert 0 < risk < 50.0
 
     def test_a_thousand_dollar_account_still_gets_one_trade(self, tmp_path):
         bot, broker, _ = make_bot(tmp_path)

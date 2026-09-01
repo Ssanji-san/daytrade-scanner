@@ -431,7 +431,8 @@ class TestPolicyExpectancy:
         # Tagged the target and stopped dead: the runner trails out at
         # break-even, so only the banked share pays.
         banked = CFG.bot_bank_pct / 100.0
-        assert alert_r(self._win(0.50), CFG) == pytest.approx(
+        # mfe 0.25 on r_dollars 0.25 is 1R, exactly the trail's give-back.
+        assert alert_r(self._win(0.25), CFG) == pytest.approx(
             banked * CFG.bot_scale_out_r)
 
     def test_a_runner_that_keeps_going_adds_to_it(self):

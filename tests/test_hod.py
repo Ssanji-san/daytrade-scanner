@@ -18,7 +18,7 @@ def test_qualifying_stock_passes_all_criteria():
 
 def test_price_band_is_a_hard_gate():
     # A $50 stock is out of scope entirely - not even a near miss
-    qualified, near = scan([make_state(price=50.0, day_high=50.5)], CFG)
+    qualified, near = scan([make_state(price=60.0, day_high=60.5)], CFG)
     assert qualified == [] and near == []
     qualified, near = scan([make_state(price=0.80, day_high=0.81)], CFG)
     assert qualified == [] and near == []
@@ -153,18 +153,18 @@ def test_a_missing_open_counts_as_a_failure():
 
 
 class TestObservationBand:
-    """$5-10 movers are graded for learning but can never be bought."""
+    """$20-25 movers are graded for learning but can never be bought."""
 
-    def test_a_seven_dollar_mover_is_observed_not_qualified(self):
-        watched = make_state(price=7.00, day_high=7.10, vwap=6.50,
-                             setup={"setup": "micro_pullback", "stop": 6.80})
+    def test_a_twenty_two_dollar_mover_is_observed_not_qualified(self):
+        watched = make_state(price=22.00, day_high=22.30, vwap=21.0,
+                             setup={"setup": "micro_pullback", "stop": 21.5})
         qualified, near = scan([watched], CFG)
         assert qualified == []                     # never buyable
         assert [r["symbol"] for r in near] == ["TEST"]
         assert near[0]["failed"] == ["price"]      # and it says why
 
     def test_above_the_observation_ceiling_is_invisible(self):
-        assert scan([make_state(price=25.0, day_high=25.1)], CFG) == ([], [])
+        assert scan([make_state(price=30.0, day_high=30.1)], CFG) == ([], [])
 
     def test_in_band_rows_are_unaffected(self):
         qualified, near = scan([make_state()], CFG)
@@ -174,21 +174,21 @@ class TestObservationBand:
     def test_zero_means_observe_only_what_can_be_traded(self):
         from dataclasses import replace
         cfg = replace(CFG, hod_observe_max_price=0.0)
-        assert scan([make_state(price=7.00, day_high=7.10)], cfg) == ([], [])
+        assert scan([make_state(price=22.0, day_high=22.3)], cfg) == ([], [])
 
 
 def test_an_observed_row_can_never_reach_the_bot():
     """Two independent guards, because this one must not fail open.
 
     hod.scan leaves it out of `qualified`, and should_enter rejects the
-    price band again. Trading a $7 stock on a $1-5 strategy would be a
+    price band again. Trading a $22 stock on a $1-20 strategy would be a
     silent breach of the risk model, not a missed opportunity.
     """
     from scanner.trading.strategy import should_enter
     import datetime as dt
     from zoneinfo import ZoneInfo
     et = dt.datetime(2026, 7, 14, 9, 45, tzinfo=ZoneInfo("America/New_York"))
-    take, reasons = should_enter("TEST", price=7.00, score=0.9, trades_today=0,
+    take, reasons = should_enter("TEST", price=22.00, score=0.9, trades_today=0,
                                  traded_symbols=set(), day_pnl=0.0, now=et,
                                  cfg=CFG, score_threshold=0.0)
     assert not take and "price" in reasons

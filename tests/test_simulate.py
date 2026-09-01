@@ -180,18 +180,18 @@ class TestTradeReport:
         assert "no trades were taken" in capsys.readouterr().out
 
 
-def _scalp_open(sim, price=3.00, ts=None, cfg=None):
-    """Open a scalp the way the entry path would, at $1,000 notional."""
-    from scanner.trading.strategy import scalp_levels, size_position
+def _scalp_open(sim, price=3.00, ts=None, cfg=None, stop=None):
+    """Open a position the way the entry path would, at $1,000 notional."""
+    from scanner.trading.strategy import exit_levels, size_position
     cfg = cfg or sim.cfg
     ts = ts or int(et(9, 40).timestamp())
     qty, _ = size_position(price, cfg)
-    levels = scalp_levels(price, cfg)
+    levels = exit_levels(price, cfg, stop_price=stop)
     pick = {"symbol": "HODX", "price": price, "qty": qty, "features": {},
             "setup": "micro_pullback"}
     tid = sim.journal.record_trade_open(ts, "HODX", qty=qty, entry=price,
                                         stop=levels["stop"],
-                                        targets=[levels["target"]],
+                                        targets=[levels["scale_out"]],
                                         features={}, setup="micro_pullback")
     pos = Position(tid, pick, levels, ts, cfg)
     sim.open["HODX"] = pos
@@ -215,12 +215,12 @@ class TestScalpExits:
             sim.traded.clear()
 
     def test_scaling_out_banks_the_majority_and_runs_the_rest(self, sim):
-        pos = _scalp_open(sim, price=3.00)          # 333 sh, target 3.20
+        pos = _scalp_open(sim, price=3.00)          # 333 sh, 2R target 3.30
         assert (pos.bank_qty, pos.runner_qty) == (216, 117)   # 65 / 35
         sim.manage(et(9, 42), int(et(9, 42).timestamp()),
-                   {"HODX": candle(3.05, 3.18, h=3.25, l=3.04)})
+                   {"HODX": candle(3.05, 3.28, h=3.35, l=3.04)})
         assert pos.banked and "HODX" in sim.open
-        assert pos.legs == [(216, 3.20)]
+        assert pos.legs == [(216, 3.30)]
         # The trade can no longer lose: the stop came up to entry.
         assert pos.stop == pytest.approx(pos.entry)
 
@@ -233,23 +233,24 @@ class TestScalpExits:
         """
         pos = _scalp_open(sim, price=3.00)
         sim.manage(et(9, 42), int(et(9, 42).timestamp()),
-                   {"HODX": candle(3.05, 3.18, h=3.25, l=3.04)})
-        assert pos.trail_pct == pytest.approx(5.0)      # full width down here
+                   {"HODX": candle(3.05, 3.28, h=3.35, l=3.04)})
+        assert pos.trail_pct == pytest.approx(5.0)      # full width up here
         sim.manage(et(9, 44), int(et(9, 44).timestamp()),
                    {"HODX": candle(3.10, 2.95, h=3.12, l=2.90)})
 
         trade = sim.journal.all_trades()[0]
         assert trade["exit_reason"] == "trailing"
-        # 5% under the 3.25 high, not the 3.00 entry - and well clear of the
+        # 5% under the 3.35 high, not the 3.00 entry - and well clear of the
         # 2.90 the bar actually traded down to.
-        assert pos.legs[-1] == (117, pytest.approx(3.09))
+        assert pos.legs[-1] == (117, pytest.approx(3.18))
         assert trade["pnl"] > 0
 
     def test_the_runner_can_never_book_below_the_entry(self, sim):
-        """At $5 a flat 5% trail would sit under the entry. It is capped."""
-        pos = _scalp_open(sim, price=5.00)
+        """A tight stop puts 2R close to entry, where a 5% trail would sit
+        under it. The width is capped so it cannot."""
+        pos = _scalp_open(sim, price=5.00, stop=4.90)   # 2% stop, 2R = 5.20
         sim.manage(et(9, 42), int(et(9, 42).timestamp()),
-                   {"HODX": candle(5.05, 5.18, h=5.20, l=5.04)})
+                   {"HODX": candle(5.05, 5.18, h=5.25, l=5.04)})
         assert pos.trail_pct == pytest.approx(3.84)     # capped, not 5%
         sim.manage(et(9, 44), int(et(9, 44).timestamp()),
                    {"HODX": candle(5.10, 4.60, h=5.12, l=4.55)})
@@ -262,7 +263,7 @@ class TestScalpExits:
         open_ts = int(et(9, 40).timestamp())
         _scalp_open(sim, price=3.00, ts=open_ts)
         sim.manage(et(9, 41), int(et(9, 41).timestamp()),
-                   {"HODX": candle(3.05, 3.18, h=3.25, l=3.04)})
+                   {"HODX": candle(3.05, 3.28, h=3.35, l=3.04)})
         late = et(9, 40) + dt.timedelta(minutes=CFG.bot_time_stop_minutes + 5)
         sim.manage(late, int(late.timestamp()),
                    {"HODX": candle(3.30, 3.40, h=3.45, l=3.35)})
@@ -274,7 +275,7 @@ class TestScalpExits:
         flat = Simulator(cfg, j, "2026-08-12", HeuristicScorer(), 0.0)
         pos = _scalp_open(flat, price=3.00, cfg=cfg)
         flat.manage(et(9, 42), int(et(9, 42).timestamp()),
-                    {"HODX": candle(3.05, 3.18, h=3.25, l=3.04)})
+                    {"HODX": candle(3.05, 3.28, h=3.35, l=3.04)})
         assert pos.trail_pct is None
         flat.manage(et(9, 44), int(et(9, 44).timestamp()),
                     {"HODX": candle(3.10, 2.95, h=3.12, l=2.90)})
@@ -286,10 +287,10 @@ class TestScalpExits:
         full = Simulator(cfg, j, "2026-08-12", HeuristicScorer(), 0.0)
         _scalp_open(full, price=3.00, cfg=cfg)
         full.manage(et(9, 42), int(et(9, 42).timestamp()),
-                    {"HODX": candle(3.05, 3.18, h=3.25, l=3.04)})
+                    {"HODX": candle(3.05, 3.28, h=3.35, l=3.04)})
         trade = j.all_trades()[0]
         assert trade["exit_reason"] == "target"
-        assert trade["exit_price"] == pytest.approx(3.20)
+        assert trade["exit_price"] == pytest.approx(3.30)
 
     def test_two_dojis_are_a_stall_and_one_is_not(self, sim):
         _scalp_open(sim, price=3.00)
