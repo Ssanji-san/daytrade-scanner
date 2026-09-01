@@ -67,7 +67,10 @@ def _volume_favours_buyers(move, pullback):
              if (b.get("c") or 0) < (b.get("o") or 0)]
     if not ups or not downs:
         return True
-    return sum(ups) / len(ups) > sum(downs) / len(downs)
+    # >= not >: the test is whether the sellers have MORE size, and a tie is
+    # not that. Strict comparison also blocked any symbol whose bars happen
+    # to carry equal volume.
+    return sum(ups) / len(ups) >= sum(downs) / len(downs)
 
 
 def detect_opening_range_break(opening_range, price, gap_pct, cfg):
@@ -135,8 +138,11 @@ def detect_pullback(bars, price, cfg):
 
     if cfg.require_ema:
         # Breaking the 9 EMA invalidates the flag, as breaking VWAP does.
+        # Too few bars to have an EMA yet is NOT a break: requiring one
+        # blocked every setup in the first nine minutes after the bell,
+        # which is exactly the opening drive this strategy is built around.
         trend = ema(bars, cfg.setup_ema_period)
-        if trend is None or pullback_low < trend:
+        if trend is not None and pullback_low < trend:
             return None
 
     if cfg.setup_topping_tail_pct and any(topping_tail(b, cfg)

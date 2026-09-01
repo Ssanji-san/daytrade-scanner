@@ -13,8 +13,8 @@ from scanner.setups import (detect_opening_range_break, detect_pullback,
 from scanner.trading.strategy import technical_stop
 
 CFG = Config()
-# The live config collapses the stop band to a flat 20% (bot_min_stop_pct).
-# These tests exercise the clamping logic itself, so they keep a real band.
+# These tests exercise the clamping logic itself, so they pin their own band
+# rather than tracking whatever the live config happens to use.
 BAND = replace(CFG, bot_stop_pct=3.0, bot_min_stop_pct=1.0,
                bot_max_stop_pct=6.0)
 
