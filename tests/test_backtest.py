@@ -367,19 +367,19 @@ class TestOutcomeSplit:
     def test_timeouts_do_not_cost_a_full_r(self):
         from scripts.backtest import _expectancy
         rows = [self._row(0, -0.3) for _ in range(10)]
-        assert _expectancy(rows, timeout_r_value=-1.0)[1] == pytest.approx(-1.0)
-        assert _expectancy(rows, timeout_r_value=0.0)[1] == pytest.approx(0.0)
+        assert _expectancy(rows, CFG, timeout_r_value=-1.0)[1] == pytest.approx(-1.0)
+        assert _expectancy(rows, CFG, timeout_r_value=0.0)[1] == pytest.approx(0.0)
 
     def test_a_stop_out_costs_a_full_r_either_way(self):
         from scripts.backtest import _expectancy
         rows = [self._row(0, -1.2) for _ in range(10)]
-        assert _expectancy(rows, timeout_r_value=0.0)[1] == pytest.approx(-1.0)
+        assert _expectancy(rows, CFG, timeout_r_value=0.0)[1] == pytest.approx(-1.0)
 
 
 class TestMeasuredTimeoutExit:
     """The timeout value is recorded, not assumed.
 
-    Timeouts are the large majority of outcomes under a 20% stop, so
+    Timeouts are the large majority of outcomes, so
     assuming they scratch at 0R would have decided the result rather than
     measured it.
     """
@@ -409,5 +409,46 @@ class TestMeasuredTimeoutExit:
         from scripts.backtest import _expectancy
         rows = [{"label": 0, "mae": -0.3, "mfe": 0.1, "r_dollars": 1.0,
                  "resolved_r": -0.4} for _ in range(10)]
-        assert _expectancy(rows)[1] == pytest.approx(-0.4)
-        assert _expectancy(rows, timeout_r_value=0.0)[1] == pytest.approx(0.0)
+        assert _expectancy(rows, CFG)[1] == pytest.approx(-0.4)
+        assert _expectancy(rows, CFG, timeout_r_value=0.0)[1] == pytest.approx(0.0)
+
+
+class TestPolicyExpectancy:
+    """Alerts are scored under the exit policy the bot actually trades."""
+
+    def _win(self, mfe, r=0.25):
+        return {"day": "2026-08-12", "label": 1, "mae": -0.05, "mfe": mfe,
+                "r_dollars": r, "resolved_r": None}
+
+    def test_the_target_is_worth_more_on_a_cheap_stock(self):
+        from scripts.backtest import target_in_r
+        assert target_in_r(self._win(0.2, r=0.25), CFG) == pytest.approx(0.8)
+        assert target_in_r(self._win(0.2, r=0.05), CFG) == pytest.approx(4.0)
+
+    def test_a_win_that_goes_nowhere_pays_only_the_banked_share(self):
+        from scripts.backtest import alert_r
+        # Tagged +20c (0.8R here) and stopped dead: the 35% runner trails out
+        # at break-even, so only the banked 65% pays.
+        assert alert_r(self._win(0.20), CFG) == pytest.approx(0.65 * 0.8)
+
+    def test_a_runner_that_keeps_going_adds_to_it(self):
+        from scripts.backtest import alert_r
+        # Ran 3R; the 5% trail against the 5% stop gives back 1R of it.
+        expected = 0.65 * 0.8 + 0.35 * (3.0 - 1.0)
+        assert alert_r(self._win(0.75), CFG) == pytest.approx(expected)
+
+    def test_the_runner_is_never_worth_less_than_nothing(self):
+        from scripts.backtest import alert_r
+        assert alert_r(self._win(0.20), CFG) > 0
+
+    def test_a_stop_out_is_still_a_full_r(self):
+        from scripts.backtest import alert_r
+        stopped = {"day": "d", "label": 0, "mae": -0.30, "mfe": 0.0,
+                   "r_dollars": 0.25, "resolved_r": -1.0}
+        assert alert_r(stopped, CFG) == pytest.approx(-1.0)
+
+    def test_the_sweep_scores_alerts_the_same_way(self):
+        """Two definitions of what an alert was worth would drift apart."""
+        import scripts.sweep as sweep
+        from scripts.backtest import alert_r
+        assert sweep.alert_r is alert_r

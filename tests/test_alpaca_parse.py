@@ -1,5 +1,11 @@
-from scanner.alpaca import (compute_avg_volume, parse_movers, parse_most_actives,
-                            parse_news, parse_snapshots)
+import asyncio
+
+from scanner.alpaca import (NEWS_MAX_PAGES, NEWS_SYMBOLS_PER_REQUEST,
+                            AlpacaClient, compute_avg_volume, parse_movers,
+                            parse_most_actives, parse_news, parse_snapshots)
+from scanner.config import Config
+
+CFG = Config()
 
 
 def test_parse_movers_returns_gainer_symbols():
@@ -54,3 +60,74 @@ def test_compute_avg_volume():
     bars = [{"v": 100}, {"v": 200}, {"v": 300}]
     assert compute_avg_volume(bars) == 200
     assert compute_avg_volume([]) is None
+
+
+class TestNewsIsNotCrowdedOut:
+    """One page of 50 articles for every candidate at once is not 24 hours.
+
+    Measured on a real session: the window asked for was 24 hours and what
+    came back spanned barely two, with SPY alone taking 15 of the 100 items.
+    A small cap's premarket catalyst - the thing this strategy trades - was
+    invisible by mid-morning, and the bot always scans with news required.
+    """
+
+    def _client(self, pages):
+        """An AlpacaClient over a session that replays `pages` in order."""
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, body):
+                self.status = 200
+                self._body = body
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            def raise_for_status(self):
+                pass
+
+            async def json(self):
+                return self._body
+
+        class FakeSession:
+            def get(self, url, params=None, headers=None):
+                calls.append(dict(params or {}))
+                return FakeResponse(pages[len(calls) - 1])
+
+        return AlpacaClient(FakeSession(), CFG), calls
+
+    def _article(self, symbol, headline="h"):
+        return {"headline": headline, "symbols": [symbol],
+                "created_at": "2026-07-14T12:00:00Z", "url": "u",
+                "source": "benzinga"}
+
+    def test_symbols_are_asked_for_in_chunks(self):
+        symbols = [f"S{i:03d}" for i in range(NEWS_SYMBOLS_PER_REQUEST * 2 + 1)]
+        pages = [{"news": [self._article(s)]} for s in ("A", "B", "C")]
+        client, calls = self._client(pages)
+
+        items = asyncio.run(client.news(symbols, start="2026-07-14T00:00:00Z"))
+
+        assert len(calls) == 3
+        assert all(len(c["symbols"].split(",")) <= NEWS_SYMBOLS_PER_REQUEST
+                   for c in calls)
+        assert [i["symbol"] for i in items] == ["A", "B", "C"]
+
+    def test_a_chunk_is_paginated_to_the_end(self):
+        pages = [{"news": [self._article("AAA")], "next_page_token": "t1"},
+                 {"news": [self._article("BBB")]}]
+        client, calls = self._client(pages)
+
+        items = asyncio.run(client.news(["AAA"], start="2026-07-14T00:00:00Z"))
+
+        assert [i["symbol"] for i in items] == ["AAA", "BBB"]
+        assert calls[1]["page_token"] == "t1"
+
+    def test_pagination_is_bounded(self):
+        endless = [{"news": [self._article("AAA")], "next_page_token": "t"}] * 50
+        client, calls = self._client(endless)
+        asyncio.run(client.news(["AAA"], start="2026-07-14T00:00:00Z"))
+        assert len(calls) == NEWS_MAX_PAGES

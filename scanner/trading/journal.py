@@ -1,9 +1,13 @@
 """SQLite trade journal: alerts (with forward outcomes), trades, model versions.
 
 The learning dataset comes from *alerts*, not just taken trades: every
-HOD-qualified alert gets tracked until it either hits +2R (label 1), its
-stop (label 0), or 30 minutes pass (label 0). Trades record what the bot
-actually did, in R multiples, and survive restarts so the daily cap holds.
+HOD-qualified alert gets tracked until it either reaches the target the bot
+actually trades for (label 1), its stop (label 0), or the tracking window
+expires (label 0). Trades record what the bot really did, in R multiples,
+and survive restarts so the daily cap holds.
+
+What counts as a win follows the strategy: a fixed number of cents in scalp
+mode, WIN_R multiples of risk otherwise. See Journal.__init__.
 """
 import datetime as dt
 import json
@@ -13,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 ALERT_WINDOW_SECONDS = 30 * 60      # default; Config.bot_alert_window_minutes wins
-WIN_R = 2.0   # label 1 = reached +2R before -1R
+WIN_R = 2.0   # label 1 = reached +2R before -1R, when no cent target is set
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS alerts (
@@ -55,7 +59,7 @@ class Journal:
     RECOVERABLE = ("readonly", "moved", "disk i/o", "closed database",
                    "database is locked", "no such table")
 
-    def __init__(self, path, alert_window_minutes=None):
+    def __init__(self, path, alert_window_minutes=None, win_target_cents=None):
         # The grading horizon has to match how long the bot actually holds a
         # trade. Labelling a loss at 30 minutes while the time stop runs for
         # four hours does not measure the strategy, it measures the timer:
@@ -64,6 +68,12 @@ class Journal:
         self.alert_window_seconds = (ALERT_WINDOW_SECONDS
                                      if alert_window_minutes is None
                                      else int(alert_window_minutes) * 60)
+        # And the target has to match what the bot actually takes. Grading on
+        # +2R while the bot banks at +20c measured a move it never waits for:
+        # 2R on the flat 5% stop is a +10% move, and 20c is 1.3R on a $3
+        # stock and 0.8R on a $5 one. None keeps the R rule for the swing
+        # path, which really does hold out for a multiple of risk.
+        self.win_target_cents = win_target_cents
         self.path = str(path)
         pathlib.Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._connect()
@@ -114,10 +124,30 @@ class Journal:
 
     def record_alert(self, ts, symbol, price, r_dollars, features, setup=None,
                      observed=0):
-        """One alert per symbol per trading day; returns id or None if dupe.
+        """One alert per symbol per trading day; returns id, or None if dupe.
 
         `observed` marks a near-miss: graded for learning, never traded.
+
+        A symbol nearly always appears in the near list before it qualifies,
+        and the row is UNIQUE(day, symbol) - so the row written for the day
+        was the near miss, and the later qualifying row was dropped on the
+        floor. Every alert in the journal ended up marked observed=1 while
+        real trades were being taken, which is the wrong distribution to
+        train on. A qualifying alert therefore UPGRADES the near-miss row it
+        finds. The upgrade is one-way, and the price and features stay as
+        first recorded so the alert still measures the moment it was spotted.
         """
+        row = self._execute(
+            "SELECT id, observed FROM alerts WHERE day=? AND symbol=?",
+            (_day(ts), symbol)).fetchone()
+        if row is not None:
+            if row["observed"] and not int(observed):
+                self._execute(
+                    "UPDATE alerts SET observed=0, setup=COALESCE(?, setup)"
+                    " WHERE id=?", (setup, row["id"]))
+                self._commit()
+                return row["id"]
+            return None
         try:
             cur = self._execute(
                 "INSERT INTO alerts (ts, day, symbol, price, r_dollars,"
@@ -127,7 +157,7 @@ class Journal:
             self._commit()
             return cur.lastrowid
         except sqlite3.IntegrityError:
-            return None
+            return None          # raced with another writer; it is recorded
 
     def track_alert(self, alert_id, now_ts, price, high=None, low=None):
         """Update excursions; resolve the label when a threshold is crossed.
@@ -157,10 +187,11 @@ class Journal:
             # at the target, but a timeout exits at whatever the market is
             # then - and assuming that is break-even was quietly deciding
             # the answer, since timeouts are the large majority of outcomes.
+            win_at, win_r = self._win_level(row)
             if low <= row["price"] - row["r_dollars"]:
                 label, resolved_r = 0, -1.0        # the wick took the stop
-            elif high >= row["price"] + WIN_R * row["r_dollars"]:
-                label, resolved_r = 1, WIN_R
+            elif high >= win_at:
+                label, resolved_r = 1, win_r
             elif now_ts - row["ts"] > self.alert_window_seconds:
                 label = 0                          # the clock, not the stop
                 resolved_r = ((price - row["price"]) / row["r_dollars"]
@@ -172,6 +203,19 @@ class Journal:
             " resolved_r=? WHERE id=?",
             (mfe, mae, label, resolved, resolved_r, alert_id))
         self._commit()
+
+    def _win_level(self, row):
+        """(price that counts as a win, what it is worth in R).
+
+        The R value is not a constant under a cent target: 20c is 4R on a $1
+        stock and 0.8R on a $5 one, and that difference is the strategy's
+        whole character, so it is recorded rather than assumed.
+        """
+        if self.win_target_cents:
+            r_dollars = row["r_dollars"]
+            return (row["price"] + self.win_target_cents,
+                    self.win_target_cents / r_dollars if r_dollars else WIN_R)
+        return row["price"] + WIN_R * row["r_dollars"], WIN_R
 
     def tracking_alerts(self, day, now_ts):
         """Alerts still worth marking today - labelled ones included.
@@ -213,7 +257,7 @@ class Journal:
     def outcome_rows(self):
         """Graded alerts with their excursions - what a report needs.
 
-        `label` says whether +2R came before -1R; `mfe`/`mae` say how far it
+        `label` says whether the target came before the stop; `mfe`/`mae` how far it
         actually went, which is what separates a scratch from a runner and a
         real stop-out from the clock expiring.
         """
@@ -241,6 +285,21 @@ class Journal:
              json.dumps(features), setup))
         self._commit()
         return cur.lastrowid
+
+    def update_trade_entry(self, trade_id, entry):
+        """Correct the entry to what the order actually filled at.
+
+        record_trade_open stores the signal price, because that is all that
+        is known when the order is submitted. The R multiple has to be
+        measured against what the fill really cost.
+        """
+        self._execute("UPDATE trades SET entry=? WHERE id=?", (entry, trade_id))
+        self._commit()
+
+    def delete_trade(self, trade_id):
+        """Drop a trade that never happened - an entry that never filled."""
+        self._execute("DELETE FROM trades WHERE id=?", (trade_id,))
+        self._commit()
 
     def record_trade_close(self, trade_id, ts, exit_price, exit_reason):
         row = self._execute("SELECT * FROM trades WHERE id=?",

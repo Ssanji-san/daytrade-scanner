@@ -112,19 +112,32 @@ class Config:
     # The broker refuses to start unless trading_base contains "paper-api";
     # this bot must never touch a live account.
     trading_base: str = "https://paper-api.alpaca.markets"
-    bot_bankroll: float = 1_000.0        # simulated account (paper balance ignored)
-    # 5% risk against a 20% stop puts exactly $250 into each position
-    # ($50 / (0.20 x price) shares), which is also the 25% notional cap - the
-    # two formulas agree, so neither one silently overrides the other.
-    # The whole account goes into one trade, and the stop is 5% of that -
-    # $50 on $1,000. Risk and notional are the same lever here: 5% risk at a
-    # 5% stop is 100% of the bankroll, so the two agree by construction.
-    bot_risk_pct: float = 5.0            # % of bankroll risked per trade
-    bot_max_notional_pct: float = 100.0  # position size cap as % of bankroll
+    # The account to size off when there is no live reading: the backtest's
+    # balance, and the live fallback until /v2/account answers. The real
+    # account replaces it - see strategy.bankroll_from. This is NOT what one
+    # position is worth; that is bot_position_dollars below.
+    bot_bankroll: float = 2_500.0
+    # What ONE position is worth. The account decides how MANY of these fit,
+    # so a $2,473 balance holds $1,000 + $1,000 + $473 rather than putting
+    # everything into a single trade. Risk and notional are the same lever at
+    # these settings: 5% risk against a 5% stop is 100% of the unit, so the
+    # two formulas agree and neither silently overrides the other - $50 at
+    # risk per position, at any share price.
+    bot_position_dollars: float = 1_000.0
+    bot_risk_pct: float = 5.0            # % of the unit risked per position
+    bot_max_notional_pct: float = 100.0  # position size cap as % of the unit
+    # The last slice of an account takes whatever is left, but not below
+    # this: a $60 position at the 20c target grosses about $2.40 on a $1-5
+    # name and the round trip eats it.
+    bot_min_position_dollars: float = 150.0
     # A hard ceiling in dollars, whatever the account grows to. Position
     # size tracks the balance up to here and then stops.
     bot_max_notional_dollars: float = 15_000.0
     bot_max_trades_per_day: int = 10
+    # How long an accepted entry may sit unfilled before it is pulled. The
+    # setup that justified the price is stale by then, and an order left
+    # working can fill into a different market entirely.
+    bot_entry_timeout_seconds: int = 120
     # --- scalping ---
     # Take profit at a fixed distance in cents rather than a multiple of
     # risk. Worth knowing what that implies: with a 5% stop the same 20c is
@@ -136,9 +149,13 @@ class Config:
     # Sell this share of the position at the target and let the rest run,
     # governed by the stall exit below. 0 takes the whole thing off.
     bot_scalp_scale_out_pct: float = 65.0
-    # After banking, the runner's stop comes up to entry: the trade can no
-    # longer lose, which is the point of scaling out at all.
-    bot_scalp_runner_breakeven: bool = True
+    # After banking, the runner rides a TRAILING stop that ratchets up
+    # behind the high water mark, capped so it can never start below the
+    # entry - the trade can no longer lose, which is the point of scaling out
+    # at all, and a runner that keeps going now keeps more of it. False falls
+    # back to a fixed stop at break-even. Read by both the live bot and the
+    # simulator; when only one of them read it the two silently diverged.
+    bot_scalp_runner_trail: bool = True
     # A doji is a bar that opens and closes in the same place - buyers and
     # sellers balanced. Two in a row is the stall to get out on. One-minute
     # bars are the finest the free feed carries, so a 5-10 second stutter is
@@ -146,10 +163,11 @@ class Config:
     bot_doji_exit_bars: int = 2
     bot_doji_body_pct: float = 20.0      # body <= this % of the bar's range
     bot_max_losses_per_day: int = 4      # the day's kill switch: 4 losers, stop
-    # 4 x $250 is the whole account. Without this the bot could hold ten
-    # positions at once against a $1,000 balance, since a 4-hour hold does
-    # not turn over fast enough for the daily cap to bound exposure.
-    bot_max_concurrent_positions: int = 1   # the whole account, one trade
+    # A ceiling on top of the capital constraint, not instead of it: the
+    # account already limits how many $1,000 units fit ($2,473 buys three).
+    # This bounds exposure if the balance grows - raise it deliberately
+    # rather than letting position count climb on its own.
+    bot_max_concurrent_positions: int = 5
     bot_min_price: float = 1.0           # scalping band, $1-$5
     bot_max_price: float = 5.0
     # Min and max both at 20 collapses the band, so technical_stop returns a

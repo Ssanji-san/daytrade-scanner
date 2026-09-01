@@ -22,30 +22,26 @@ import aiohttp
 from .config import DEFAULT
 from .trading.broker import Broker
 from .trading.journal import Journal
-from .trading.strategy import ET
+from .trading.strategy import ET, weighted_exit
 
 FLATTEN_FROM = (15, 40)
 MARKET_CLOSE = (16, 0)
 
 
 async def reconcile(broker, journal, position_symbols, now_ts):
-    """Record exits for journal trades whose position no longer exists."""
+    """Record exits for journal trades whose position no longer exists.
+
+    Only fills from this trade's own lifetime count: /v2/orders answers
+    newest-first across the whole account history, so an unbounded query
+    averaged a previous session's exits on the same symbol into this one.
+    """
     for trade in journal.open_trade_rows():
         if trade["symbol"] in position_symbols:
             continue
-        exit_price, qty = 0.0, 0.0
-        orders = await broker._request(
-            "GET", "/v2/orders",
-            params={"status": "closed", "symbols": trade["symbol"],
-                    "limit": 20, "nested": "true"})
-        for order in orders or []:
-            legs = [order] + (order.get("legs") or [])
-            for leg in legs:
-                if leg.get("side") == "sell" and leg.get("filled_avg_price"):
-                    filled = float(leg.get("filled_qty") or 0)
-                    qty += filled
-                    exit_price += filled * float(leg["filled_avg_price"])
-        price = exit_price / qty if qty else trade["entry"]
+        legs = await broker.closed_sell_legs(trade["symbol"], trade["ts"])
+        price = weighted_exit(legs)
+        if price is None:
+            price = trade["entry"]
         journal.record_trade_close(trade["id"], now_ts, price, "bracket")
         print(f"[flatten] reconciled {trade['symbol']} exit ~{price:.2f}")
 
@@ -59,7 +55,9 @@ async def run(force=False):
     async with aiohttp.ClientSession() as session:
         broker = Broker(session, cfg)
         positions = await broker.positions()
-        journal = Journal(cfg.bot_journal_path, cfg.bot_alert_window_minutes)
+        journal = Journal(cfg.bot_journal_path, cfg.bot_alert_window_minutes,
+                          win_target_cents=(cfg.bot_scalp_target_cents
+                                            if cfg.bot_scalp_mode else None))
         await reconcile(broker, journal, {p["symbol"] for p in positions},
                         now_ts)
 

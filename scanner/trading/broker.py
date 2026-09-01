@@ -4,6 +4,7 @@ This module refuses to exist against a live account: construction raises
 unless the base URL is the paper API. Do not remove that check.
 """
 import asyncio
+import datetime as dt
 import os
 
 import aiohttp
@@ -15,6 +16,15 @@ PAPER_MARKER = "paper-api"
 
 class PaperOnlyError(RuntimeError):
     pass
+
+
+def _filled_ts(leg):
+    """Epoch seconds for a leg's fill time; None when absent or unparseable."""
+    try:
+        return dt.datetime.fromisoformat(
+            str(leg.get("filled_at")).replace("Z", "+00:00")).timestamp()
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 class Broker:
@@ -67,6 +77,31 @@ class Broker:
         return {"symbol": symbol, "qty": str(qty), "side": side,
                 "type": "trailing_stop", "time_in_force": "day",
                 "trail_percent": f"{trail_percent:g}"}
+
+    # ---- fill parsing (pure, tested) ----
+
+    @staticmethod
+    def sell_legs(orders, after_ts=None):
+        """(qty, price) for every filled sell leg, newer than `after_ts`.
+
+        `after_ts` is not optional in spirit: /v2/orders answers newest-first
+        across the whole account history, so a symbol traded on two different
+        days would otherwise have yesterday's exits averaged into today's.
+        The server-side `after` filter is by submission time, and a leg
+        submitted with the entry can fill much later, so the fill time is
+        checked here as well.
+        """
+        legs = []
+        for order in orders or []:
+            for leg in [order] + (order.get("legs") or []):
+                if leg.get("side") != "sell" or not leg.get("filled_avg_price"):
+                    continue
+                filled_at = _filled_ts(leg)
+                if after_ts and filled_at is not None and filled_at < after_ts:
+                    continue
+                legs.append((float(leg.get("filled_qty") or 0),
+                             float(leg["filled_avg_price"])))
+        return legs
 
     # ---- HTTP (thin) ----
 
@@ -133,6 +168,21 @@ class Broker:
 
     async def cancel_order(self, order_id):
         return await self._request("DELETE", f"/v2/orders/{order_id}")
+
+    async def order(self, order_id):
+        """One order by id - is the entry still working, filled, or dead?"""
+        return await self._request("GET", f"/v2/orders/{order_id}",
+                                   params={"nested": "true"})
+
+    async def closed_sell_legs(self, symbol, after_ts=None):
+        """Filled sell legs for a symbol since `after_ts`. See sell_legs."""
+        params = {"status": "closed", "symbols": symbol,
+                  "limit": 50, "nested": "true"}
+        if after_ts:
+            params["after"] = dt.datetime.fromtimestamp(
+                after_ts, dt.timezone.utc).isoformat()
+        orders = await self._request("GET", "/v2/orders", params=params)
+        return self.sell_legs(orders, after_ts)
 
     async def portfolio_history(self, period="1M", timeframe="1D"):
         return await self._request("GET", "/v2/account/portfolio/history",

@@ -120,9 +120,14 @@ def test_a_full_session_enters_scales_and_stalls_out(rig):
     sells = [o for o in broker.orders if o["type"] == "market" and o["side"] == "sell"]
     assert sells and sells[0]["qty"] == trade["bank_qty"]
     assert trade["bank_qty"] / trade["qty"] == pytest.approx(0.65, abs=0.02)
-    stops = [o for o in broker.orders if o["type"] == "stop"]
-    assert stops and stops[-1]["stop_price"] == pytest.approx(round(entry, 2)), \
-        "runner stop did not move to break-even"
+    trails = [o for o in broker.orders if o["type"] == "trailing_stop"]
+    assert trails, "runner did not get a trailing stop"
+    assert trails[-1]["qty"] == trade["runner_qty"]
+    price_at_bank = round(entry + 0.22, 2)
+    assert price_at_bank * (1 - trails[-1]["trail_percent"] / 100) >= entry, \
+        "the runner's first stop sits below what was paid"
+    assert trade["stop"] == pytest.approx(round(entry, 2)), \
+        "break-even floor was not recorded"
     assert "HODX" in bot.open_trades, "runner should still be riding"
 
     # --- two dojis: the stall closes the runner ---

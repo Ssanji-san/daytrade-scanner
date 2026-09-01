@@ -102,16 +102,59 @@ def test_remembers_float_and_avg_volume_once_seen():
     assert row["rvol"] is not None
 
 
+def _headline(symbol, ts, headline="h"):
+    return {"symbol": symbol, "headline": headline, "ts": int(ts), "url": "u",
+            "source": "bz"}
+
+
 def test_calendar_and_news_feed_in_payload():
     state = MarketState(CFG)
     now = t(12, 0)
     state.ingest(now, {"FLAT": snap(10.0)})
     state.set_calendar([{"title": "CPI", "impact": "High", "ts": 1}])
-    state.set_news(now, [{"symbol": "FLAT", "headline": "h", "ts": 5, "url": "u",
-                          "source": "bz"}])
+    state.set_news(now, [_headline("FLAT", now.timestamp() - 600)])
     payload = state.payload(now)
     assert payload["calendar"][0]["title"] == "CPI"
     assert payload["news"][0]["symbol"] == "FLAT"
+
+
+class TestNewsIsMerged:
+    """A catalyst must not vanish because one batch left the symbol out.
+
+    The feed answers with the newest headlines across every candidate at
+    once and does not paginate, so a quiet small cap drops out of the batch
+    constantly while the megacaps never do. Replacing the store wholesale
+    made the stock look newsless until it happened to come back - and news
+    is the gate the whole strategy hangs on.
+    """
+
+    def test_a_symbol_missing_from_the_next_batch_keeps_its_catalyst(self):
+        state = MarketState(CFG)
+        now = t(12, 0)
+        state.set_news(now, [_headline("SMALL", now.timestamp() - 600,
+                                       "SMALL wins FDA approval")])
+        later = now + dt.timedelta(minutes=1)
+        state.set_news(later, [_headline("BIGCO", later.timestamp() - 30)])
+
+        assert state._has_news("SMALL", later)
+        assert {n["symbol"] for n in state.news} == {"SMALL", "BIGCO"}
+
+    def test_a_headline_is_not_recorded_twice(self):
+        state = MarketState(CFG)
+        now = t(12, 0)
+        item = _headline("SMALL", now.timestamp() - 600)
+        state.set_news(now, [item])
+        state.set_news(now + dt.timedelta(seconds=30), [dict(item)])
+        assert len(state.news) == 1
+
+    def test_a_headline_older_than_the_window_is_evicted(self):
+        state = MarketState(CFG)
+        now = t(12, 0)
+        state.set_news(now, [_headline("OLD", now.timestamp() - 600)])
+        much_later = now + dt.timedelta(hours=CFG.news_max_age_hours + 1)
+        state.set_news(much_later, [])
+        assert state.news == []
+        assert not state._has_news("OLD", much_later)
 
 
 def _gapper_snap(price, when, prev_close=5.0):

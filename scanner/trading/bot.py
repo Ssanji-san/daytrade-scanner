@@ -14,13 +14,17 @@ from ..config import Config
 from .broker import Broker
 from .journal import Journal
 from .model import train
-from .strategy import (ET, bankroll_from, exit_levels, is_doji,
-                       scalp_levels, scalp_split, should_enter,
-                       size_position,
+from .strategy import (ET, bankroll_from, buying_power, exit_levels,
+                       is_doji, position_slots, runner_trail_pct,
+                       scalp_levels, scalp_split, should_enter, size_position,
                        split_qty, technical_stop, weighted_exit,
                        _parse_hhmm)
 
 MARKET_OPEN = dt.time(9, 30)
+
+# An entry order in one of these states bought nothing and never will.
+DEAD_ORDER_STATES = ("canceled", "cancelled", "expired", "rejected",
+                     "done_for_day", "replaced")
 
 # A textbook setup for this strategy: heavy relative volume, a real fresh
 # catalyst, up strongly on the day and since the bell, holding above VWAP
@@ -106,12 +110,14 @@ def journal_alert(journal, ts, row, now, observed, cfg: Config):
 def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
                    day_pnl, now, cfg: Config, score_threshold=None,
                    losses_today=0, open_positions=0, account=None,
-                   bankroll=None):
+                   bankroll=None, budget=None):
     """Best-scored qualifying rows first, never exceeding the daily cap.
 
-    Picks already made in this cycle count against both the daily cap and
-    the concurrency cap, so one pass cannot open more than the account can
-    hold.
+    Picks already made in this cycle count against the daily cap, the
+    concurrency cap and the remaining `budget`, so one pass cannot open more
+    than the account can pay for. The budget is what makes the last slice of
+    a balance a part-sized position rather than a refused one: $2,473 opens
+    $1,000, $1,000 and $473 and then stops.
     """
     scored = []
     for row in qualified_rows:
@@ -132,9 +138,9 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
         if stop is None:
             continue                     # risk to the setup low is too wide
         qty, stop = size_position(row["price"], cfg, stop_price=stop,
-                                  bankroll=bankroll)
+                                  budget=budget)
         if qty < 1:
-            continue
+            continue                     # no capital left, or too small
         take, _ = should_enter(row["symbol"], price=row["price"], score=score,
                                trades_today=count, traded_symbols=taken,
                                day_pnl=day_pnl, now=now, cfg=cfg,
@@ -149,6 +155,8 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
                       "qty": qty, "stop": stop, "score": score,
                       "setup": setup.get("setup"), "features": features})
         taken.add(row["symbol"])
+        if budget is not None:
+            budget -= qty * row["price"]
     return picks
 
 
@@ -169,9 +177,13 @@ class TradingBot:
         self.rejected = set()     # symbols whose entry the broker refused today
         self.open_orders = []     # live broker orders, for the dashboard
         self.account = None       # last good /v2/account snapshot
-        # Sizing follows the real balance: $1,000 risks $50, $2,000 risks
-        # $100. Seeded from config until the first account read lands.
+        # The balance decides how many $1,000 positions fit, not how big
+        # each one is. Seeded from config until the first account read
+        # lands, which is why _bankroll_seeded exists: the 3x sanity guard
+        # in bankroll_from must not measure the first real reading against a
+        # number that was never a balance.
         self.bankroll = cfg.bot_bankroll
+        self._bankroll_seeded = False
         self._account_pull = 0.0
         self._rejected_day = None
         self.scorer, self.model_meta = self._retrain()
@@ -240,7 +252,11 @@ class TradingBot:
         if self._rejected_day != day:      # fresh slate each session
             self.rejected, self._rejected_day = set(), day
         account = await self._account_snapshot(ts)
-        self.bankroll = bankroll_from(account, self.cfg, self.bankroll)
+        if account:
+            self.bankroll = bankroll_from(
+                account, self.cfg,
+                self.bankroll if self._bankroll_seeded else None)
+            self._bankroll_seeded = True
         trades = self.journal.trades_today(day)
         picks = choose_entries(
             qualified, self.scorer,
@@ -251,7 +267,8 @@ class TradingBot:
             score_threshold=self.score_threshold,
             losses_today=self.journal.losses_today(day),
             open_positions=len(self.open_trades),
-            account=account, bankroll=self.bankroll)
+            account=account, bankroll=self.bankroll,
+            budget=self._budget(account))
         for pick in picks:
             try:
                 await self._enter(pick, ts)
@@ -259,6 +276,23 @@ class TradingBot:
                 # Don't re-hammer a symbol the broker refused; one line, once.
                 self.rejected.add(pick["symbol"])
                 print(f"[bot] ENTRY REJECTED {pick['symbol']}: {exc}")
+
+    def _budget(self, account):
+        """Capital still free to deploy, in dollars.
+
+        Bounded by EQUITY, never by margin. A paper account reports several
+        times its balance as day-trading buying power, and sizing off that
+        would open a stack of leveraged positions rather than the three a
+        $2,473 balance actually supports. The broker's own figure is applied
+        as a second ceiling in case it is the tighter of the two.
+        """
+        committed = sum(t["qty"] * t["entry"]
+                        for t in self.open_trades.values())
+        budget = self.bankroll - committed
+        power = buying_power(account)
+        if power is not None:
+            budget = min(budget, power)
+        return max(0.0, budget)
 
     async def _account_snapshot(self, ts):
         """Cached /v2/account, refreshed every 30s. None if never readable.
@@ -324,8 +358,12 @@ class TradingBot:
             "trade_id": trade_id, "parent_order_id": parent["id"],
             "trailing_order_id": None, "qty": total_qty,
             "bank_qty": bank_qty, "runner_qty": runner_qty,
-            "entry": entry, "stop": levels["stop"],
+            "entry": entry, "signal_price": entry, "stop": levels["stop"],
             "scale_out": levels["scale_out"], "opened_ts": ts,
+            # The order is accepted, not filled. Until a position exists this
+            # trade is pending: a missing position means "not yet", not
+            # "closed". See _settle_pending.
+            "filled": False,
             "banked": False}
         print(f"[bot] ENTER {pick['symbol']} x{total_qty} @~{entry:.2f} "
               f"[{pick.get('setup')}] stop {levels['stop']:.2f} "
@@ -339,6 +377,9 @@ class TradingBot:
         for symbol, trade in list(self.open_trades.items()):
             pos = positions.get(symbol)
             if pos is None:
+                if not trade.get("filled") and not await self._settle_pending(
+                        symbol, trade, ts):
+                    continue
                 exit_price = await self._closed_exit_price(symbol, trade)
                 reason = "trailing" if trade["banked"] else "stop"
                 self.journal.record_trade_close(trade["trade_id"], ts,
@@ -346,6 +387,10 @@ class TradingBot:
                 del self.open_trades[symbol]
                 print(f"[bot] CLOSED {symbol} @~{exit_price:.2f} ({reason})")
                 continue
+
+            if not trade.get("filled"):
+                # The position is proof of the fill, and carries its price.
+                self._adopt_fill(symbol, trade, pos.get("avg_entry_price"))
 
             latest = state.latest.get(symbol)
             price = (latest["price"] if latest
@@ -378,6 +423,79 @@ class TradingBot:
             if not trade["banked"] and age_min >= self.cfg.bot_time_stop_minutes:
                 await self._flatten_trade(symbol, trade, ts, pos, "time_stop")
 
+    async def _settle_pending(self, symbol, trade, ts):
+        """No position yet: is the entry still working, or is it dead?
+
+        Returns True once the entry is known to have filled - with no
+        position against it, that means the trade opened and closed between
+        two polls, and the caller records the close.
+
+        A trade is registered the moment the OTO order is ACCEPTED, and the
+        next cycle runs three seconds later - a marketable limit on a thin
+        low-priced name has often not filled by then. Reading "no position"
+        as "the trade closed" journalled a phantom exit at the entry price
+        (the live journal holds an IVF trade open for exactly one poll cycle)
+        and then forgot an order that could still fill, leaving a position
+        with only its stop leg: no scale-out, no time stop, no stall exit. So
+        an unfilled entry gets asked about rather than assumed.
+        """
+        try:
+            order = await self.broker.order(trade["parent_order_id"])
+        except Exception as exc:
+            print(f"[bot] entry order unreadable for {symbol}: {exc}")
+            return False                 # ask again next cycle
+        status = (order or {}).get("status")
+        if status in ("filled", "partially_filled"):
+            self._adopt_fill(symbol, trade, order.get("filled_avg_price"))
+            return True
+        if status in DEAD_ORDER_STATES:
+            self._drop_pending(symbol, trade,
+                               f"entry {status} - nothing was bought")
+            return False
+        if ts - trade["opened_ts"] >= self.cfg.bot_entry_timeout_seconds:
+            # The setup that justified this price is minutes old now. Pull the
+            # order rather than let it fill into a different market. A fill
+            # racing the cancel is left to the flatten job to reconcile.
+            try:
+                await self.broker.cancel_orders_for(symbol)
+            except Exception as exc:
+                print(f"[bot] cancelling the unfilled entry failed "
+                      f"{symbol}: {exc}")
+                return False
+            self._drop_pending(
+                symbol, trade,
+                f"unfilled after {self.cfg.bot_entry_timeout_seconds}s")
+        return False
+
+    def _drop_pending(self, symbol, trade, why):
+        """Forget an entry that bought nothing, journal row included."""
+        try:
+            self.journal.delete_trade(trade["trade_id"])
+        except Exception as exc:
+            print(f"[bot] could not remove the pending trade row: {exc}")
+        self.open_trades.pop(symbol, None)
+        print(f"[bot] ENTRY DROPPED {symbol}: {why}")
+
+    def _adopt_fill(self, symbol, trade, filled_price):
+        """Mark the entry filled and record what was actually paid.
+
+        The stop and the target stay where they were placed: the stop is a
+        live broker order riding along with the entry, and moving the target
+        after the fact would make the live path measure a different trade
+        from the one the backtest simulates.
+        """
+        trade["filled"] = True
+        try:
+            price = float(filled_price)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price <= 0 or abs(price - trade["entry"]) < 0.005:
+            return
+        trade["entry"] = price
+        self.journal.update_trade_entry(trade["trade_id"], price)
+        print(f"[bot] FILLED {symbol} @{price:.2f} "
+              f"(signalled {trade['signal_price']:.2f})")
+
     def _stalled(self, state, symbol, opened_ts):
         """Have the last N completed bars all been dojis?
 
@@ -394,8 +512,29 @@ class TradingBot:
                 if (_bar_ts(b) or 0) > opened_ts][-want:]
         return len(bars) == want and all(is_doji(b, self.cfg) for b in bars)
 
+    async def _protect_runner(self, symbol, trade, price):
+        """Lift the runner's stop once the bulk is banked. Returns a label.
+
+        A trailing stop ratchets up behind the high water mark, so a runner
+        that keeps running keeps more of it - the fixed break-even stop used
+        to hand back every cent above entry the moment price came off. The
+        width is capped by runner_trail_pct so the first stop can never sit
+        below what was paid.
+        """
+        breakeven = round(trade["entry"], 2)
+        trade["stop"] = breakeven         # the floor, whatever the trail does
+        pct = (runner_trail_pct(trade["entry"], price, self.cfg)
+               if self.cfg.bot_scalp_runner_trail else None)
+        if pct is None:
+            await self.broker.submit_stop(symbol, trade["runner_qty"], breakeven)
+            return f"stop at break-even {breakeven:.2f}"
+        order = await self.broker.submit_trailing_stop(
+            symbol, trade["runner_qty"], pct)
+        trade["trailing_order_id"] = (order or {}).get("id")
+        return f"trailing {pct:g}%, never below break-even {breakeven:.2f}"
+
     async def _manage_scalp(self, symbol, trade, state, ts, pos, price):
-        """Fixed-cent target, then out on a stall or the clock.
+        """Fixed-cent target, then the runner rides until it stalls.
 
         Deliberately different from the simulator in two places. The stop is
         not checked here because it is a live broker order riding along with
@@ -408,15 +547,11 @@ class TradingBot:
             await self.broker.cancel_orders_for(symbol)
             if trade["runner_qty"] >= 1:
                 await self.broker.submit_market_sell(symbol, trade["bank_qty"])
-                # The runner's stop comes up to entry: having banked the
-                # bulk, the trade must not be allowed to become a loser.
-                await self.broker.submit_stop(symbol, trade["runner_qty"],
-                                              round(trade["entry"], 2))
-                trade["stop"] = round(trade["entry"], 2)
+                protection = await self._protect_runner(symbol, trade, price)
                 trade["banked"] = True
                 print(f"[bot] SCALE-OUT {symbol}: banked {trade['bank_qty']} "
-                      f"@~{price:.2f}, runner {trade['runner_qty']} with the "
-                      f"stop at break-even {trade['entry']:.2f}")
+                      f"@~{price:.2f}, runner {trade['runner_qty']} "
+                      f"{protection}")
             else:
                 await self.broker.submit_market_sell(symbol, trade["qty"])
                 trade["banked"] = True
@@ -427,7 +562,13 @@ class TradingBot:
             await self._flatten_trade(symbol, trade, ts, pos, "stall")
             return
 
-        if (ts - trade["opened_ts"]) / 60 >= self.cfg.bot_time_stop_minutes:
+        # The clock is for a position that has not paid yet. A banked runner
+        # is playing with the market's money behind a trailing stop, and
+        # cutting it at ten minutes was throwing away the only part of this
+        # strategy that can make more than 20c.
+        if (not trade["banked"]
+                and (ts - trade["opened_ts"]) / 60
+                >= self.cfg.bot_time_stop_minutes):
             await self._flatten_trade(symbol, trade, ts, pos, "time_stop")
 
     async def _flatten_trade(self, symbol, trade, ts, pos, reason):
@@ -442,17 +583,14 @@ class TradingBot:
         print(f"[bot] CLOSED {symbol} @~{exit_price:.2f} ({reason})")
 
     async def _closed_exit_price(self, symbol, trade, fallback=None):
-        """Share-weighted average of all closed sell fills for the symbol."""
-        orders = await self.broker._request(
-            "GET", "/v2/orders",
-            params={"status": "closed", "symbols": symbol,
-                    "limit": 50, "nested": "true"})
-        legs = []
-        for order in orders or []:
-            for leg in [order] + (order.get("legs") or []):
-                if leg.get("side") == "sell" and leg.get("filled_avg_price"):
-                    legs.append((float(leg.get("filled_qty") or 0),
-                                 float(leg["filled_avg_price"])))
+        """Share-weighted average of THIS trade's closed sell fills.
+
+        Bounded by the trade's own open time. Unbounded, the query answered
+        with the 50 newest closed orders for the symbol whenever they
+        happened, so a symbol traded on two different days had yesterday's
+        exits averaged into today's R multiple.
+        """
+        legs = await self.broker.closed_sell_legs(symbol, trade["opened_ts"])
         avg = weighted_exit(legs)
         if avg is not None:
             return avg
@@ -466,6 +604,14 @@ class TradingBot:
             "enabled": True,
             "error": self.error,
             "bankroll": self.bankroll,
+            # How the balance splits into positions, so the dashboard states
+            # the sizing in force instead of implying one trade holds it all.
+            "position_dollars": self.cfg.bot_position_dollars,
+            "slots": position_slots(self.bankroll, self.cfg),
+            # What an alert is graded against, so the dashboard cannot drift
+            # out of step with the strategy the way a hardcoded "+2R" did.
+            "target_cents": (self.cfg.bot_scalp_target_cents
+                             if self.cfg.bot_scalp_mode else None),
             "trades_today": len(trades),
             "cap": self.cfg.bot_max_trades_per_day,
             "day_pnl": self.journal.day_pnl(day),
@@ -493,9 +639,14 @@ async def bot_loop(app, cfg: Config):
     async with aiohttp.ClientSession() as session:
         broker = Broker(session, cfg)   # PaperOnlyError if misconfigured
         account = await broker.account()
-        print(f"[bot] paper account ok — equity ${float(account['equity']):,.0f} "
-              f"(simulating ${cfg.bot_bankroll:,.0f} bankroll)")
-        journal = Journal(cfg.bot_journal_path, cfg.bot_alert_window_minutes)
+        equity = float(account["equity"])
+        print(f"[bot] paper account ok — equity ${equity:,.2f}, "
+              f"{position_slots(equity, cfg)} position(s) of "
+              f"${cfg.bot_position_dollars:,.0f} "
+              f"(max {cfg.bot_max_concurrent_positions})")
+        journal = Journal(cfg.bot_journal_path, cfg.bot_alert_window_minutes,
+                          win_target_cents=(cfg.bot_scalp_target_cents
+                                            if cfg.bot_scalp_mode else None))
         bot = TradingBot(cfg, journal, broker)
         last_equity_pull = 0.0
 

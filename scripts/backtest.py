@@ -27,7 +27,7 @@ from scanner.backtest import fetch, replay                    # noqa: E402
 from scanner.backtest.simulate import Simulator               # noqa: E402
 from scanner.config import DEFAULT                            # noqa: E402
 from scanner.floats import FloatCache                         # noqa: E402
-from scanner.trading.journal import Journal                   # noqa: E402
+from scanner.trading.journal import WIN_R, Journal            # noqa: E402
 from scanner.trading.model import HeuristicScorer, train      # noqa: E402
 
 
@@ -70,7 +70,9 @@ async def run(start, end, feed, fetch_only, trades=False, require_news=True,
     if scale_out is not None:
         cfg = replace(cfg, bot_scalp_scale_out_pct=scale_out)
     cache = fetch.Cache(cfg)
-    journal = Journal(cfg.backtest_journal_path, cfg.bot_alert_window_minutes)
+    journal = Journal(cfg.backtest_journal_path, cfg.bot_alert_window_minutes,
+                      win_target_cents=(cfg.bot_scalp_target_cents
+                                        if cfg.bot_scalp_mode else None))
     floats = FloatCache(cfg)
 
     async with aiohttp.ClientSession() as session:
@@ -149,34 +151,71 @@ def timeout_r(row):
     return 0.0 if value is None else value
 
 
-def _expectancy(rows, timeout_r_value=None):
-    """(hit rate, pure-2R R, runner R).
+def target_in_r(row, cfg):
+    """What the bot's own target is worth on this row, in R.
 
-    `timeout_r_value` scores every timeout at a fixed R; None uses each
-    row's measured exit. The runner banks half at +2R and rides the rest,
-    credited with mfe less a rough 1R of trail give-back. mfe is a floor,
-    not a ceiling: it stops at the last bar of the tracking window.
+    Not a constant under a cent target: 20c against a 5% stop is 4R on a $1
+    stock and 0.8R on a $5 one, because the stop scales with price and the
+    target does not. That spread IS this strategy's character, which is why
+    trade_report also breaks results down by price bucket.
+    """
+    if not cfg.bot_scalp_mode or not row["r_dollars"]:
+        return WIN_R
+    return cfg.bot_scalp_target_cents / row["r_dollars"]
+
+
+def alert_r(row, cfg, timeout_r_value=None):
+    """What one graded alert was worth in R under the bot's REAL exit policy.
+
+    `bot_scalp_scale_out_pct` comes off at the target and the rest rides a
+    trail that cannot end below break-even, so the runner is credited with
+    how far it ran less the trail's give-back, floored at zero rather than
+    allowed to go negative. mfe is a floor on the run, not a ceiling: it
+    stops at the last bar of the tracking window.
+
+    One definition, imported by scripts/sweep.py - two copies of "what was
+    this alert worth" drift apart silently.
+    """
+    kind = outcome(row)
+    if kind == "stopped":
+        return -1.0
+    if kind == "timeout":
+        return timeout_r(row) if timeout_r_value is None else timeout_r_value
+    banked = cfg.bot_scalp_scale_out_pct / 100.0
+    target_r = target_in_r(row, cfg)
+    ran = (row["mfe"] / row["r_dollars"]) if row["r_dollars"] else target_r
+    # Both the trail and the stop are percentages of price, so the give-back
+    # in R is simply their ratio: a 5% trail against a 5% stop costs 1R.
+    give_back = (cfg.bot_runner_trail_pct / cfg.bot_stop_pct
+                 if cfg.bot_stop_pct else 1.0)
+    return banked * target_r + (1 - banked) * max(0.0, ran - give_back)
+
+
+def _expectancy(rows, cfg, timeout_r_value=None):
+    """(hit rate, flat-target R, full-policy R).
+
+    'flat' takes the whole position off at the target - the simple version.
+    'policy' is the split the bot actually trades: most of it banked there,
+    the remainder trailing. `timeout_r_value` scores every timeout at a
+    fixed R; None uses each row's measured exit.
     """
     if not rows:
         return 0.0, 0.0, 0.0
-    wins = pure = runner = 0
+    wins = 0
+    flat = policy = 0.0
     for row in rows:
         kind = outcome(row)
         if kind == "win":
             wins += 1
-            pure += 2
-            ran = (row["mfe"] / row["r_dollars"]) if row["r_dollars"] else 2.0
-            runner += 1.0 + 0.5 * max(2.0, ran - 1.0)
+            flat += target_in_r(row, cfg)
         elif kind == "stopped":
-            pure -= 1
-            runner -= 1
+            flat -= 1
         else:
-            scratch = (timeout_r(row) if timeout_r_value is None
-                       else timeout_r_value)
-            pure += scratch
-            runner += scratch
+            flat += (timeout_r(row) if timeout_r_value is None
+                     else timeout_r_value)
+        policy += alert_r(row, cfg, timeout_r_value)
     n = len(rows)
-    return wins / n, pure / n, runner / n
+    return wins / n, flat / n, policy / n
 
 
 def _counts(rows):
@@ -194,33 +233,41 @@ def report(journal, cfg):
     if not rows:
         print("[backtest] nothing labeled yet")
         return
-    risk = cfg.bot_bankroll * cfg.bot_risk_pct / 100
+    risk = cfg.bot_position_dollars * cfg.bot_risk_pct / 100
+    target = (f"+{cfg.bot_scalp_target_cents * 100:.0f}c target"
+              if cfg.bot_scalp_mode else f"+{WIN_R:g}R target")
     print(f"[backtest] {len(rows)} graded alerts, ${risk:,.0f} risked per "
           f"trade, {cfg.bot_alert_window_minutes}-minute horizon, "
-          f"{cfg.bot_stop_pct:.0f}% stop")
+          f"{cfg.bot_stop_pct:.0f}% stop, {target}")
     print("[backtest] 'label' scores a timeout as a full -1R the way the "
           "journal does; 'measured'")
     print("[backtest] uses what the position was really worth when the time "
           "stop closed it.")
     print(f"[backtest] {'month':>8} {'n':>6} {'win':>6} {'stop':>6} "
           f"{'t/out':>6} {'t/out R':>8} {'label':>8} {'measured':>9} "
-          f"{'runner':>8} {'$/trade':>8}")
+          f"{'policy':>8} {'$/trade':>8}")
     by_month = {}
     for row in rows:
         by_month.setdefault(row["day"][:7], []).append(row)
     for month in sorted(by_month) + ["ALL"]:
         block = rows if month == "ALL" else by_month[month]
         tally = _counts(block)
-        hit, label_r, _ = _expectancy(block, timeout_r_value=-1.0)
-        _, measured_r, runner_r = _expectancy(block)
+        hit, label_r, _ = _expectancy(block, cfg, timeout_r_value=-1.0)
+        _, measured_r, policy_r = _expectancy(block, cfg)
         outs = [timeout_r(r) for r in block if outcome(r) == "timeout"]
         mean_out = sum(outs) / len(outs) if outs else 0.0
         n = len(block)
         print(f"[backtest] {month:>8} {n:>6} {hit:>5.1%} "
               f"{tally['stopped'] / n:>5.1%} {tally['timeout'] / n:>5.1%} "
               f"{mean_out:>+7.2f}R {label_r:>+7.2f}R {measured_r:>+8.2f}R "
-              f"{runner_r:>+7.2f}R {runner_r * risk:>+7.0f}")
-    print("[backtest] break-even on a 2R target needs a 33.3% win rate")
+              f"{policy_r:>+7.2f}R {policy_r * risk:>+7.0f}")
+    paid = [alert_r(r, cfg) for r in rows if outcome(r) == "win"]
+    if paid:
+        mean_win = sum(paid) / len(paid)
+        if mean_win > 0:
+            print(f"[backtest] the policy pays {mean_win:+.2f}R on a win, so "
+                  f"ignoring timeouts it needs a {1 / (1 + mean_win):.1%} hit "
+                  f"rate to break even")
 
     if len(dataset) >= cfg.bot_model_min_samples:
         _, meta = train(dataset, min_samples=cfg.bot_model_min_samples,
@@ -230,6 +277,32 @@ def report(journal, cfg):
     for row in journal.setup_stats():
         print(f"[backtest]   {row['setup']:16} n={row['n']:<4} "
               f"wins={row['wins']} exp_r={row['exp_r']}")
+
+
+# A fixed-cent target behaves completely differently across the price band,
+# so the aggregate can hide a strategy that only works in one part of it.
+PRICE_BUCKETS = ((0.0, 1.50), (1.50, 2.50), (2.50, 3.50), (3.50, 5.00))
+
+
+def _bucket_report(rows, cfg):
+    """Results by entry price - the number a fixed-cent target lives on.
+
+    +20c against a 5% stop is 4:1 down at $1 and 0.8:1 at $5, because the
+    same money buys five times as many shares down there and the stop moves
+    with price while the target does not.
+    """
+    print(f"[trades] {'price':>12} {'n':>5} {'win':>6} {'mean R':>8} "
+          f"{'$':>9}")
+    for low, high in PRICE_BUCKETS:
+        block = [r for r in rows if low <= (r["entry"] or 0) < high]
+        if not block:
+            continue
+        rs = [r["r_multiple"] or 0.0 for r in block]
+        wins = sum(1 for x in rs if x > 0)
+        pnl = sum(r["pnl"] or 0.0 for r in block)
+        print(f"[trades] {f'${low:.2f}-{high:.2f}':>12} {len(block):>5} "
+              f"{wins / len(block):>5.1%} {sum(rs) / len(rs):>+7.2f}R "
+              f"{pnl:>+8.0f}")
 
 
 def trade_report(journal, cfg):
@@ -271,9 +344,10 @@ def trade_report(journal, cfg):
     for row in journal.setup_stats():
         print(f"[trades]   {row['setup'] or 'none':16} n={row['n']:<4} "
               f"wins={row['wins']} exp_r={row['exp_r']}")
+    _bucket_report(rows, cfg)
     # The edge has to clear the spread, and the spread is not modelled.
-    risk = cfg.bot_bankroll * cfg.bot_risk_pct / 100
-    notional = cfg.bot_bankroll * cfg.bot_max_notional_pct / 100
+    risk = cfg.bot_position_dollars * cfg.bot_risk_pct / 100
+    notional = cfg.bot_position_dollars * cfg.bot_max_notional_pct / 100
     print(f"[trades] edge is {mean * risk / notional:.2%} of notional; a "
           f"round trip costing more than that loses money")
 

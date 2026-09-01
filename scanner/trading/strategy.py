@@ -1,8 +1,14 @@
-"""Pure trading decisions: entry gate, position sizing, 2R/3R exit levels.
+"""Pure trading decisions: entry gate, position sizing, scalp exit levels.
 
-No I/O here — the bot loop feeds in current state, this answers what to do.
+No I/O here - the bot loop feeds in current state, this answers what to do.
 Every threshold comes from config.
+
+The live strategy is Ross Cameron's cents-on-the-dollar scalp: buy the
+pullback, bank most of the position a fixed number of cents up, and let the
+rest ride a trail that can never come back under what was paid. The R-based
+2R/3R path is still here and still reachable by configuration.
 """
+import math
 from zoneinfo import ZoneInfo
 
 from ..config import Config
@@ -40,18 +46,31 @@ def broker_state_reasons(account, notional, cfg: Config):
     reasons = []
     if account.get("trading_blocked") or account.get("account_blocked"):
         reasons.append("broker_blocked")
-    if account.get("buying_power") is None or not notional:
+    power = buying_power(account)
+    if power is None or not notional:
         return reasons           # nothing to compare against; fail open
+    if power < notional:
+        reasons.append("buying_power")
+    return reasons
+
+
+def buying_power(account):
+    """What the broker says can be spent right now, or None if unreadable.
+
+    A flagged account has its day-trading buying power computed by the
+    broker; we read the number rather than re-deriving a rule that is being
+    replaced through 2027.
+    """
+    if not account or account.get("buying_power") is None:
+        return None
     try:
         power = float(account["buying_power"])
         if account.get("pattern_day_trader"):
             power = min(power,
                         float(account.get("daytrading_buying_power") or 0))
     except (TypeError, ValueError):
-        return reasons
-    if power < notional:
-        reasons.append("buying_power")
-    return reasons
+        return None
+    return power
 
 
 def should_enter(symbol="", *, price, score, trades_today, traded_symbols,
@@ -109,13 +128,18 @@ def technical_stop(entry, raw_stop, cfg: Config):
 
 
 def bankroll_from(account, cfg: Config, last_known=None):
-    """The balance to size off: the live account, not a hardcoded figure.
+    """The balance to work with: the live account, not a hardcoded figure.
 
-    $1,000 risks $50, $2,000 risks $100 - the percentage is fixed and the
-    dollars follow the balance up and back down again. Falls back to the
-    configured bankroll when the account cannot be read, and refuses a
-    reading more than 3x the last one, because a bad parse must never size
-    the next position.
+    It decides how many positions fit, not how big each one is - see
+    position_slots and size_position. Falls back to the configured bankroll
+    when the account cannot be read, and refuses a reading more than 3x the
+    last one, because a bad parse must never decide what gets opened.
+
+    `last_known=None` means "no reading yet, take this one as the baseline".
+    Passing the config seed there instead would measure the first real
+    reading against a number that was never a balance: a $4,000 account
+    tripped the 3x guard against the $1,000 seed on every single cycle and
+    stayed pinned at $1,000 forever.
 
     The backtest deliberately does NOT use this: a replay that compounds
     would overstate its own results and make R multiples incomparable
@@ -133,21 +157,47 @@ def bankroll_from(account, cfg: Config, last_known=None):
     return equity
 
 
-def size_position(price, cfg: Config, stop_price=None, bankroll=None):
-    """(shares, stop_price). Risk a fixed % of bankroll; cap the notional."""
+def position_slots(bankroll, cfg: Config):
+    """How many positions this balance supports, ceiling included.
+
+    $2,473.74 holds two whole $1,000 units plus a $473.74 slice - three
+    positions. A slice under bot_min_position_dollars does not count.
+    """
+    unit = cfg.bot_position_dollars
+    if not bankroll or unit <= 0:
+        return 0
+    whole = int(bankroll // unit)
+    if bankroll - whole * unit >= cfg.bot_min_position_dollars:
+        whole += 1
+    return max(0, min(whole, cfg.bot_max_concurrent_positions))
+
+
+def size_position(price, cfg: Config, stop_price=None, unit=None, budget=None):
+    """(shares, stop_price) for ONE position.
+
+    `unit` is what a whole position is worth - deliberately not the account.
+    The account decides how many units fit; see TradingBot.cycle. `budget`
+    caps this one at the capital actually left, which is what lets the last
+    slice of a balance open a part-sized position instead of being refused
+    outright by the buying-power check.
+    """
     if stop_price is None:
         stop_price = price * (1 - cfg.bot_stop_pct / 100)
     if stop_price >= price:
         return 0, stop_price
-    bankroll = cfg.bot_bankroll if bankroll is None else bankroll
-    risk_dollars = bankroll * cfg.bot_risk_pct / 100
+    unit = cfg.bot_position_dollars if unit is None else unit
+    risk_dollars = unit * cfg.bot_risk_pct / 100
     qty = int(risk_dollars / (price - stop_price))
-    # Two ceilings: a share of the account, and a hard dollar figure the
-    # position never exceeds however large the account grows.
-    max_notional = bankroll * cfg.bot_max_notional_pct / 100
+    # Three ceilings: a share of the unit, a hard dollar figure no position
+    # ever exceeds, and the capital that is actually left to spend.
+    max_notional = unit * cfg.bot_max_notional_pct / 100
     cap = getattr(cfg, "bot_max_notional_dollars", 0)
     if cap:
         max_notional = min(max_notional, cap)
+    if budget is not None:
+        max_notional = min(max_notional, budget)
+    if max_notional < cfg.bot_min_position_dollars:
+        return 0, stop_price      # too small to pay for its own spread
     qty = min(qty, int(max_notional / price))
     return qty, stop_price
 
@@ -175,6 +225,26 @@ def scalp_levels(entry_price, cfg: Config):
     stop = entry_price * (1 - cfg.bot_stop_pct / 100)
     return {"stop": round(stop, 2),
             "target": round(entry_price + cfg.bot_scalp_target_cents, 2)}
+
+
+def runner_trail_pct(entry, price, cfg: Config):
+    """Trail width for the runner, capped so it never starts below entry.
+
+    A flat 5% trail on a $5 entry puts the first stop at $4.94 - below what
+    was paid - so a banked winner could still hand the runner back as a loss,
+    which is the whole thing scaling out exists to prevent. The cap is the
+    distance from here back to the entry.
+
+    None means the cap has collapsed (price at or under the entry) and the
+    caller should place a plain stop at break-even instead.
+    """
+    if not entry or not price or price <= entry:
+        return None
+    cap = 100.0 * (price - entry) / price
+    # Floor, never round: rounding up widens the trail past break-even, which
+    # is exactly the loss this cap exists to make impossible.
+    pct = math.floor(min(cfg.bot_runner_trail_pct, cap) * 100) / 100
+    return pct if pct > 0 else None
 
 
 def scalp_split(qty, cfg: Config):

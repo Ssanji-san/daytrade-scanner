@@ -9,6 +9,7 @@ Dashboard at http://127.0.0.1:8124
 import argparse
 import asyncio
 import datetime as dt
+import hashlib
 import json
 import pathlib
 import traceback
@@ -26,6 +27,25 @@ from .trading.bot import bot_loop
 
 WEB_DIR = pathlib.Path(__file__).resolve().parent.parent / "web"
 FLOAT_FETCHES_PER_CYCLE = 4
+ASSETS = ("style.css", "app.js")
+
+
+def stamp_assets(html, web_dir=WEB_DIR):
+    """Version the asset URLs with a hash of their contents.
+
+    Neither this server nor GitHub Pages sends cache headers, and a browser
+    holding an old app.js keeps rendering claims the code no longer makes -
+    a dashboard describing a strategy the bot has stopped trading is a bug
+    this project has already shipped twice. A changed file changes its URL,
+    so the stale copy cannot be reused.
+    """
+    for name in ASSETS:
+        path = web_dir / name
+        if not path.exists():
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:8]
+        html = html.replace(f"static/{name}", f"static/{name}?v={digest}")
+    return html
 
 
 def utcnow():
@@ -107,6 +127,12 @@ async def playback_loop(app, cfg: Config, session_data=None, regenerate=False):
         frames = data["frames"]
         # Backfill everything except the tail instantly, then tick the last
         # frames in real time so the user sees the dashboard move.
+        if not frames:
+            print("[playback] recording has no frames")
+            return
+        # A recording of ten frames or fewer leaves nothing to backfill, and
+        # `now` then has to come from the data rather than the loop below.
+        now = dt.datetime.fromtimestamp(frames[0]["ts"], dt.timezone.utc)
         tail = min(10, len(frames))
         for frame in frames[:-tail]:
             now = dt.datetime.fromtimestamp(frame["ts"], dt.timezone.utc)
@@ -142,7 +168,11 @@ async def api_state(request):
 
 
 async def index(request):
-    return web.FileResponse(WEB_DIR / "index.html")
+    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    # The page always revalidates; the assets it points at are versioned by
+    # content hash, so they can be cached hard without ever going stale.
+    return web.Response(text=stamp_assets(html), content_type="text/html",
+                        headers={"Cache-Control": "no-cache"})
 
 
 def build_app(cfg: Config, mode, runner_coros):

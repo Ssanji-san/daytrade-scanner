@@ -223,7 +223,14 @@ function renderBot(payload) {
   let chipHtml =
     `<span class="chip">trades ${bot.trades_today}/${bot.cap}</span>` +
     `<span class="chip ${pnlCls}">day ${fmtMoney(pnl)}</span>` +
-    `<span class="chip">bankroll $${fmtBig(bot.bankroll)}</span>`;
+    // Exact, not rounded: this balance is what decides the slot count, and
+    // fmtBig renders $2,473.74 as "$2K".
+    `<span class="chip">bankroll $${fmtNum(bot.bankroll, 0)}</span>`;
+  // How the balance splits into positions. Hardcoding "the whole account,
+  // one trade" here would go stale the moment the sizing changed.
+  if (bot.slots) {
+    chipHtml += `<span class="chip">${(bot.open || []).length}/${bot.slots} slots × $${fmtBig(bot.position_dollars)}</span>`;
+  }
   (bot.open || []).forEach((o) => {
     chipHtml += `<span class="chip warn">open: ${o.symbol} x${o.qty} @$${fmtNum(o.entry)}</span>`;
   });
@@ -322,11 +329,16 @@ function renderBot(payload) {
   $("#bot-orders-empty").classList.toggle("hidden", orders.length > 0);
 
   const alerts = bot.alerts || [];
+  // What an alert is graded against comes from the bot, not the page: a
+  // hardcoded "+2R" here went on claiming a target the bot had stopped
+  // trading for.
+  const target =
+    bot.target_cents != null ? `+${Math.round(bot.target_cents * 100)}c` : "+2R";
   $("#bot-alerts tbody").innerHTML = alerts
     .map((a) => {
       const done = a.label != null;
       const cls = !done ? "" : a.label === 1 ? "up" : "down";
-      const outcome = !done ? "tracking…" : a.label === 1 ? "hit +2R" : "failed";
+      const outcome = !done ? "tracking…" : a.label === 1 ? `hit ${target}` : "failed";
       return `<tr>
         <td>${a.day || shortDate(a.ts)}</td>
         <td>${localTime(a.ts)}</td>

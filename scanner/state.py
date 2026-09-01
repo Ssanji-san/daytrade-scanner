@@ -101,13 +101,34 @@ class MarketState:
             }
 
     def set_news(self, now, items):
-        self.news = sorted(items, key=lambda i: -i["ts"])[:100]
-        self._news_ts = {}
-        self._news_by_symbol = {}
+        """Merge a batch of headlines into what is already known.
+
+        Replacing wholesale meant a symbol missing from one batch lost its
+        catalyst until it happened to come back - and the feed answers with
+        the newest headlines across every candidate at once, so a quiet small
+        cap drops out of the batch constantly while the megacaps do not. Merge
+        instead, and let age do the evicting.
+        """
+        cutoff = now.timestamp() - self.cfg.news_max_age_hours * 3600
+        merged = {sym: list(seen)
+                  for sym, seen in self._news_by_symbol.items()}
         for item in items:
-            sym = item["symbol"]
-            self._news_ts[sym] = max(self._news_ts.get(sym, 0), item["ts"])
-            self._news_by_symbol.setdefault(sym, []).append(item)
+            seen = merged.setdefault(item["symbol"], [])
+            key = (item.get("ts"), item.get("headline"), item.get("url"))
+            if not any((i.get("ts"), i.get("headline"), i.get("url")) == key
+                       for i in seen):
+                seen.append(item)
+
+        self._news_by_symbol, self._news_ts = {}, {}
+        for sym, seen in merged.items():
+            fresh = [i for i in seen if (i.get("ts") or 0) >= cutoff]
+            if not fresh:
+                continue
+            self._news_by_symbol[sym] = fresh
+            self._news_ts[sym] = max(i["ts"] for i in fresh)
+        self.news = sorted(
+            (i for seen in self._news_by_symbol.values() for i in seen),
+            key=lambda i: -i["ts"])[:100]
 
     def set_calendar(self, events):
         self.calendar = events

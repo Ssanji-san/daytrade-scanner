@@ -6,6 +6,7 @@ import pytest
 
 from scanner.config import Config
 from scanner.trading.strategy import (bankroll_from, exit_levels, in_window,
+                                      position_slots, runner_trail_pct,
                                       should_enter, size_position, split_qty,
                                       weighted_exit)
 
@@ -51,7 +52,7 @@ class TestShouldEnter:
         ({"now": et(12, 31)}, "window"),
         ({"trades_today": 10}, "daily_cap"),
         ({"losses_today": 4}, "loss_cap"),
-        ({"open_positions": 4}, "concurrency"),
+        ({"open_positions": 5}, "concurrency"),
         ({"traded_symbols": {"HODX"}, "symbol": "HODX"}, "already_traded"),
         ({"score": 0.30}, "score"),
     ])
@@ -125,7 +126,7 @@ class TestBrokerState:
 
 
 class TestSizing:
-    def test_the_whole_account_goes_in_at_a_5pct_stop(self):
+    def test_one_unit_goes_in_at_a_5pct_stop(self):
         # $50 risk / (5% of $5.00) = 200 shares = $1,000, which is also the
         # 100% notional cap. The two agree, so neither silently overrides
         # the other - and the risk is $50 at any share price.
@@ -140,17 +141,67 @@ class TestSizing:
             assert (price - stop) * qty == pytest.approx(50.0, abs=0.10)
             assert qty * price == pytest.approx(1000.0, abs=2.0)
 
-    def test_the_dollar_ceiling_caps_a_grown_account(self):
-        # Position size tracks the balance up to the hard $15,000 ceiling
-        # and then stops, however large the account gets.
-        cfg = replace(CFG, bot_bankroll=100_000.0)
+    def test_the_dollar_ceiling_caps_an_oversized_unit(self):
+        cfg = replace(CFG, bot_position_dollars=100_000.0)
         qty, _ = size_position(5.0, cfg)
         assert qty * 5.0 == pytest.approx(CFG.bot_max_notional_dollars, abs=5)
 
     def test_zero_when_price_exceeds_notional_cap(self):
-        cfg = replace(CFG, bot_bankroll=1.0)
+        cfg = replace(CFG, bot_position_dollars=1.0)
         qty, _ = size_position(5.0, cfg)
         assert qty == 0
+
+
+class TestBudget:
+    """The last slice of an account takes a part-sized position.
+
+    Without a budget the third trade on a $2,473 balance asked for a full
+    $1,000, and the buying-power check refused it outright - so the account
+    sat two-thirds deployed with cash it would not use.
+    """
+
+    def test_a_budget_smaller_than_the_unit_shrinks_the_position(self):
+        qty, stop = size_position(3.0, CFG, budget=473.74)
+        assert qty == 157                        # 473.74 / 3.00
+        assert qty * 3.0 == pytest.approx(471.0, abs=3.0)
+        assert (3.0 - stop) * qty == pytest.approx(23.6, abs=0.5)
+
+    def test_a_budget_larger_than_the_unit_does_not_inflate_it(self):
+        qty, _ = size_position(3.0, CFG, budget=50_000.0)
+        assert qty * 3.0 == pytest.approx(CFG.bot_position_dollars, abs=3.0)
+
+    def test_a_slice_too_small_to_bother_with_is_refused(self):
+        assert size_position(3.0, CFG, budget=149.0)[0] == 0
+        assert size_position(3.0, CFG, budget=151.0)[0] > 0
+
+    def test_spending_an_account_down(self):
+        """$2,473.74 buys $1,000 + $1,000 + $473, and then nothing."""
+        budget, opened = 2_473.74, []
+        for _ in range(5):
+            qty, _ = size_position(3.0, CFG, budget=budget)
+            if qty < 1:
+                break
+            opened.append(qty * 3.0)
+            budget -= qty * 3.0
+        assert len(opened) == 3
+        assert opened[0] == pytest.approx(999.0)
+        assert opened[1] == pytest.approx(999.0)
+        assert opened[2] == pytest.approx(474.0)
+
+
+class TestPositionSlots:
+    def test_the_balance_decides_how_many_fit(self):
+        assert position_slots(2_473.74, CFG) == 3      # 1k + 1k + 473
+        assert position_slots(1_000.0, CFG) == 1
+        assert position_slots(0.0, CFG) == 0
+
+    def test_a_remainder_under_the_floor_does_not_count(self):
+        assert position_slots(1_100.0, CFG) == 1       # the $100 is unusable
+        assert position_slots(1_150.0, CFG) == 2
+
+    def test_the_ceiling_bounds_a_grown_account(self):
+        assert position_slots(5_000.0, CFG) == 5
+        assert position_slots(50_000.0, CFG) == CFG.bot_max_concurrent_positions
 
 
 class TestExits:
@@ -185,24 +236,34 @@ class TestScoreThresholdOverride:
 
 
 class TestLiveBankroll:
-    """Sizing follows the real balance, up and back down again."""
+    """The real balance decides how many positions fit, not how big.
 
-    def test_risk_scales_with_the_account(self):
-        for equity, want_risk in ((1_000.0, 50.0), (2_000.0, 100.0),
-                                  (5_000.0, 250.0)):
+    Position size is a fixed unit - $50 of risk, whatever the account holds.
+    Growth buys more slots rather than fatter trades, so one bad name can
+    never cost more than it did yesterday.
+    """
+
+    def test_the_account_buys_slots_not_bigger_trades(self):
+        for equity, want_slots in ((1_000.0, 1), (2_473.74, 3), (5_000.0, 5)):
             bank = bankroll_from({"equity": str(equity)}, CFG)
-            qty, stop = size_position(3.0, CFG, bankroll=bank)
-            assert (3.0 - stop) * qty == pytest.approx(want_risk, abs=1.0)
+            assert bank == pytest.approx(equity)
+            assert position_slots(bank, CFG) == want_slots
+            qty, stop = size_position(3.0, CFG)
+            assert (3.0 - stop) * qty == pytest.approx(50.0, abs=1.0)
 
     def test_it_shrinks_on_a_drawdown_too(self):
         bank = bankroll_from({"equity": "600"}, CFG, last_known=1_000.0)
-        qty, stop = size_position(3.0, CFG, bankroll=bank)
-        assert (3.0 - stop) * qty == pytest.approx(30.0, abs=1.0)
+        assert bank == pytest.approx(600.0)
+        assert position_slots(bank, CFG) == 1
 
-    def test_the_dollar_ceiling_still_caps_a_large_account(self):
-        bank = bankroll_from({"equity": "500000"}, CFG, last_known=400_000.0)
-        qty, _ = size_position(3.0, CFG, bankroll=bank)
-        assert qty * 3.0 == pytest.approx(CFG.bot_max_notional_dollars, abs=3)
+    def test_a_first_reading_is_taken_as_the_baseline(self):
+        """The 3x guard must not measure the first read against the seed.
+
+        It used to: a $4,000 account tripped it against the $1,000 config
+        seed on every cycle and stayed pinned at $1,000 for the session.
+        """
+        assert bankroll_from({"equity": "4000"}, CFG,
+                             last_known=None) == 4_000.0
 
     @pytest.mark.parametrize("account", [
         None, {}, {"equity": None}, {"equity": "not a number"}, {"equity": "0"},
@@ -217,3 +278,36 @@ class TestLiveBankroll:
                              last_known=1_000.0) == 1_000.0
         assert bankroll_from({"equity": "2500"}, CFG,
                              last_known=1_000.0) == 2_500.0
+
+
+class TestRunnerTrail:
+    """Once the bulk is banked, the runner rides a trail that can only rise.
+
+    The width is capped so the first stop never sits below what was paid -
+    a flat 5% trail on a $5 entry would put it at $4.94, turning a banked
+    winner back into a loser and defeating the entire point of scaling out.
+    """
+
+    def test_a_cheap_runner_gets_the_full_width(self):
+        # $2.20 on a $2.00 entry: 5% is 11c, which still clears the entry.
+        assert runner_trail_pct(2.00, 2.20, CFG) == pytest.approx(5.0)
+
+    def test_an_expensive_runner_is_capped_at_break_even(self):
+        pct = runner_trail_pct(5.00, 5.20, CFG)
+        assert pct == pytest.approx(3.84)               # not the full 5%
+        assert 5.20 * (1 - pct / 100) >= 5.00           # never below entry
+
+    def test_the_cap_floors_rather_than_rounds(self):
+        """Rounding up widens the trail past break-even, which is the one
+        thing the cap exists to prevent."""
+        pct = runner_trail_pct(5.00, 5.20, CFG)
+        assert pct == 3.84                              # 3.846..., not 3.85
+
+    def test_the_trail_rises_with_the_price(self):
+        """Further from the entry, the cap stops binding."""
+        assert runner_trail_pct(5.00, 5.20, CFG) < runner_trail_pct(5.00, 6.00, CFG)
+
+    def test_no_trail_when_the_price_is_not_above_the_entry(self):
+        assert runner_trail_pct(5.00, 5.00, CFG) is None
+        assert runner_trail_pct(5.00, 4.90, CFG) is None
+        assert runner_trail_pct(0, 5.00, CFG) is None

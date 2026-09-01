@@ -8,6 +8,7 @@ import pytest
 
 from scanner.config import Config
 from scanner.trading.bot import TradingBot
+from scanner.trading.broker import Broker
 from scanner.trading.journal import Journal
 
 ET = ZoneInfo("America/New_York")
@@ -24,6 +25,12 @@ class FakeBroker:
         self.cancelled = []
         self._positions = []      # list of {"symbol","current_price"}
         self.closed_orders = []   # returned for the closed-orders query
+        # What GET /v2/orders/{id} says about the entry. Tests that care
+        # about an entry still working set this to "new".
+        self.order_status = "filled"
+        self.order_fill_price = None
+        self.equity = "100000"
+        self.buying_power = None
         self._id = 0
 
     def _new(self, **kw):
@@ -33,7 +40,10 @@ class FakeBroker:
         return {"id": kw["id"]}
 
     async def account(self):
-        return {"equity": "100000"}
+        account = {"equity": self.equity}
+        if self.buying_power is not None:
+            account["buying_power"] = self.buying_power
+        return account
 
     async def positions(self):
         return list(self._positions)
@@ -61,6 +71,13 @@ class FakeBroker:
 
     async def cancel_order(self, order_id):
         self.cancelled.append(order_id)
+
+    async def order(self, order_id):
+        return {"id": order_id, "status": self.order_status,
+                "filled_avg_price": self.order_fill_price}
+
+    async def closed_sell_legs(self, symbol, after_ts=None):
+        return Broker.sell_legs(self.closed_orders, after_ts)
 
     async def close_position(self, symbol):
         self._positions = [p for p in self._positions if p["symbol"] != symbol]
@@ -309,7 +326,12 @@ class _BarState(FakeState):
         self.histories = {"HODX": _H(bars)}
 
 
-def test_scalp_banks_the_majority_and_moves_the_stop_to_breakeven(tmp_path):
+def test_scalp_banks_the_majority_and_trails_the_runner(tmp_path):
+    """65% off at the target, the rest rides a stop that ratchets up.
+
+    The runner used to sit behind a fixed stop at the entry, so every cent
+    it made above +20c was handed back the moment price came off.
+    """
     bot, broker, _ = make_bot(tmp_path)
     trade = _open_a_trade(bot, ts=int(et(9, 40).timestamp()))
     assert (trade["bank_qty"], trade["runner_qty"]) == (32, 18)   # 65 / 35
@@ -322,10 +344,56 @@ def test_scalp_banks_the_majority_and_moves_the_stop_to_breakeven(tmp_path):
     sells = [o for o in broker.orders
              if o["type"] == "market" and o["side"] == "sell"]
     assert sells and sells[0]["qty"] == 32
+    trails = [o for o in broker.orders if o["type"] == "trailing_stop"]
+    assert trails and trails[0]["qty"] == 18
+    # Capped: a flat 5% of $5.22 would put the first stop at $4.96, under the
+    # $5.00 paid. 4.21% of 5.22 lands it exactly on the entry.
+    assert trails[0]["trail_percent"] == pytest.approx(4.21)
+    assert 5.22 * (1 - trails[0]["trail_percent"] / 100) >= trade["entry"]
+    assert not [o for o in broker.orders if o["type"] == "stop"]
+    assert trade["stop"] == pytest.approx(5.00)     # the floor is recorded
+    assert "HODX" in bot.open_trades                # runner still on
+
+
+def test_a_cheap_runner_gets_the_full_trail_width(tmp_path):
+    """Down at $2 the full 5% already sits above break-even, so it is used."""
+    bot, broker, _ = make_bot(tmp_path)
+    _open_a_trade(bot, ts=int(et(9, 40).timestamp()), price=2.00, qty=500)
+    broker._positions = [{"symbol": "HODX", "current_price": 2.22}]
+
+    asyncio.run(bot._manage_open(FakeState({"HODX": {"price": 2.22}}),
+                                 now=et(9, 42), ts=int(et(9, 42).timestamp())))
+
+    trails = [o for o in broker.orders if o["type"] == "trailing_stop"]
+    assert trails and trails[0]["trail_percent"] == pytest.approx(5.0)
+
+
+def test_a_banked_runner_outlives_the_time_stop(tmp_path):
+    """The clock is for a position that has not paid yet."""
+    bot, broker, _ = make_bot(tmp_path)
+    open_ts = int(et(9, 40).timestamp())
+    trade = _open_a_trade(bot, ts=open_ts)
+    trade["banked"] = True
+    broker._positions = [{"symbol": "HODX", "current_price": 5.40}]
+    late = et(9, 40) + dt.timedelta(minutes=CFG.bot_time_stop_minutes + 5)
+
+    asyncio.run(bot._manage_open(FakeState({"HODX": {"price": 5.40}}),
+                                 now=late, ts=int(late.timestamp())))
+
+    assert "HODX" in bot.open_trades
+
+
+def test_the_fixed_break_even_stop_is_still_reachable(tmp_path):
+    bot, broker, _ = make_bot(tmp_path, bot_scalp_runner_trail=False)
+    trade = _open_a_trade(bot, ts=int(et(9, 40).timestamp()))
+    broker._positions = [{"symbol": "HODX", "current_price": 5.22}]
+
+    asyncio.run(bot._manage_open(FakeState({"HODX": {"price": 5.22}}),
+                                 now=et(9, 42), ts=int(et(9, 42).timestamp())))
+
     stops = [o for o in broker.orders if o["type"] == "stop"]
-    assert stops and stops[0]["qty"] == 18
-    assert stops[0]["stop_price"] == pytest.approx(5.00)   # entry: cannot lose
-    assert "HODX" in bot.open_trades                       # runner still on
+    assert stops and stops[0]["stop_price"] == pytest.approx(5.00)
+    assert not [o for o in broker.orders if o["type"] == "trailing_stop"]
 
 
 def test_two_dojis_close_the_scalp(tmp_path):
@@ -377,3 +445,163 @@ def test_the_scalp_time_stop_is_ten_minutes(tmp_path):
 
     asyncio.run(bot._manage_open(state, now=late, ts=int(late.timestamp())))
     assert journal.recent_trades(1)[0]["exit_reason"] == "time_stop"
+
+
+class TestPendingEntries:
+    """An accepted order is not a filled one.
+
+    _enter registers the trade the moment the OTO order is accepted and the
+    next cycle runs three seconds later, so a marketable limit on a thin
+    name has often not filled yet. Treating "no position" as "the trade
+    closed" journalled a phantom exit at the entry price - the live journal
+    holds an IVF trade open for exactly one poll cycle, exited at its own
+    entry for 0R - and then forgot an order that could still fill, leaving a
+    position with no scale-out, no time stop and no stall exit.
+    """
+
+    def _pending(self, tmp_path, status="new"):
+        bot, broker, journal = make_bot(tmp_path)
+        broker.order_status = status
+        open_ts = int(et(9, 40).timestamp())
+        asyncio.run(bot._enter(a_pick(), ts=open_ts))
+        broker._positions = []                    # nothing filled yet
+        return bot, broker, journal, open_ts
+
+    def _manage(self, bot, at):
+        asyncio.run(bot._manage_open(FakeState({}), now=at,
+                                     ts=int(at.timestamp())))
+
+    def test_an_unfilled_entry_is_not_journalled_as_closed(self, tmp_path):
+        bot, broker, journal, _ = self._pending(tmp_path)
+        self._manage(bot, et(9, 40) + dt.timedelta(seconds=3))
+        assert "HODX" in bot.open_trades          # still working
+        assert journal.recent_trades(5) == []     # nothing closed
+        assert bot.open_trades["HODX"]["filled"] is False
+
+    def test_a_fill_is_adopted_at_the_price_actually_paid(self, tmp_path):
+        bot, broker, journal, _ = self._pending(tmp_path)
+        broker.order_status = "filled"
+        broker.order_fill_price = "5.08"          # 8c of slippage
+        broker._positions = [{"symbol": "HODX", "current_price": 5.08,
+                              "avg_entry_price": "5.08"}]
+
+        self._manage(bot, et(9, 41))
+
+        trade = bot.open_trades["HODX"]
+        assert trade["filled"] is True
+        assert trade["entry"] == pytest.approx(5.08)
+        assert trade["signal_price"] == pytest.approx(5.00)
+        assert journal.trades_today("2026-07-14")[0]["entry"] == pytest.approx(5.08)
+
+    def test_a_rejected_entry_leaves_no_trade_behind(self, tmp_path):
+        bot, broker, journal, _ = self._pending(tmp_path, status="rejected")
+        self._manage(bot, et(9, 40) + dt.timedelta(seconds=3))
+        assert bot.open_trades == {}
+        assert journal.trades_today("2026-07-14") == []   # never happened
+
+    def test_an_entry_that_never_fills_is_cancelled(self, tmp_path):
+        bot, broker, journal, open_ts = self._pending(tmp_path)
+        late = et(9, 40) + dt.timedelta(
+            seconds=CFG.bot_entry_timeout_seconds + 1)
+
+        self._manage(bot, late)
+
+        assert bot.open_trades == {}
+        assert broker.cancelled                   # the order was pulled
+        assert journal.trades_today("2026-07-14") == []
+
+    def test_a_fill_with_no_position_still_records_the_close(self, tmp_path):
+        """Bought and stopped out between two polls - that is a real trade."""
+        bot, broker, journal, _ = self._pending(tmp_path)
+        broker.order_status = "filled"
+        broker.order_fill_price = "5.00"
+        broker.closed_orders = [{"side": "sell", "filled_qty": "50",
+                                 "filled_avg_price": "4.75", "legs": []}]
+
+        self._manage(bot, et(9, 41))
+
+        assert bot.open_trades == {}
+        closed = journal.recent_trades(1)[0]
+        assert closed["exit_price"] == pytest.approx(4.75)
+
+
+class TestCapitalIsSpentInUnits:
+    """A balance holds several $1,000 positions, not one trade for the lot.
+
+    $2,473.74 used to go into a single position risking $123.69, with
+    bot_max_concurrent_positions=1 blocking anything else. It now opens
+    $1,000 + $1,000 + $473 and stops when the cash runs out.
+    """
+
+    def _rows(self, n, price=3.00):
+        return [{"symbol": f"S{i}", "price": price, "rvol": 9.0,
+                 "day_pct": 22.0, "float_shares": 8e6, "has_news": True,
+                 "dist_from_hod": 0.0, "day_high": price,
+                 "changes": {"5": 3.0}, "above_vwap": True,
+                 "setup": {"setup": "micro_pullback",
+                           "stop": round(price * 0.95, 2)}}
+                for i in range(n)]
+
+    def _state(self, rows):
+        class State:
+            latest = {}
+
+            def payload(self, now, require_news=None):
+                return {"hod": {"qualified": rows, "near": []}}
+        return State()
+
+    def test_one_cycle_fills_the_account_in_units(self, tmp_path):
+        bot, broker, _ = make_bot(tmp_path)
+        broker.equity = "2473.74"
+
+        asyncio.run(bot.cycle(self._state(self._rows(4)), et(10, 0)))
+
+        notionals = sorted((t["qty"] * t["entry"]
+                            for t in bot.open_trades.values()), reverse=True)
+        assert len(notionals) == 3          # the fourth had no capital left
+        assert notionals[0] == pytest.approx(999.0, abs=3)
+        assert notionals[1] == pytest.approx(999.0, abs=3)
+        assert notionals[2] == pytest.approx(474.0, abs=3)
+        assert sum(notionals) <= 2473.74
+
+    def test_risk_per_position_stays_50_dollars(self, tmp_path):
+        bot, broker, _ = make_bot(tmp_path)
+        broker.equity = "2473.74"
+        asyncio.run(bot.cycle(self._state(self._rows(2)), et(10, 0)))
+        for trade in bot.open_trades.values():
+            risk = (trade["entry"] - trade["stop"]) * trade["qty"]
+            assert risk == pytest.approx(50.0, abs=1.0)
+
+    def test_a_thousand_dollar_account_still_gets_one_trade(self, tmp_path):
+        bot, broker, _ = make_bot(tmp_path)
+        broker.equity = "1000.00"
+        asyncio.run(bot.cycle(self._state(self._rows(3)), et(10, 0)))
+        assert len(bot.open_trades) == 1
+
+    def test_open_positions_are_subtracted_from_the_budget(self, tmp_path):
+        bot, _, _ = make_bot(tmp_path)
+        bot.bankroll = 2_473.74
+        bot.open_trades["OLD"] = {"qty": 333, "entry": 3.00}
+        assert bot._budget(None) == pytest.approx(1_474.74)
+
+    def test_margin_buying_power_does_not_inflate_the_budget(self, tmp_path):
+        """A paper account reports 4x its balance. We spend our own money."""
+        bot, _, _ = make_bot(tmp_path)
+        bot.bankroll = 2_473.74
+        budget = bot._budget({"equity": "2473.74",
+                              "buying_power": "9894.96"})
+        assert budget == pytest.approx(2_473.74)
+
+    def test_a_tighter_broker_limit_wins(self, tmp_path):
+        bot, _, _ = make_bot(tmp_path)
+        bot.bankroll = 2_473.74
+        budget = bot._budget({"equity": "2473.74", "buying_power": "800"})
+        assert budget == pytest.approx(800.0)
+
+    def test_the_first_account_reading_is_the_baseline(self, tmp_path):
+        """The 3x guard must not measure the first read against the seed."""
+        bot, broker, _ = make_bot(tmp_path)
+        broker.equity = "4000.00"
+        asyncio.run(bot.cycle(self._state([]), et(10, 0)))
+        assert bot.bankroll == pytest.approx(4_000.0)
+        assert bot.status("2026-07-14")["slots"] == 4

@@ -244,3 +244,93 @@ class TestLossesToday:
         journal.record_trade_open(epoch(10, 0), "OPEN", qty=50, entry=5.0,
                                   stop=4.0, targets=[7.0], features=FEATURES)
         assert journal.losses_today("2026-07-14") == 0
+
+
+class TestNearMissUpgrade:
+    """A symbol almost always shows up near before it qualifies.
+
+    The row is UNIQUE(day, symbol), so the near miss was written first and
+    the later qualifying alert was dropped - which is how a journal with six
+    real trades in it came to hold nothing but observed=1 rows, and would
+    have trained the model entirely on setups the bot never buys.
+    """
+
+    def test_a_qualifying_alert_upgrades_the_near_miss(self, journal):
+        near = journal.record_alert(epoch(9, 40), "HODX", 5.00, 0.25,
+                                    FEATURES, setup=None, observed=1)
+        upgraded = journal.record_alert(epoch(9, 55), "HODX", 5.20, 0.26,
+                                        FEATURES, setup="micro_pullback",
+                                        observed=0)
+        assert upgraded == near             # same row, still being graded
+        row = journal.recent_alerts(5)[0]
+        assert row["observed"] == 0
+        assert row["setup"] == "micro_pullback"
+        assert row["price"] == 5.00         # as first spotted, not re-priced
+        assert journal.learning_progress(40)["tradable"] == 0   # not graded yet
+
+    def test_a_near_miss_never_demotes_a_tradable_row(self, journal):
+        journal.record_alert(epoch(9, 40), "HODX", 5.00, 0.25, FEATURES,
+                             setup="flat_top", observed=0)
+        assert journal.record_alert(epoch(9, 55), "HODX", 5.20, 0.26,
+                                    FEATURES, observed=1) is None
+        assert journal.recent_alerts(5)[0]["observed"] == 0
+
+    def test_the_upgraded_row_counts_as_tradable_once_graded(self, journal):
+        aid = journal.record_alert(epoch(10, 0), "HODX", 5.00, 0.15,
+                                   FEATURES, observed=1)
+        journal.record_alert(epoch(10, 5), "HODX", 5.05, 0.15, FEATURES,
+                             observed=0)
+        journal.track_alert(aid, epoch(10, 40), 5.02)     # times out, label 0
+        assert journal.learning_progress(40) == {"labeled": 1, "tradable": 1,
+                                                 "needed": 40}
+
+
+class TestCentTargetGrading:
+    """The label has to be the trade the bot takes.
+
+    Grading on +2R while the bot banks at +20c measured a move it never
+    waits for: 2R against the flat 5% stop is a +10% move, and the position
+    is 65% gone at 20c. The model was being fit to an outcome that never
+    happened.
+    """
+
+    def _journal(self, tmp_path):
+        return Journal(str(tmp_path / "cents.db"), alert_window_minutes=10,
+                       win_target_cents=0.20)
+
+    def test_twenty_cents_wins_where_two_r_would_not_have(self, tmp_path):
+        j = self._journal(tmp_path)
+        # r_dollars 0.25 = a 5% stop on a $5 stock, so +2R is $5.50.
+        aid = j.record_alert(epoch(10, 0), "HODX", 5.00, 0.25, FEATURES)
+        j.track_alert(aid, epoch(10, 2), price=5.21, high=5.22, low=5.05)
+        row = j.recent_alerts(1)[0]
+        assert row["label"] == 1
+        assert j.outcome_rows()[0]["resolved_r"] == pytest.approx(0.8)
+
+    def test_the_same_target_is_worth_more_on_a_cheap_stock(self, tmp_path):
+        j = self._journal(tmp_path)
+        # r_dollars 0.05 = a 5% stop on a $1 stock: 20c is 4R down here.
+        aid = j.record_alert(epoch(10, 0), "PENY", 1.00, 0.05, FEATURES)
+        j.track_alert(aid, epoch(10, 2), price=1.21, high=1.22, low=1.05)
+        assert j.outcome_rows()[0]["resolved_r"] == pytest.approx(4.0)
+
+    def test_the_stop_still_takes_precedence(self, tmp_path):
+        j = self._journal(tmp_path)
+        aid = j.record_alert(epoch(10, 0), "HODX", 5.00, 0.25, FEATURES)
+        j.track_alert(aid, epoch(10, 2), price=5.21, high=5.25, low=4.70)
+        assert j.recent_alerts(1)[0]["label"] == 0
+        assert j.outcome_rows()[0]["resolved_r"] == pytest.approx(-1.0)
+
+    def test_a_move_short_of_the_target_still_times_out(self, tmp_path):
+        j = self._journal(tmp_path)
+        aid = j.record_alert(epoch(10, 0), "HODX", 5.00, 0.25, FEATURES)
+        j.track_alert(aid, epoch(10, 3), price=5.15, high=5.18, low=5.02)
+        assert j.labeled_dataset() == []                 # still open
+        j.track_alert(aid, epoch(10, 12), price=5.10, high=5.12, low=5.05)
+        assert j.recent_alerts(1)[0]["label"] == 0
+
+    def test_without_a_cent_target_the_r_rule_stands(self, tmp_path):
+        j = Journal(str(tmp_path / "r.db"), alert_window_minutes=10)
+        aid = j.record_alert(epoch(10, 0), "HODX", 5.00, 0.25, FEATURES)
+        j.track_alert(aid, epoch(10, 2), price=5.21, high=5.22, low=5.05)
+        assert j.labeled_dataset() == []                 # 20c is not +2R

@@ -87,7 +87,14 @@ class FloatCache:
         self.path = pathlib.Path(cfg.float_cache_path)
         self._data = {}
         if self.path.exists():
-            self._data = json.loads(self.path.read_text(encoding="utf-8"))
+            try:
+                self._data = json.loads(self.path.read_text(encoding="utf-8"))
+            except (ValueError, OSError) as exc:
+                # A half-written cache must not take the session down with
+                # it: this runs during live_loop's setup, outside its error
+                # handling, so the whole scanner died with it. Refetching is
+                # cheap; the file is rebuilt as symbols come back round.
+                print(f"[warn] unreadable float cache, starting empty: {exc}")
 
     def get(self, symbol):
         entry = self._data.get(symbol)
@@ -98,7 +105,11 @@ class FloatCache:
         self._data[symbol] = {"shares": shares, "fetched": now.isoformat(),
                               "answered": bool(answered)}
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self._data), encoding="utf-8")
+        # Whole-file rewrite on every symbol, so write beside it and rename:
+        # a cancelled workflow otherwise leaves a truncated cache behind.
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self._data), encoding="utf-8")
+        os.replace(tmp, self.path)
 
     def is_stale(self, symbol, now=None):
         entry = self._data.get(symbol)

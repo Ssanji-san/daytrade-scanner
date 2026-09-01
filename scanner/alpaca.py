@@ -12,6 +12,14 @@ from .config import Config
 
 MAX_SYMBOLS_PER_REQUEST = 500
 BARS_SYMBOLS_PER_REQUEST = 100
+# Small on purpose. The news endpoint answers newest-first across every
+# symbol asked for at once, and never paginates on its own - so asking for
+# 150 candidates in one 50-article page buries a small cap's premarket
+# catalyst under whatever the megacaps published since. Measured on a real
+# session: one page covered barely two hours of a 24-hour window, with SPY
+# alone taking 15 of the 100 items.
+NEWS_SYMBOLS_PER_REQUEST = 25
+NEWS_MAX_PAGES = 4                  # bounds the free plan's 200 req/min
 
 
 # --- parsers (pure) ---
@@ -173,9 +181,21 @@ class AlpacaClient:
         if start is None:
             start = (dt.datetime.now(dt.timezone.utc)
                      - dt.timedelta(hours=self.cfg.news_max_age_hours)).isoformat()
-        params = {"symbols": ",".join(sorted(symbols)),
-                  "start": start, "limit": limit}
-        if end:
-            params["end"] = end
-        raw = await self._get("/v1beta1/news", params)
-        return parse_news(raw)
+        items = []
+        symbols = sorted(symbols)
+        for i in range(0, len(symbols), NEWS_SYMBOLS_PER_REQUEST):
+            chunk = symbols[i:i + NEWS_SYMBOLS_PER_REQUEST]
+            token = None
+            for _ in range(NEWS_MAX_PAGES):
+                params = {"symbols": ",".join(chunk), "start": start,
+                          "limit": limit}
+                if end:
+                    params["end"] = end
+                if token:
+                    params["page_token"] = token
+                raw = await self._get("/v1beta1/news", params)
+                items.extend(parse_news(raw))
+                token = raw.get("next_page_token")
+                if not token:
+                    break
+        return items

@@ -2,7 +2,9 @@
 
 Planted actors (asserted in tests/test_demo.py):
   MOVR  - spikes 10% in the final 5 minutes -> tops the rolling-gainers panel
-  HODX  - $5.50 low-float (8M) runner at high of day with news -> HOD qualified
+  HODX  - low-float (8M) $3 runner at high of day with news -> HOD qualified,
+          and it flags before it breaks out, so the pullback entry has
+          something to fire on
   NEARX - passes everything except relative volume -> dimmed near list
 The rest are believable filler. Timestamps anchor to "now" so the demo
 always looks live regardless of when it is run.
@@ -11,6 +13,7 @@ import datetime as dt
 
 from .config import Config
 from .history import ET
+from .trading.strategy import position_slots
 
 MINUTES = 25
 STEP_SECONDS = 15
@@ -147,6 +150,10 @@ def build_demo_bot_status(cfg: Config, now=None):
     return {
         "enabled": True, "error": None,
         "bankroll": cfg.bot_bankroll,
+        "position_dollars": cfg.bot_position_dollars,
+        "slots": position_slots(cfg.bot_bankroll, cfg),
+        "target_cents": (cfg.bot_scalp_target_cents
+                         if cfg.bot_scalp_mode else None),
         "trades_today": len(today), "cap": cfg.bot_max_trades_per_day,
         "day_pnl": day_pnl,
         "open": [{"symbol": "MOVR", "qty": 22, "entry": 11.02,

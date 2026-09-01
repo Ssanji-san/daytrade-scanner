@@ -119,9 +119,21 @@ class TestCaps:
                  "setup": {"setup": "micro_pullback", "stop": 4.85}}
                 for i in range(n)]
 
-    def test_never_more_than_the_concurrency_cap(self, sim):
+    def test_the_account_runs_out_before_the_concurrency_cap(self, sim):
+        """$2,500 buys two $1,000 positions and a $500 slice, then stops."""
         sim.enter(et(10, 0), int(et(10, 0).timestamp()), self._rows(10))
-        assert len(sim.open) == CFG.bot_max_concurrent_positions
+        assert len(sim.open) == 3
+        spent = sum(p.qty * p.entry for p in sim.open.values())
+        assert spent <= CFG.bot_bankroll
+        assert spent == pytest.approx(CFG.bot_bankroll, abs=15)
+
+    def test_never_more_than_the_concurrency_cap(self, sim, tmp_path):
+        """With capital to spare, the ceiling is what binds."""
+        cfg = replace(CFG, bot_bankroll=100_000.0)
+        j = Journal(str(tmp_path / "big.db"), cfg.bot_alert_window_minutes)
+        rich = Simulator(cfg, j, "2026-08-12", HeuristicScorer(), 0.0)
+        rich.enter(et(10, 0), int(et(10, 0).timestamp()), self._rows(10))
+        assert len(rich.open) == cfg.bot_max_concurrent_positions
 
     def test_four_losses_end_the_day(self, sim):
         sim.losses = CFG.bot_max_losses_per_day
@@ -212,15 +224,61 @@ class TestScalpExits:
         # The trade can no longer lose: the stop came up to entry.
         assert pos.stop == pytest.approx(pos.entry)
 
-    def test_a_scaled_trade_that_reverses_still_makes_money(self, sim):
-        _scalp_open(sim, price=3.00)
+    def test_the_runner_trails_and_keeps_part_of_the_run(self, sim):
+        """The point of the trail: a reversal no longer costs the whole run.
+
+        A fixed break-even stop handed back every cent above entry the moment
+        price came off. The trail rides up behind the high, so the runner
+        keeps what it made instead of scratching.
+        """
+        pos = _scalp_open(sim, price=3.00)
         sim.manage(et(9, 42), int(et(9, 42).timestamp()),
                    {"HODX": candle(3.05, 3.18, h=3.25, l=3.04)})
+        assert pos.trail_pct == pytest.approx(5.0)      # full width down here
         sim.manage(et(9, 44), int(et(9, 44).timestamp()),
                    {"HODX": candle(3.10, 2.95, h=3.12, l=2.90)})
+
         trade = sim.journal.all_trades()[0]
-        assert trade["exit_reason"] == "breakeven"
-        assert trade["pnl"] > 0                  # the banked 216 shares paid
+        assert trade["exit_reason"] == "trailing"
+        # 5% under the 3.25 high, not the 3.00 entry - and well clear of the
+        # 2.90 the bar actually traded down to.
+        assert pos.legs[-1] == (117, pytest.approx(3.09))
+        assert trade["pnl"] > 0
+
+    def test_the_runner_can_never_book_below_the_entry(self, sim):
+        """At $5 a flat 5% trail would sit under the entry. It is capped."""
+        pos = _scalp_open(sim, price=5.00)
+        sim.manage(et(9, 42), int(et(9, 42).timestamp()),
+                   {"HODX": candle(5.05, 5.18, h=5.20, l=5.04)})
+        assert pos.trail_pct == pytest.approx(3.84)     # capped, not 5%
+        sim.manage(et(9, 44), int(et(9, 44).timestamp()),
+                   {"HODX": candle(5.10, 4.60, h=5.12, l=4.55)})
+
+        assert pos.legs[-1][1] >= pos.entry             # break-even at worst
+        assert sim.journal.all_trades()[0]["r_multiple"] > 0
+
+    def test_a_banked_runner_is_exempt_from_the_clock(self, sim):
+        """The clock is for a position that has not paid yet."""
+        open_ts = int(et(9, 40).timestamp())
+        _scalp_open(sim, price=3.00, ts=open_ts)
+        sim.manage(et(9, 41), int(et(9, 41).timestamp()),
+                   {"HODX": candle(3.05, 3.18, h=3.25, l=3.04)})
+        late = et(9, 40) + dt.timedelta(minutes=CFG.bot_time_stop_minutes + 5)
+        sim.manage(late, int(late.timestamp()),
+                   {"HODX": candle(3.30, 3.40, h=3.45, l=3.35)})
+        assert "HODX" in sim.open                       # still riding
+
+    def test_the_fixed_break_even_stop_is_still_reachable(self, sim, tmp_path):
+        cfg = replace(CFG, bot_scalp_runner_trail=False)
+        j = Journal(str(tmp_path / "be.db"), cfg.bot_alert_window_minutes)
+        flat = Simulator(cfg, j, "2026-08-12", HeuristicScorer(), 0.0)
+        pos = _scalp_open(flat, price=3.00, cfg=cfg)
+        flat.manage(et(9, 42), int(et(9, 42).timestamp()),
+                    {"HODX": candle(3.05, 3.18, h=3.25, l=3.04)})
+        assert pos.trail_pct is None
+        flat.manage(et(9, 44), int(et(9, 44).timestamp()),
+                    {"HODX": candle(3.10, 2.95, h=3.12, l=2.90)})
+        assert j.all_trades()[0]["exit_reason"] == "breakeven"
 
     def test_taking_the_whole_position_at_the_target(self, sim, tmp_path):
         cfg = replace(CFG, bot_scalp_scale_out_pct=100.0)
@@ -260,7 +318,7 @@ class TestScalpExits:
         assert trade["exit_reason"] == "stop"
         assert trade["r_multiple"] == pytest.approx(-1.0, abs=0.02)
 
-    def test_ten_minutes_is_the_maximum_hold(self, sim):
+    def test_ten_minutes_is_the_maximum_hold_before_it_pays(self, sim):
         open_ts = int(et(9, 40).timestamp())
         _scalp_open(sim, price=3.00, ts=open_ts)
         late = et(9, 40) + dt.timedelta(minutes=CFG.bot_time_stop_minutes)

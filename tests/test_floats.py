@@ -151,3 +151,27 @@ class TestRetryPolicy:
         cache.put("CYCU", 25_800_000, now=now, answered=True)
         assert cache.get("CYCU") == 25_800_000
         assert not cache.is_stale("CYCU", now + dt.timedelta(days=3))
+
+
+class TestACorruptCacheDoesNotKillTheSession:
+    """The float cache is read during live_loop's setup, outside its
+    try/except - so a half-written file took the whole scanner down with it.
+    The file is rewritten in full on every symbol, which a cancelled cloud
+    workflow can interrupt.
+    """
+
+    def test_unreadable_json_starts_empty_instead_of_raising(self, tmp_path):
+        path = tmp_path / "floats.json"
+        path.write_text('{"AAPL": {"shares": 15000', encoding="utf-8")
+        cfg = Config(float_cache_path=str(path))
+
+        cache = FloatCache(cfg)                    # must not raise
+
+        assert cache.get("AAPL") is None
+        assert cache.is_stale("AAPL")              # so it gets refetched
+
+    def test_a_write_leaves_no_partial_file_behind(self, tmp_path):
+        cfg = Config(float_cache_path=str(tmp_path / "floats.json"))
+        cache = FloatCache(cfg)
+        cache.put("AAPL", 15_000_000)
+        assert [p.name for p in tmp_path.iterdir()] == ["floats.json"]

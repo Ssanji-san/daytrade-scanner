@@ -13,6 +13,7 @@ import asyncio
 import datetime as dt
 import json
 import pathlib
+import traceback
 
 from .config import DEFAULT, Config
 from .main import live_loop
@@ -25,15 +26,25 @@ WRITE_SECONDS = 30
 
 
 async def status_writer(ctx, cfg: Config):
+    """Publish the dashboard snapshot every WRITE_SECONDS, come what may.
+
+    One unhandled exception used to kill this task outright - report_death
+    printed a line and the session then ran for hours behind a dashboard
+    frozen at whatever it last wrote. The scanner and bot loops already
+    survive their own errors; this one has to as well.
+    """
     STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
     while True:
-        now = dt.datetime.now(dt.timezone.utc)
-        payload = ctx["state"].payload(now)
-        payload["mode"] = "cloud"
-        payload["now"] = int(now.timestamp())
-        payload["bot"] = ctx.get("bot_status")
-        STATUS_PATH.write_text(json.dumps(payload, separators=(",", ":")),
-                               encoding="utf-8")
+        try:
+            now = dt.datetime.now(dt.timezone.utc)
+            payload = ctx["state"].payload(now)
+            payload["mode"] = "cloud"
+            payload["now"] = int(now.timestamp())
+            payload["bot"] = ctx.get("bot_status")
+            STATUS_PATH.write_text(json.dumps(payload, separators=(",", ":")),
+                                   encoding="utf-8")
+        except Exception:
+            traceback.print_exc()
         await asyncio.sleep(WRITE_SECONDS)
 
 

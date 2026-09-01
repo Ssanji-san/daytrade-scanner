@@ -16,10 +16,10 @@ Two limits worth knowing:
 
 * The search can only see rows the replay journalled. That is why the backtest
   captures a wider near-list than the live dashboard does.
-* Scoring is **expectancy in R**, not win rate. Under a 20% stop roughly
-  85% of alerts end on the time stop rather than at a target, so win rate
-  measures the rare tail while the money is in the scratch distribution. A
-  gate set that raises win rate and lowers expectancy is worse, not better.
+* Scoring is **expectancy in R**, not win rate. Most alerts end on the time
+  stop rather than at a target, so win rate measures the rare tail while the
+  money is in the scratch distribution. A gate set that raises win rate and
+  lowers expectancy is worse, not better.
 * It is not a P&L simulation. **Spread and slippage are not modelled**, and
   they are the same order of magnitude as the edge being measured - so a
   positive result here is a reason to look closer, never a reason to trade.
@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scanner.config import DEFAULT                            # noqa: E402
 # Reuse the replay's own outcome logic rather than restating it: two
 # definitions of "what was this trade worth" would drift apart silently.
-from scripts.backtest import outcome, timeout_r               # noqa: E402
+from scripts.backtest import alert_r                          # noqa: E402
 
 # Deliberately coarse. A finer grid does not find a better answer on this much
 # data, it just finds a luckier one.
@@ -51,21 +51,6 @@ GRID = {
 }
 
 
-def row_r(row):
-    """What this alert was worth in R under the bot's actual exit policy.
-
-    Half banked at +2R with the rest riding, a stop-out losing 1R, and a
-    timeout worth whatever it was actually closed at.
-    """
-    kind = outcome(row)
-    if kind == "stopped":
-        return -1.0
-    if kind == "timeout":
-        return timeout_r(row)
-    ran = (row["mfe"] / row["r_dollars"]) if row["r_dollars"] else 2.0
-    return 1.0 + 0.5 * max(2.0, ran - 1.0)
-
-
 def load(path):
     """(day, features, R) for every graded alert."""
     db = sqlite3.connect(path)
@@ -77,7 +62,7 @@ def load(path):
             features = json.loads(r["features"])
         except ValueError:
             continue
-        rows.append((r["day"], features, row_r(dict(r))))
+        rows.append((r["day"], features, alert_r(dict(r), DEFAULT)))
     return rows
 
 
@@ -207,8 +192,13 @@ def main():
               "was never tuned on.")
         print("     Still not proof: spread and slippage are unmodelled and "
               "are the same")
-        print(f"     size as this edge - {hexp * 100 / 5:.1f}% of notional at "
-              "a 20% stop.")
+        # Derived, not hardcoded: this line used to assume a 20% stop and
+        # overstated the tolerable round-trip cost fourfold once the stop
+        # became 5%.
+        notional_pct = (100.0 * hexp * DEFAULT.bot_risk_pct
+                        / DEFAULT.bot_max_notional_pct)
+        print(f"     size as this edge - {notional_pct:.2f}% of notional at a "
+              f"{DEFAULT.bot_stop_pct:.0f}% stop.")
 
     # If the train ranking cannot pick the holdout winner, the ranking is
     # mostly noise - which is the most useful thing a sweep can tell you.
