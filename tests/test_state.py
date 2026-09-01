@@ -221,8 +221,8 @@ def test_a_flag_takes_precedence_over_the_opening_range():
     for i in range(5):
         when = t(9, 30 + i)
         state.ingest(when, {"GAPR": _gapper_snap(15.00 + i * 0.10, when)})
-    dip = t(9, 36)                             # pulls back, then makes a high
-    state.ingest(dip, {"GAPR": _gapper_snap(15.20, dip)})
+    dip = t(9, 36)                             # shallow dip, then a new high
+    state.ingest(dip, {"GAPR": _gapper_snap(15.35, dip)})
     breaking = t(9, 37)
     state.ingest(breaking, {"GAPR": _gapper_snap(15.60, breaking)})
 

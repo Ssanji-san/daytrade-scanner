@@ -103,13 +103,18 @@ def test_a_full_session_enters_scales_and_stalls_out(rig):
     assert "HODX" in bot.open_trades, "the bot did not take the trade"
     trade = bot.open_trades["HODX"]
     entry = trade["entry"]
-    assert trade["qty"] * entry == pytest.approx(1000, abs=15), "not the full account"
-    assert (entry - trade["stop"]) * trade["qty"] == pytest.approx(50, abs=2), "risk is not $50"
-    assert trade["scale_out"] == pytest.approx(round(entry + 0.20, 2)), "target is not +20c"
+    assert trade["qty"] * entry == pytest.approx(1000, abs=15), "not one unit"
+    # The stop is the pullback low, so risk is whatever that setup costs -
+    # here about $33 of the $50 the unit allows. A tight stop buys a cheaper
+    # trade, not a bigger one: the notional cap binds first.
+    risk = (entry - trade["stop"]) * trade["qty"]
+    assert 0 < risk < 50, f"a technical stop should cost under the unit, got {risk}"
+    assert trade["scale_out"] == pytest.approx(
+        round(entry + 2 * (entry - trade["stop"]), 2)), "target is not 2R"
     orders = [o for o in broker.orders if o["side"] == "buy"]
     assert len(orders) == 1 and orders[0]["order_class"] == "oto", "entry must be one OTO order"
 
-    # --- +20c: bank 65%, runner stop to break-even ---
+    # --- at the 2R target: bank 65%, runner rides a capped trail ---
     broker._positions = [{"symbol": "HODX", "current_price": entry + 0.22}]
     later = et(9, 45)
     cum += 90_000
