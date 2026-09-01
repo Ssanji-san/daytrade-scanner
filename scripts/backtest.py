@@ -27,6 +27,7 @@ from scanner.backtest import fetch, replay                    # noqa: E402
 from scanner.backtest.simulate import Simulator               # noqa: E402
 from scanner.config import DEFAULT                            # noqa: E402
 from scanner.floats import FloatCache                         # noqa: E402
+from scanner.history import ET                                # noqa: E402
 from scanner.trading.journal import WIN_R, Journal            # noqa: E402
 from scanner.trading.model import HeuristicScorer, train      # noqa: E402
 
@@ -281,7 +282,8 @@ def report(journal, cfg):
 
 # A fixed-cent target behaves completely differently across the price band,
 # so the aggregate can hide a strategy that only works in one part of it.
-PRICE_BUCKETS = ((0.0, 1.50), (1.50, 2.50), (2.50, 3.50), (3.50, 5.00))
+PRICE_BUCKETS = ((0.0, 1.50), (1.50, 2.50), (2.50, 3.50), (3.50, 5.00),
+                 (5.00, 10.00), (10.00, 20.00), (20.00, float("inf")))
 
 
 def _bucket_report(rows, cfg):
@@ -301,6 +303,29 @@ def _bucket_report(rows, cfg):
         wins = sum(1 for x in rs if x > 0)
         pnl = sum(r["pnl"] or 0.0 for r in block)
         print(f"[trades] {f'${low:.2f}-{high:.2f}':>12} {len(block):>5} "
+              f"{wins / len(block):>5.1%} {sum(rs) / len(rs):>+7.2f}R "
+              f"{pnl:>+8.0f}")
+
+
+def _hour_report(rows, cfg):
+    """Results by entry hour, in ET.
+
+    Ross stops trading at 10:00 because his own P&L told him to. This is how
+    the replay says whether the same is true of this setup, rather than
+    importing his conclusion.
+    """
+    by_hour = {}
+    for row in rows:
+        by_hour.setdefault(dt.datetime.fromtimestamp(row["ts"], ET).hour,
+                           []).append(row)
+    print(f"[trades] {'entry hr':>12} {'n':>5} {'win':>6} {'mean R':>8} "
+          f"{'$':>9}")
+    for hour in sorted(by_hour):
+        block = by_hour[hour]
+        rs = [r["r_multiple"] or 0.0 for r in block]
+        wins = sum(1 for x in rs if x > 0)
+        pnl = sum(r["pnl"] or 0.0 for r in block)
+        print(f"[trades] {f'{hour:02d}:00 ET':>12} {len(block):>5} "
               f"{wins / len(block):>5.1%} {sum(rs) / len(rs):>+7.2f}R "
               f"{pnl:>+8.0f}")
 
@@ -328,8 +353,16 @@ def trade_report(journal, cfg):
     print(f"[trades] win {wins / len(rows):.1%}  expectancy {mean:+.3f}R "
           f"+/-{se:.3f}  total {pnl:+,.0f} dollars")
     if se:
-        verdict = ("positive beyond 2 SE" if mean > 2 * se
-                   else "inside the noise")
+        # Three outcomes, not two. Testing only `mean > 2*se` reported a
+        # -0.520R result at t=-3.24 as "inside the noise", which is exactly
+        # backwards - that is a reliably losing strategy, and the most
+        # useful thing a backtest can tell you.
+        if mean > 2 * se:
+            verdict = "positive beyond 2 SE"
+        elif mean < -2 * se:
+            verdict = "NEGATIVE beyond 2 SE - this loses money"
+        else:
+            verdict = "inside the noise"
         print(f"[trades] t={mean / se:.2f} -> {verdict}")
     by_reason = {}
     for row in rows:
@@ -345,6 +378,7 @@ def trade_report(journal, cfg):
         print(f"[trades]   {row['setup'] or 'none':16} n={row['n']:<4} "
               f"wins={row['wins']} exp_r={row['exp_r']}")
     _bucket_report(rows, cfg)
+    _hour_report(rows, cfg)
     # The edge has to clear the spread, and the spread is not modelled.
     risk = cfg.bot_position_dollars * cfg.bot_risk_pct / 100
     notional = cfg.bot_position_dollars * cfg.bot_max_notional_pct / 100
