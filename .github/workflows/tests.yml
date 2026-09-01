@@ -1,0 +1,29 @@
+name: tests
+
+# The suite has only ever run on a developer's machine. That is fine until the
+# machine is not available - and this project is deliberately built to run
+# without one, so the tests have to as well.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # No secrets: every test runs against fixtures and fake brokers. If one
+      # ever needs a key, that is the bug, not a missing secret.
+      - name: Run the suite
+        run: python -m pytest -q
