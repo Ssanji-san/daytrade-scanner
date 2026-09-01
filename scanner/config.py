@@ -164,21 +164,27 @@ class Config:
     bot_limit_slippage_pct: float = 0.3  # marketable limit above the ask
     bot_scale_out_r: float = 2.0         # bank half here
     bot_runner_trail_pct: float = 5.0    # native trailing-stop width for the runner
-    # 4 hours, not 20 minutes. A 20% stop implies a +40% target, and almost
-    # nothing moves 40% in 20 minutes - 186 of 414 replayed losses (45%) were
-    # the clock expiring, not the stop being hit. Last entry 11:30 + 4h =
-    # 15:30, still inside the 15:50 flatten.
-    bot_time_stop_minutes: int = 10      # scalp: in and out
+    # Scalping: in and out. Last entry 12:30 + 10m = 12:40, long before the
+    # 15:50 flatten. Note this fires far more often than the +20c target -
+    # both live scalps so far ended on the stall or the stop, neither on
+    # the target.
+    bot_time_stop_minutes: int = 10
     # The grading horizon must match the holding horizon, or the journal
     # labels a trade a loss while the bot is still holding it.
     bot_alert_window_minutes: int = 10
     # 09:30, not 09:35: the first five minutes are often the best move of the
     # day on a gapper, and the opening-range break lives in exactly that slot.
     bot_window_open: str = "09:30"       # ET; no entries before/after the window
-    # The first 30 minutes. That is where the opening drive happens and
-    # where these setups actually appear; entries after it were a different
-    # market from the one this is selected for.
-    bot_window_close: str = "10:30"
+    # Three hours, not one. A single hour fires roughly once every ten
+    # sessions; Ross takes several trades a day off this setup, and the
+    # window was the only lever that adds trades without relaxing a
+    # criterion. Three and not four because the runner is the ceiling:
+    # cron-job.org starts the session at 07:30 ET and GitHub kills a job at
+    # six hours, so a 12:30 close (session to 12:45 = 5h15m) fits and a
+    # 13:30 close does not. Watch open_pct: it measures from the 09:30
+    # bell, so a midday row "up 5% since the open" may be riding a move
+    # hours old. If the late entries are the losing ones, bring this back.
+    bot_window_close: str = "12:30"
     bot_flatten_time: str = "15:50"      # ET; close everything before the bell
     # 0 = disabled. The day now ends on a loss COUNT
     # (bot_max_losses_per_day), not a dollar figure. Worth knowing: a count
@@ -204,7 +210,7 @@ class Config:
     # on afternoons the bot never trades would teach it a market it does not
     # see - the same train/serve skew that argues against SIP training data.
     backtest_open_et: str = "07:30"     # cron-job.org starts the session here
-    backtest_close_et: str = "12:15"    # session.py --until-et
+    backtest_close_et: str = "12:30"    # session.py --until-et
     # Simulated results live in their own journal. Mixing them into the live
     # one would let a biased replay quietly poison what the bot has learned
     # from real sessions, with no way to tell the two apart afterwards.

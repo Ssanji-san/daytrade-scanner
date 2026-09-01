@@ -145,7 +145,7 @@ def test_a_full_session_enters_scales_and_stalls_out(rig):
 def test_nothing_is_entered_outside_the_window(rig):
     bot, broker, journal, state = rig
     now, _ = a_session(state, int(et(9, 20).timestamp()))
-    late = et(11, 0)                       # past the 10:30 cutoff
+    late = et(12, 31)                      # past the 12:30 cutoff
     asyncio.run(bot.cycle(state, late))
     assert bot.open_trades == {}
     assert broker.orders == []

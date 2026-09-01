@@ -26,13 +26,13 @@ def ok_kwargs(**overrides):
 
 class TestWindow:
     def test_window_edges(self):
-        # Opens on the bell and shuts after thirty minutes: the opening
-        # first hour is the volatile one this strategy selects for, and
-        # entries after it are a different market.
+        # Opens on the bell, shuts three hours later. Both edges are
+        # inclusive, so 12:30 still admits an entry and 12:31 does not.
         assert not in_window(et(9, 29), CFG)
         assert in_window(et(9, 30), CFG)
-        assert in_window(et(10, 30), CFG)
-        assert not in_window(et(10, 31), CFG)
+        assert in_window(et(10, 31), CFG)   # was the old close
+        assert in_window(et(12, 30), CFG)
+        assert not in_window(et(12, 31), CFG)
 
     def test_handles_other_timezones(self):
         utc_10et = et(10, 0).astimezone(dt.timezone.utc)
@@ -48,7 +48,7 @@ class TestShouldEnter:
         ({"price": 0.50}, "price"),
         ({"price": 25.0}, "price"),
         ({"now": et(9, 20)}, "window"),
-        ({"now": et(12, 0)}, "window"),
+        ({"now": et(12, 31)}, "window"),
         ({"trades_today": 10}, "daily_cap"),
         ({"losses_today": 4}, "loss_cap"),
         ({"open_positions": 4}, "concurrency"),
