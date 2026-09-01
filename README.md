@@ -54,7 +54,7 @@ anything else. Rules (all tunable in `scanner/config.py`):
 It trades Ross Cameron's cents-on-the-dollar scalp: take the 20c, bank
 most of it, let the rest ride.
 
-- $1–$5 symbols only, entries **09:30–10:30 ET**, max 10 trades/day, never
+- $1–$5 symbols only, entries **09:30–12:30 ET**, max 10 trades/day, never
   the same symbol twice in a day
 - Entry is the **pullback, not the high**: one to three red candles off a
   swing high, then a break of the prior candle's high — or, for a gapper
@@ -106,7 +106,7 @@ You don't need your PC on: two workflows run the whole thing on GitHub's
 servers every weekday.
 
 - **trading-session** starts before the open, scans + trades until
-  12:15 ET, and pushes the journal + a status snapshot every ~10 min.
+  12:45 ET, and pushes the journal + a status snapshot every ~10 min.
 - **flatten** runs near 15:50 ET as a safety net: reconciles fills and
   closes anything still open. (Bracket stops/targets live on Alpaca's
   servers, so exits work even with no process running.)
@@ -127,7 +127,7 @@ One-time setup:
 ### Premarket observation
 
 The session may be started before the bell (cron-job.org fires it at 07:30
-ET). No separate mode is needed: the bot's entry window is 09:30-10:30 ET, so
+ET). No separate mode is needed: the bot's entry window is 09:30-12:30 ET, so
 premarket it scans and journals but **cannot** place an order. Those rows land
 in the alert journal as observation-only data, which is what a premarket
 strategy would have to be trained on - the bot has never seen that regime, so
