@@ -164,7 +164,7 @@ def _open_a_trade(bot, ts, price=5.0, qty=50):
 def test_scale_out_banks_half_and_starts_trailing(tmp_path):
     # The swing path - scale at +2R, trail the runner. Still reachable by
     # configuration, though the live default now scalps.
-    bot, broker, _ = make_bot(tmp_path, bot_scalp_mode=False,
+    bot, broker, _ = make_bot(tmp_path, bot_runner_mode=False,
                               bot_stop_pct=3.0, bot_min_stop_pct=1.0,
                               bot_max_stop_pct=6.0)
     trade = _open_a_trade(bot, ts=int(et(10, 0).timestamp()))
@@ -198,7 +198,7 @@ def test_time_stop_cuts_a_stalled_trade_before_scale_out(tmp_path):
 
 
 def test_runner_stays_open_past_time_stop(tmp_path):
-    bot, broker, _ = make_bot(tmp_path, bot_scalp_mode=False,
+    bot, broker, _ = make_bot(tmp_path, bot_runner_mode=False,
                               bot_time_stop_minutes=20)
     open_ts = int(et(10, 0).timestamp())
     trade = _open_a_trade(bot, ts=open_ts)
@@ -384,7 +384,7 @@ def test_a_banked_runner_outlives_the_time_stop(tmp_path):
 
 
 def test_the_fixed_break_even_stop_is_still_reachable(tmp_path):
-    bot, broker, _ = make_bot(tmp_path, bot_scalp_runner_trail=False)
+    bot, broker, _ = make_bot(tmp_path, bot_runner_uses_trail=False)
     trade = _open_a_trade(bot, ts=int(et(9, 40).timestamp()))
     broker._positions = [{"symbol": "HODX", "current_price": 5.22}]
 

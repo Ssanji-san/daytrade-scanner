@@ -152,8 +152,7 @@ def build_demo_bot_status(cfg: Config, now=None):
         "bankroll": cfg.bot_bankroll,
         "position_dollars": cfg.bot_position_dollars,
         "slots": position_slots(cfg.bot_bankroll, cfg),
-        "target_cents": (cfg.bot_scalp_target_cents
-                         if cfg.bot_scalp_mode else None),
+        "target_r": cfg.bot_scale_out_r,
         "trades_today": len(today), "cap": cfg.bot_max_trades_per_day,
         "day_pnl": day_pnl,
         "open": [{"symbol": "MOVR", "qty": 22, "entry": 11.02,

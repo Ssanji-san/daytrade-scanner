@@ -25,6 +25,51 @@ def vwap(bars):
     return numerator / denominator if denominator else None
 
 
+def ema(bars, period):
+    """Exponential moving average of the closes, or None if too few bars."""
+    closes = [b["c"] for b in bars if b.get("c") is not None]
+    if len(closes) < period:
+        return None
+    weight = 2.0 / (period + 1)
+    value = sum(closes[:period]) / period
+    for close in closes[period:]:
+        value = close * weight + value * (1 - weight)
+    return value
+
+
+def topping_tail(bar, cfg):
+    """A large upper wick: price was pushed up and sold straight back down.
+
+    Bearish wherever it appears - it says the sellers took the level back.
+    """
+    if not bar:
+        return False
+    high, low = bar.get("h"), bar.get("l")
+    open_, close = bar.get("o"), bar.get("c")
+    if high is None or low is None or open_ is None or close is None:
+        return False
+    span = high - low
+    if span <= 0:
+        return False
+    return 100.0 * (high - max(open_, close)) / span >= cfg.setup_topping_tail_pct
+
+
+def _volume_favours_buyers(move, pullback):
+    """Heavier volume driving the move up than coming back on the pullback.
+
+    Averaged per candle rather than summed: the move is usually several bars
+    and the pullback one to three, so totals would compare different things.
+    Nothing to compare means nothing to object to.
+    """
+    ups = [b.get("v") or 0 for b in move
+           if (b.get("c") or 0) >= (b.get("o") or 0)]
+    downs = [b.get("v") or 0 for b in pullback
+             if (b.get("c") or 0) < (b.get("o") or 0)]
+    if not ups or not downs:
+        return True
+    return sum(ups) / len(ups) > sum(downs) / len(downs)
+
+
 def detect_opening_range_break(opening_range, price, gap_pct, cfg):
     """The gap-and-go trigger: a gapper breaking its opening range.
 
@@ -74,6 +119,29 @@ def detect_pullback(bars, price, cfg):
     depth = 100.0 * (swing_high - pullback_low) / swing_high
     if not cfg.setup_min_pullback_pct <= depth <= cfg.setup_max_pullback_pct:
         return None                      # noise, or the move already broke down
+
+    # Give back more than half the move that produced it and the pullback is
+    # a failure, not a flag.
+    move = window[:swing_idx + 1]
+    lows = [b["l"] for b in move if b.get("l") is not None]
+    move_low = min(lows) if lows else None
+    if move_low is not None and swing_high > move_low:
+        retrace = 100.0 * (swing_high - pullback_low) / (swing_high - move_low)
+        if retrace > cfg.setup_max_retrace_pct:
+            return None
+
+    if cfg.require_rising_volume and not _volume_favours_buyers(move, after):
+        return None                      # the sellers are the ones with size
+
+    if cfg.require_ema:
+        # Breaking the 9 EMA invalidates the flag, as breaking VWAP does.
+        trend = ema(bars, cfg.setup_ema_period)
+        if trend is None or pullback_low < trend:
+            return None
+
+    if cfg.setup_topping_tail_pct and any(topping_tail(b, cfg)
+                                          for b in window[swing_idx:]):
+        return None                      # sellers took the high back
 
     trigger = after[-1]["h"]
     if price <= trigger:

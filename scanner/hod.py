@@ -33,6 +33,11 @@ def _criteria(state, cfg: Config):
     if cfg.hod_min_volume:
         checks.insert(1, ("volume",
                           (state["day_volume"] or 0) >= cfg.hod_min_volume))
+    if cfg.hod_min_gap_pct:
+        # One of the five demand pillars: a stock that opened above the prior
+        # close usually did it on overnight news.
+        checks.append(("gap",
+                       (state.get("gap_pct") or 0) >= cfg.hod_min_gap_pct))
     if cfg.require_vwap:
         # Long only above VWAP - below it the move is a fade, not a trend.
         checks.append(("vwap", bool(state.get("above_vwap"))))

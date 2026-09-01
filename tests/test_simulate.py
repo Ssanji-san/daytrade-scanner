@@ -18,7 +18,7 @@ ET = ZoneInfo("America/New_York")
 CFG = Config()
 # The live config scalps. These exercise the swing exits - scale at +2R,
 # trail the runner - which stay reachable by configuration.
-SWING = replace(CFG, bot_scalp_mode=False, bot_time_stop_minutes=20)
+SWING = replace(CFG, bot_runner_mode=False, bot_time_stop_minutes=20)
 
 
 def et(hour, minute):
@@ -269,7 +269,7 @@ class TestScalpExits:
         assert "HODX" in sim.open                       # still riding
 
     def test_the_fixed_break_even_stop_is_still_reachable(self, sim, tmp_path):
-        cfg = replace(CFG, bot_scalp_runner_trail=False)
+        cfg = replace(CFG, bot_runner_uses_trail=False)
         j = Journal(str(tmp_path / "be.db"), cfg.bot_alert_window_minutes)
         flat = Simulator(cfg, j, "2026-08-12", HeuristicScorer(), 0.0)
         pos = _scalp_open(flat, price=3.00, cfg=cfg)
@@ -281,7 +281,7 @@ class TestScalpExits:
         assert j.all_trades()[0]["exit_reason"] == "breakeven"
 
     def test_taking_the_whole_position_at_the_target(self, sim, tmp_path):
-        cfg = replace(CFG, bot_scalp_scale_out_pct=100.0)
+        cfg = replace(CFG, bot_bank_pct=100.0)
         j = Journal(str(tmp_path / "full.db"), cfg.bot_alert_window_minutes)
         full = Simulator(cfg, j, "2026-08-12", HeuristicScorer(), 0.0)
         _scalp_open(full, price=3.00, cfg=cfg)

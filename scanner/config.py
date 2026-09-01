@@ -22,13 +22,13 @@ class Config:
     gainer_rows: int = 20
 
     # --- scanner 2: HOD momentum (Ross Cameron's five criteria) ---
-    hod_min_price: float = 1.0          # $1-$5, matching the bot's band
-    hod_max_price: float = 5.0
+    hod_min_price: float = 1.0          # $1-$20, matching the bot's band
+    hod_max_price: float = 20.0
     # Watched but never bought. Rows priced above hod_max_price and up to
     # here are graded into the training set with "price" among their failed
     # criteria, so the model learns what a $5-10 mover does without a cent
     # being risked on one. 0 means observe only what can be traded.
-    hod_observe_max_price: float = 10.0
+    hod_observe_max_price: float = 25.0
     # 50M, not Ross's 20M. Across 61 replayed sessions of the whole market
     # only 5 rows cleared all the gates at once, which is not enough trades
     # to learn from. These four numbers are loosened together and measured
@@ -61,6 +61,10 @@ class Config:
     # than one that gapped overnight and has drifted since.
     hod_min_open_pct: float = 5.0
     hod_require_news: bool = False      # UI toggle; badge always shown
+    # Gapping up is one of the five demand pillars: a stock opening above the
+    # prior close usually did so on overnight news. 0 disables. This is a
+    # GATE, so it costs trades - measure it in the sweep before keeping it.
+    hod_min_gap_pct: float = 2.0
     # "Near the high", not "at the high". The entry is the pullback, and a
     # healthy flag pulls back 2-5% - a 1% gate rejected most of them and
     # only let the trade through after price had already run past the
@@ -87,6 +91,22 @@ class Config:
     setup_max_pullback_pct: float = 8.0  # above this the move has broken down
     setup_flat_top_tolerance_pct: float = 0.3   # highs within this = flat top
     require_vwap: bool = True            # never long below VWAP
+    # The pullback may not give back more than half the move that produced
+    # it. Measured against the MOVE, not against price: a 3% dip on a stock
+    # that ran 30% is shallow, the same dip on a 4% move is a failure. The
+    # percent-of-price band above stays as a sanity bound - the two measure
+    # different things.
+    setup_max_retrace_pct: float = 50.0
+    # The volume profile says who is winning: heavier buying driving the move
+    # than selling coming back on the pullback.
+    require_rising_volume: bool = True
+    # Breaking the 9 EMA invalidates the setup, the same way breaking VWAP
+    # does. Both are named as disqualifiers.
+    setup_ema_period: int = 9
+    require_ema: bool = True
+    # A large upper wick means sellers took the level back. Bearish on entry,
+    # and an exit signal once in.
+    setup_topping_tail_pct: float = 50.0   # wick as % of the bar's range
 
     # --- relative volume ---
     rvol_baseline_days: int = 30
@@ -138,24 +158,24 @@ class Config:
     # setup that justified the price is stale by then, and an order left
     # working can fill into a different market entirely.
     bot_entry_timeout_seconds: int = 120
-    # --- scalping ---
-    # Take profit at a fixed distance in cents rather than a multiple of
-    # risk. Worth knowing what that implies: with a 5% stop the same 20c is
-    # a 4:1 reward on a $1 stock and 0.8:1 on a $5 one, because $1,000 buys
-    # five times as many shares down there. The price band is deliberately
-    # narrow for that reason, and results are reported by price bucket.
-    bot_scalp_mode: bool = True
-    bot_scalp_target_cents: float = 0.20
+    # --- bank most of it, ride the rest ---
+    # Take profit at a multiple of the risk taken, never a fixed number of
+    # cents: across a $1-$20 band a 20c target is a 4:1 reward down at $1 and
+    # 0.2:1 up at $20, and the method requires at least 2:1 on every trade.
+    # bot_scale_out_r below is that multiple. Results are still reported by
+    # price bucket, because reward-to-risk is not the only thing that moves
+    # with price.
+    bot_runner_mode: bool = True
     # Sell this share of the position at the target and let the rest run,
     # governed by the stall exit below. 0 takes the whole thing off.
-    bot_scalp_scale_out_pct: float = 65.0
+    bot_bank_pct: float = 65.0
     # After banking, the runner rides a TRAILING stop that ratchets up
     # behind the high water mark, capped so it can never start below the
     # entry - the trade can no longer lose, which is the point of scaling out
     # at all, and a runner that keeps going now keeps more of it. False falls
     # back to a fixed stop at break-even. Read by both the live bot and the
     # simulator; when only one of them read it the two silently diverged.
-    bot_scalp_runner_trail: bool = True
+    bot_runner_uses_trail: bool = True
     # A doji is a bar that opens and closes in the same place - buyers and
     # sellers balanced. Two in a row is the stall to get out on. One-minute
     # bars are the finest the free feed carries, so a 5-10 second stutter is
@@ -168,17 +188,19 @@ class Config:
     # This bounds exposure if the balance grows - raise it deliberately
     # rather than letting position count climb on its own.
     bot_max_concurrent_positions: int = 5
-    bot_min_price: float = 1.0           # scalping band, $1-$5
-    bot_max_price: float = 5.0
-    # Min and max both at 20 collapses the band, so technical_stop returns a
-    # flat 20% on every trade and skips anything wider. This deliberately
-    # discards the technical stop - the pullback low Ross places the stop at -
-    # in favour of a fixed percentage. Restore 1.0/6.0 to undo it.
-    # Flat 5%: the stop is a fixed slice of the money at work, not the
-    # setup low. On $1,000 that is exactly $50, at any share price.
+    # $1-$20. Ross trades $2-$20 with a $5-$10 sweet spot; the band is
+    # widened at the bottom deliberately. A fixed-cent target cannot survive
+    # this range - 20c is 20% of a $1 stock and 1% of a $20 one - which is
+    # why the target is a multiple of risk instead. See exit_levels.
+    bot_min_price: float = 1.0
+    bot_max_price: float = 20.0
+    # The stop goes at the setup's invalidation level - the pullback low -
+    # which is the whole point of waiting for a pullback. Ross's worked trade
+    # is a 15c stop on a $7.60 entry, 2%. Collapsing min == max discarded that
+    # and forced a flat percentage on every trade; the band is back.
     bot_stop_pct: float = 5.0            # fallback stop when no setup low exists
-    bot_min_stop_pct: float = 5.0        # floor: never risk less than noise
-    bot_max_stop_pct: float = 5.0        # skip setups whose stop is this far away
+    bot_min_stop_pct: float = 1.5        # floor: tighter than this is noise
+    bot_max_stop_pct: float = 6.0        # skip setups whose stop is wider
     bot_limit_slippage_pct: float = 0.3  # marketable limit above the ask
     bot_scale_out_r: float = 2.0         # bank half here
     bot_runner_trail_pct: float = 5.0    # native trailing-stop width for the runner

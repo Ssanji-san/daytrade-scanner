@@ -113,7 +113,7 @@ function renderGainers(payload) {
   $("#gainers-empty").classList.toggle("hidden", rows.length > 0);
 }
 
-const FAIL_LABELS = { pct_up: "%day", volume: "volume", rvol: "rvol", float: "float", hod: "off high", news: "no news", vwap: "below VWAP", liquidity: "too illiquid" };
+const FAIL_LABELS = { pct_up: "%day", volume: "volume", rvol: "rvol", float: "float", hod: "off high", news: "no news", vwap: "below VWAP", liquidity: "too illiquid", gap: "no gap", open_drive: "no drive" };
 
 // The header states the gates actually in force. Hardcoding them let the
 // page claim a price band the bot had stopped trading.
@@ -332,8 +332,7 @@ function renderBot(payload) {
   // What an alert is graded against comes from the bot, not the page: a
   // hardcoded "+2R" here went on claiming a target the bot had stopped
   // trading for.
-  const target =
-    bot.target_cents != null ? `+${Math.round(bot.target_cents * 100)}c` : "+2R";
+  const target = bot.target_r != null ? `+${bot.target_r}R` : "+2R";
   $("#bot-alerts tbody").innerHTML = alerts
     .map((a) => {
       const done = a.label != null;

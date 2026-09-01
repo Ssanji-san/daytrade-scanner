@@ -27,6 +27,7 @@ from scanner.backtest import fetch, replay                    # noqa: E402
 from scanner.backtest.simulate import Simulator               # noqa: E402
 from scanner.config import DEFAULT                            # noqa: E402
 from scanner.floats import FloatCache                         # noqa: E402
+from scanner.history import ET                                # noqa: E402
 from scanner.trading.journal import WIN_R, Journal            # noqa: E402
 from scanner.trading.model import HeuristicScorer, train      # noqa: E402
 
@@ -68,11 +69,9 @@ async def run(start, end, feed, fetch_only, trades=False, require_news=True,
               score_bar=0.0, scale_out=None):
     cfg = replace(DEFAULT, backtest_require_news=require_news)
     if scale_out is not None:
-        cfg = replace(cfg, bot_scalp_scale_out_pct=scale_out)
+        cfg = replace(cfg, bot_bank_pct=scale_out)
     cache = fetch.Cache(cfg)
-    journal = Journal(cfg.backtest_journal_path, cfg.bot_alert_window_minutes,
-                      win_target_cents=(cfg.bot_scalp_target_cents
-                                        if cfg.bot_scalp_mode else None))
+    journal = Journal(cfg.backtest_journal_path, cfg.bot_alert_window_minutes)
     floats = FloatCache(cfg)
 
     async with aiohttp.ClientSession() as session:
@@ -152,22 +151,19 @@ def timeout_r(row):
 
 
 def target_in_r(row, cfg):
-    """What the bot's own target is worth on this row, in R.
+    """What the bot's own target is worth, in R.
 
-    Not a constant under a cent target: 20c against a 5% stop is 4R on a $1
-    stock and 0.8R on a $5 one, because the stop scales with price and the
-    target does not. That spread IS this strategy's character, which is why
-    trade_report also breaks results down by price bucket.
+    A constant now, by construction: the target is a multiple of the risk
+    taken rather than a fixed number of cents, so it does not drift with
+    price the way 20c did (4R on a $1 stock, 0.8R on a $5 one).
     """
-    if not cfg.bot_scalp_mode or not row["r_dollars"]:
-        return WIN_R
-    return cfg.bot_scalp_target_cents / row["r_dollars"]
+    return cfg.bot_scale_out_r
 
 
 def alert_r(row, cfg, timeout_r_value=None):
     """What one graded alert was worth in R under the bot's REAL exit policy.
 
-    `bot_scalp_scale_out_pct` comes off at the target and the rest rides a
+    `bot_bank_pct` comes off at the target and the rest rides a
     trail that cannot end below break-even, so the runner is credited with
     how far it ran less the trail's give-back, floored at zero rather than
     allowed to go negative. mfe is a floor on the run, not a ceiling: it
@@ -181,7 +177,7 @@ def alert_r(row, cfg, timeout_r_value=None):
         return -1.0
     if kind == "timeout":
         return timeout_r(row) if timeout_r_value is None else timeout_r_value
-    banked = cfg.bot_scalp_scale_out_pct / 100.0
+    banked = cfg.bot_bank_pct / 100.0
     target_r = target_in_r(row, cfg)
     ran = (row["mfe"] / row["r_dollars"]) if row["r_dollars"] else target_r
     # Both the trail and the stop are percentages of price, so the give-back
@@ -234,8 +230,7 @@ def report(journal, cfg):
         print("[backtest] nothing labeled yet")
         return
     risk = cfg.bot_position_dollars * cfg.bot_risk_pct / 100
-    target = (f"+{cfg.bot_scalp_target_cents * 100:.0f}c target"
-              if cfg.bot_scalp_mode else f"+{WIN_R:g}R target")
+    target = f"+{cfg.bot_scale_out_r:g}R target"
     print(f"[backtest] {len(rows)} graded alerts, ${risk:,.0f} risked per "
           f"trade, {cfg.bot_alert_window_minutes}-minute horizon, "
           f"{cfg.bot_stop_pct:.0f}% stop, {target}")
@@ -305,6 +300,29 @@ def _bucket_report(rows, cfg):
               f"{pnl:>+8.0f}")
 
 
+def _hour_report(rows, cfg):
+    """Results by entry hour, in ET.
+
+    Ross stops trading at 10:00 because his own P&L told him to. This is how
+    the replay says whether the same is true of this setup, rather than
+    importing his conclusion.
+    """
+    by_hour = {}
+    for row in rows:
+        hour = dt.datetime.fromtimestamp(row["ts"], ET).hour
+        by_hour.setdefault(hour, []).append(row)
+    print(f"[trades] {'entry hr':>12} {'n':>5} {'win':>6} {'mean R':>8} "
+          f"{'$':>9}")
+    for hour in sorted(by_hour):
+        block = by_hour[hour]
+        rs = [r["r_multiple"] or 0.0 for r in block]
+        wins = sum(1 for x in rs if x > 0)
+        pnl = sum(r["pnl"] or 0.0 for r in block)
+        print(f"[trades] {f'{hour:02d}:00 ET':>12} {len(block):>5} "
+              f"{wins / len(block):>5.1%} {sum(rs) / len(rs):>+7.2f}R "
+              f"{pnl:>+8.0f}")
+
+
 def trade_report(journal, cfg):
     """What the simulated trades did - the only P&L number here."""
     rows = [r for r in journal.all_trades() if r["exit_ts"] is not None]
@@ -319,9 +337,9 @@ def trade_report(journal, cfg):
     var = (sum((x - mean) ** 2 for x in rs) / (len(rs) - 1)) if len(rs) > 1 else 0
     se = math.sqrt(var / len(rs)) if len(rs) > 1 else 0.0
     wins = sum(1 for x in rs if x > 0)
-    scale = (f", scale-out {cfg.bot_scalp_scale_out_pct:.0f}% at "
-             f"+{cfg.bot_scalp_target_cents * 100:.0f}c"
-             if cfg.bot_scalp_mode else "")
+    scale = (f", banking {cfg.bot_bank_pct:.0f}% at "
+             f"+{cfg.bot_scale_out_r:g}R"
+             if cfg.bot_runner_mode else "")
     print(f"[trades] {len(rows)} trades over {days} sessions "
           f"({len(rows) / days:.1f}/day), news gate "
           f"{'ON' if cfg.backtest_require_news else 'OFF'}{scale}")
@@ -345,6 +363,7 @@ def trade_report(journal, cfg):
         print(f"[trades]   {row['setup'] or 'none':16} n={row['n']:<4} "
               f"wins={row['wins']} exp_r={row['exp_r']}")
     _bucket_report(rows, cfg)
+    _hour_report(rows, cfg)
     # The edge has to clear the spread, and the spread is not modelled.
     risk = cfg.bot_position_dollars * cfg.bot_risk_pct / 100
     notional = cfg.bot_position_dollars * cfg.bot_max_notional_pct / 100

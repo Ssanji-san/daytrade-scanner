@@ -16,7 +16,7 @@ from .journal import Journal
 from .model import train
 from .strategy import (ET, bankroll_from, buying_power, exit_levels,
                        is_doji, position_slots, runner_trail_pct,
-                       scalp_levels, scalp_split, should_enter, size_position,
+                       bank_split, should_enter, size_position,
                        split_qty, technical_stop, weighted_exit,
                        _parse_hhmm)
 
@@ -316,17 +316,15 @@ class TradingBot:
 
     async def _enter(self, pick, ts):
         entry = pick["price"]
-        # Scalping takes profit a fixed number of cents above entry and
-        # banks most of the position there; the swing path scales at +2R.
-        # This must match scanner.backtest.simulate or the bot trades a
-        # strategy the backtest never measured.
-        if self.cfg.bot_scalp_mode:
-            scalp = scalp_levels(entry, self.cfg)
-            levels = {"stop": scalp["stop"], "scale_out": scalp["target"]}
-            bank_qty, runner_qty = scalp_split(pick["qty"], self.cfg)
-        else:
-            levels = exit_levels(entry, self.cfg, stop_price=pick.get("stop"))
-            bank_qty, runner_qty = split_qty(pick["qty"])
+        # One levels function for both paths: the stop sits at the setup's
+        # invalidation level and the target is a multiple of that risk. The
+        # split is all that differs. This must match
+        # scanner.backtest.simulate or the bot trades a strategy the
+        # backtest never measured.
+        levels = exit_levels(entry, self.cfg, stop_price=pick.get("stop"))
+        bank_qty, runner_qty = (bank_split(pick["qty"], self.cfg)
+                                if self.cfg.bot_runner_mode
+                                else split_qty(pick["qty"]))
         total_qty = pick["qty"]
 
         # One atomic order: the stop rides along and Alpaca arms it after the
@@ -400,8 +398,8 @@ class TradingBot:
                 await self._flatten_trade(symbol, trade, ts, pos, "flatten")
                 continue
 
-            if self.cfg.bot_scalp_mode:
-                await self._manage_scalp(symbol, trade, state, ts, pos, price)
+            if self.cfg.bot_runner_mode:
+                await self._manage_runner(symbol, trade, state, ts, pos, price)
                 continue
 
             if not trade["banked"] and price >= trade["scale_out"]:
@@ -524,7 +522,7 @@ class TradingBot:
         breakeven = round(trade["entry"], 2)
         trade["stop"] = breakeven         # the floor, whatever the trail does
         pct = (runner_trail_pct(trade["entry"], price, self.cfg)
-               if self.cfg.bot_scalp_runner_trail else None)
+               if self.cfg.bot_runner_uses_trail else None)
         if pct is None:
             await self.broker.submit_stop(symbol, trade["runner_qty"], breakeven)
             return f"stop at break-even {breakeven:.2f}"
@@ -533,7 +531,7 @@ class TradingBot:
         trade["trailing_order_id"] = (order or {}).get("id")
         return f"trailing {pct:g}%, never below break-even {breakeven:.2f}"
 
-    async def _manage_scalp(self, symbol, trade, state, ts, pos, price):
+    async def _manage_runner(self, symbol, trade, state, ts, pos, price):
         """Fixed-cent target, then the runner rides until it stalls.
 
         Deliberately different from the simulator in two places. The stop is
@@ -609,9 +607,8 @@ class TradingBot:
             "position_dollars": self.cfg.bot_position_dollars,
             "slots": position_slots(self.bankroll, self.cfg),
             # What an alert is graded against, so the dashboard cannot drift
-            # out of step with the strategy the way a hardcoded "+2R" did.
-            "target_cents": (self.cfg.bot_scalp_target_cents
-                             if self.cfg.bot_scalp_mode else None),
+            # out of step with the strategy the way a hardcoded target did.
+            "target_r": self.cfg.bot_scale_out_r,
             "trades_today": len(trades),
             "cap": self.cfg.bot_max_trades_per_day,
             "day_pnl": self.journal.day_pnl(day),
@@ -644,9 +641,8 @@ async def bot_loop(app, cfg: Config):
               f"{position_slots(equity, cfg)} position(s) of "
               f"${cfg.bot_position_dollars:,.0f} "
               f"(max {cfg.bot_max_concurrent_positions})")
-        journal = Journal(cfg.bot_journal_path, cfg.bot_alert_window_minutes,
-                          win_target_cents=(cfg.bot_scalp_target_cents
-                                            if cfg.bot_scalp_mode else None))
+        # No cent target any more: WIN_R grades the same 2R the bot trades for.
+        journal = Journal(cfg.bot_journal_path, cfg.bot_alert_window_minutes)
         bot = TradingBot(cfg, journal, broker)
         last_equity_pull = 0.0
 

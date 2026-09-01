@@ -220,13 +220,6 @@ def is_doji(bar, cfg: Config):
     return abs(close - open_) <= (cfg.bot_doji_body_pct / 100.0) * span
 
 
-def scalp_levels(entry_price, cfg: Config):
-    """Stop a fixed % below, target a fixed number of cents above."""
-    stop = entry_price * (1 - cfg.bot_stop_pct / 100)
-    return {"stop": round(stop, 2),
-            "target": round(entry_price + cfg.bot_scalp_target_cents, 2)}
-
-
 def runner_trail_pct(entry, price, cfg: Config):
     """Trail width for the runner, capped so it never starts below entry.
 
@@ -247,17 +240,23 @@ def runner_trail_pct(entry, price, cfg: Config):
     return pct if pct > 0 else None
 
 
-def scalp_split(qty, cfg: Config):
+def bank_split(qty, cfg: Config):
     """(banked, runner) shares at the target. Runner may be zero."""
-    if cfg.bot_scalp_scale_out_pct >= 100:
+    if cfg.bot_bank_pct >= 100:
         return qty, 0
-    banked = int(qty * cfg.bot_scalp_scale_out_pct / 100.0)
+    banked = int(qty * cfg.bot_bank_pct / 100.0)
     banked = max(0, min(qty, banked))
     return banked, qty - banked
 
 
 def exit_levels(entry_price, cfg: Config, stop_price=None):
-    """Stop at the setup low (-1R); scale-out at +scale_out_r R above entry."""
+    """Stop at the setup low (-1R); scale-out at +scale_out_r R above entry.
+
+    The one levels function. A fixed-cent target used to live beside this one
+    and the two disagreed about what a trade was worth at different prices -
+    20c is 4:1 down at $1 and 0.2:1 up at $20, while this is 2:1 everywhere
+    by construction.
+    """
     if stop_price is None:
         stop_price = entry_price * (1 - cfg.bot_stop_pct / 100)
     r = entry_price - stop_price

@@ -22,8 +22,7 @@ from ..config import Config
 from ..history import ET
 from ..trading.bot import choose_entries
 from ..trading.strategy import (exit_levels, is_doji, runner_trail_pct,
-                                scalp_levels, scalp_split, split_qty,
-                                weighted_exit)
+                                bank_split, split_qty, weighted_exit)
 
 
 def _hhmm(text):
@@ -50,11 +49,10 @@ class Position:
         self.symbol = pick["symbol"]
         self.entry = pick["price"]
         self.stop = levels["stop"]
-        self.scale_out = levels.get("scale_out") or levels.get("target")
-        self.target = levels.get("target")
+        self.scale_out = levels["scale_out"]
         self.qty = pick["qty"]
-        if cfg is not None and cfg.bot_scalp_mode:
-            self.bank_qty, self.runner_qty = scalp_split(pick["qty"], cfg)
+        if cfg is not None and cfg.bot_runner_mode:
+            self.bank_qty, self.runner_qty = bank_split(pick["qty"], cfg)
         else:
             self.bank_qty, self.runner_qty = split_qty(pick["qty"])
         self.opened_ts = ts
@@ -124,7 +122,7 @@ class Simulator:
                 self._finish(pos, ts, "flatten")
                 continue
 
-            if self.cfg.bot_scalp_mode:
+            if self.cfg.bot_runner_mode:
                 self._scalp(pos, ts, bar, high, low, close)
                 continue
 
@@ -190,24 +188,24 @@ class Simulator:
 
             # KNOWN OPTIMISM, and the reason every scalp figure here is an
             # upper bound: this fills the target off the bar HIGH, while the
-            # live bot (TradingBot._manage_scalp) can only compare the last
+            # live bot (TradingBot._manage_runner) can only compare the last
             # polled price. A wick that tags +20c and retreats inside the same
             # minute pays here and does not pay live. It is not fixable by
             # making the two agree - a live session cannot see the high of a
             # minute that has not finished - so it is written down instead.
-            if high >= pos.target:
+            if high >= pos.scale_out:
                 if pos.runner_qty >= 1:
-                    pos.close(pos.bank_qty, pos.target)
+                    pos.close(pos.bank_qty, pos.scale_out)
                     pos.banked = True
                     # The trade can no longer lose. That is the whole reason
                     # to take part of it off here.
                     pos.stop = pos.entry
                     pos.trail_high = max(pos.trail_high, high)
                     pos.trail_pct = (
-                        runner_trail_pct(pos.entry, pos.target, cfg)
-                        if cfg.bot_scalp_runner_trail else None)
+                        runner_trail_pct(pos.entry, pos.scale_out, cfg)
+                        if cfg.bot_runner_uses_trail else None)
                     return
-                pos.close(remaining, pos.target)
+                pos.close(remaining, pos.scale_out)
                 self._finish(pos, ts, "target")
                 return
 
@@ -248,13 +246,11 @@ class Simulator:
             open_positions=len(self.open),
             budget=max(0.0, self.cfg.bot_bankroll - deployed))
         for pick in picks:
-            levels = (scalp_levels(pick["price"], self.cfg)
-                      if self.cfg.bot_scalp_mode
-                      else exit_levels(pick["price"], self.cfg,
-                                       stop_price=pick.get("stop")))
+            levels = exit_levels(pick["price"], self.cfg,
+                                 stop_price=pick.get("stop"))
             if levels["stop"] >= pick["price"]:
                 continue
-            target = levels.get("scale_out") or levels.get("target")
+            target = levels["scale_out"]
             trade_id = self.journal.record_trade_open(
                 ts, pick["symbol"], qty=pick["qty"], entry=pick["price"],
                 stop=levels["stop"], targets=[target],
