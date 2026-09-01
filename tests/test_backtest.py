@@ -420,21 +420,27 @@ class TestPolicyExpectancy:
         return {"day": "2026-08-12", "label": 1, "mae": -0.05, "mfe": mfe,
                 "r_dollars": r, "resolved_r": None}
 
-    def test_the_target_is_worth_more_on_a_cheap_stock(self):
+    def test_the_target_is_the_same_r_at_every_price(self):
+        """The point of a risk multiple: 20c was 4R at $1 and 0.8R at $5."""
         from scripts.backtest import target_in_r
-        assert target_in_r(self._win(0.2, r=0.25), CFG) == pytest.approx(0.8)
-        assert target_in_r(self._win(0.2, r=0.05), CFG) == pytest.approx(4.0)
+        assert target_in_r(self._win(0.2, r=0.25), CFG) == CFG.bot_scale_out_r
+        assert target_in_r(self._win(0.2, r=0.05), CFG) == CFG.bot_scale_out_r
 
     def test_a_win_that_goes_nowhere_pays_only_the_banked_share(self):
         from scripts.backtest import alert_r
-        # Tagged +20c (0.8R here) and stopped dead: the 35% runner trails out
-        # at break-even, so only the banked 65% pays.
-        assert alert_r(self._win(0.20), CFG) == pytest.approx(0.65 * 0.8)
+        # Tagged the target and stopped dead: the runner trails out at
+        # break-even, so only the banked share pays.
+        banked = CFG.bot_bank_pct / 100.0
+        assert alert_r(self._win(0.50), CFG) == pytest.approx(
+            banked * CFG.bot_scale_out_r)
 
     def test_a_runner_that_keeps_going_adds_to_it(self):
         from scripts.backtest import alert_r
-        # Ran 3R; the 5% trail against the 5% stop gives back 1R of it.
-        expected = 0.65 * 0.8 + 0.35 * (3.0 - 1.0)
+        # Ran 3R; the trail gives back trail_pct/stop_pct of it.
+        banked = CFG.bot_bank_pct / 100.0
+        give_back = CFG.bot_runner_trail_pct / CFG.bot_stop_pct
+        expected = (banked * CFG.bot_scale_out_r
+                    + (1 - banked) * (3.0 - give_back))
         assert alert_r(self._win(0.75), CFG) == pytest.approx(expected)
 
     def test_the_runner_is_never_worth_less_than_nothing(self):

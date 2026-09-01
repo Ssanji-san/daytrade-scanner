@@ -8,6 +8,7 @@ def make_state(**overrides):
         "price": 3.00,
         "day_pct": 25.0,          # % up vs previous close
         "open_pct": 12.0,         # % gained since the 9:30 bell
+        "gap_pct": 8.0,           # % above the prior close at the bell
         "day_volume": 2_000_000,
         "day_high": 3.03,
         "rvol": 8.0,

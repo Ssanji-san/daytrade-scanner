@@ -121,12 +121,13 @@ def test_enter_uses_one_atomic_order_not_two(tmp_path):
     order = broker.orders[0]
     assert order["order_class"] == "oto"
     assert order["side"] == "buy" and order["qty"] == 50
-    assert order["stop_price"] == pytest.approx(4.75)   # flat 5% scalp stop
+    assert order["stop_price"] == pytest.approx(4.85)   # the pullback low
     assert not any(o["side"] == "sell" for o in broker.orders)
 
     trade = bot.open_trades["HODX"]
     assert trade["bank_qty"] + trade["runner_qty"] == 50
-    assert trade["scale_out"] == pytest.approx(5.20)   # 5.00 + 20c
+    # 1R is 5.00 - 4.85 = 0.15, so the target is 2R above entry.
+    assert trade["scale_out"] == pytest.approx(5.30)
     assert trade["banked"] is False
     assert journal.trades_today("2023-11-14")  # record_trade_open persisted
 
@@ -228,7 +229,7 @@ def test_close_records_blended_r_from_sell_fills(tmp_path):
 
     trade = journal.recent_trades(1)[0]
     assert trade["exit_price"] == pytest.approx(5.45)       # weighted average
-    assert trade["r_multiple"] == pytest.approx(1.8)        # (5.45-5.0)/0.25
+    assert trade["r_multiple"] == pytest.approx(3.0)        # (5.45-5.0)/0.15
 
 
 def test_near_misses_are_learned_from_but_never_traded(tmp_path):
@@ -335,8 +336,8 @@ def test_scalp_banks_the_majority_and_trails_the_runner(tmp_path):
     bot, broker, _ = make_bot(tmp_path)
     trade = _open_a_trade(bot, ts=int(et(9, 40).timestamp()))
     assert (trade["bank_qty"], trade["runner_qty"]) == (32, 18)   # 65 / 35
-    broker._positions = [{"symbol": "HODX", "current_price": 5.22}]
-    state = FakeState({"HODX": {"price": 5.22}})                  # past +20c
+    broker._positions = [{"symbol": "HODX", "current_price": 5.35}]
+    state = FakeState({"HODX": {"price": 5.35}})                  # past +2R
 
     asyncio.run(bot._manage_open(state, now=et(9, 42),
                                  ts=int(et(9, 42).timestamp())))
@@ -346,22 +347,20 @@ def test_scalp_banks_the_majority_and_trails_the_runner(tmp_path):
     assert sells and sells[0]["qty"] == 32
     trails = [o for o in broker.orders if o["type"] == "trailing_stop"]
     assert trails and trails[0]["qty"] == 18
-    # Capped: a flat 5% of $5.22 would put the first stop at $4.96, under the
-    # $5.00 paid. 4.21% of 5.22 lands it exactly on the entry.
-    assert trails[0]["trail_percent"] == pytest.approx(4.21)
-    assert 5.22 * (1 - trails[0]["trail_percent"] / 100) >= trade["entry"]
+    # Capped so the first stop can never sit below what was paid.
+    assert 5.35 * (1 - trails[0]["trail_percent"] / 100) >= trade["entry"]
     assert not [o for o in broker.orders if o["type"] == "stop"]
     assert trade["stop"] == pytest.approx(5.00)     # the floor is recorded
     assert "HODX" in bot.open_trades                # runner still on
 
 
 def test_a_cheap_runner_gets_the_full_trail_width(tmp_path):
-    """Down at $2 the full 5% already sits above break-even, so it is used."""
+    """Far enough above entry the full 5% already clears break-even."""
     bot, broker, _ = make_bot(tmp_path)
     _open_a_trade(bot, ts=int(et(9, 40).timestamp()), price=2.00, qty=500)
-    broker._positions = [{"symbol": "HODX", "current_price": 2.22}]
+    broker._positions = [{"symbol": "HODX", "current_price": 2.40}]
 
-    asyncio.run(bot._manage_open(FakeState({"HODX": {"price": 2.22}}),
+    asyncio.run(bot._manage_open(FakeState({"HODX": {"price": 2.40}}),
                                  now=et(9, 42), ts=int(et(9, 42).timestamp())))
 
     trails = [o for o in broker.orders if o["type"] == "trailing_stop"]
@@ -386,9 +385,9 @@ def test_a_banked_runner_outlives_the_time_stop(tmp_path):
 def test_the_fixed_break_even_stop_is_still_reachable(tmp_path):
     bot, broker, _ = make_bot(tmp_path, bot_runner_uses_trail=False)
     trade = _open_a_trade(bot, ts=int(et(9, 40).timestamp()))
-    broker._positions = [{"symbol": "HODX", "current_price": 5.22}]
+    broker._positions = [{"symbol": "HODX", "current_price": 5.35}]
 
-    asyncio.run(bot._manage_open(FakeState({"HODX": {"price": 5.22}}),
+    asyncio.run(bot._manage_open(FakeState({"HODX": {"price": 5.35}}),
                                  now=et(9, 42), ts=int(et(9, 42).timestamp())))
 
     stops = [o for o in broker.orders if o["type"] == "stop"]
@@ -539,7 +538,7 @@ class TestCapitalIsSpentInUnits:
                  "dist_from_hod": 0.0, "day_high": price,
                  "changes": {"5": 3.0}, "above_vwap": True,
                  "setup": {"setup": "micro_pullback",
-                           "stop": round(price * 0.95, 2)}}
+                           "stop": round(price * 0.97, 2)}}
                 for i in range(n)]
 
     def _state(self, rows):
