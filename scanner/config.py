@@ -87,6 +87,24 @@ class Config:
     setup_max_pullback_pct: float = 8.0  # above this the move has broken down
     setup_flat_top_tolerance_pct: float = 0.3   # highs within this = flat top
     require_vwap: bool = True            # never long below VWAP
+    # --- entry quality, from Ross Cameron's own list of disqualifiers ---
+    # Each is its own knob so the sweep can price them one at a time. The
+    # exit policy is deliberately NOT changed alongside them: a Jan-Aug A/B
+    # showed a 2R target off a tight technical stop is reached once in 25
+    # trades while the tight stop is hit 60% of the time, so that pairing is
+    # what to leave alone while these are measured.
+    #
+    # The pullback may not give back more than half the move that produced
+    # it. Measured against the MOVE, not against price - the percent-of-price
+    # band above answers a different question and both are kept.
+    setup_max_retrace_pct: float = 50.0
+    # Heavier volume driving the move than coming back on the pullback.
+    require_rising_volume: bool = True
+    # Breaking the 9 EMA invalidates the flag, the way breaking VWAP does.
+    setup_ema_period: int = 9
+    require_ema: bool = True
+    # A large upper wick means the sellers took the level back.
+    setup_topping_tail_pct: float = 50.0   # wick as % of the bar's range
 
     # --- relative volume ---
     rvol_baseline_days: int = 30
