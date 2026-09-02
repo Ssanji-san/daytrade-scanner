@@ -1,0 +1,58 @@
+name: floats
+
+# Unknown float is an automatic rejection, so a symbol nobody has looked up
+# is treated the same as one with a billion shares. The live loop fetches
+# four a cycle and never gets through the list; this walks the whole
+# universe. Entries last float_cache_days (7), so the weekly run only tops
+# up whatever went stale.
+
+on:
+  schedule:
+    - cron: "0 7 * * 6"        # Saturday, well clear of any trading session
+  workflow_dispatch:
+    inputs:
+      rate:
+        description: "Symbols per second (SEC allows 10 requests/s; a symbol costs up to 3)"
+        required: false
+        default: "5"
+      limit:
+        description: "Stop after N symbols (0 = the whole universe)"
+        required: false
+        default: "0"
+
+permissions:
+  contents: write
+
+jobs:
+  floats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fill the float cache
+        env:
+          SEC_CONTACT: ${{ vars.SEC_CONTACT }}
+        run: |
+          python -u scripts/fetch_floats.py \
+            --rate "${RATE:-5}" --limit "${LIMIT:-0}"
+        # Inputs go through the environment rather than being interpolated
+        # into the shell.
+        # yamllint disable-line
+      - name: Commit the cache
+        run: |
+          git config user.name "trade-bot"
+          git config user.email "actions@github.com"
+          git add cache/floats.json || true
+          if ! git diff --cached --quiet; then
+            git commit -m "floats: refresh the cache [skip ci]" --quiet
+            git pull --rebase --autostash --quiet || true
+            git push --quiet
+          fi

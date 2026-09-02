@@ -100,10 +100,20 @@ class FloatCache:
         entry = self._data.get(symbol)
         return entry["shares"] if entry else None
 
-    def put(self, symbol, shares, now=None, answered=True):
+    def put(self, symbol, shares, now=None, answered=True, flush=True):
+        """Record a lookup. `flush=False` defers the write to save().
+
+        The live loop fetches four symbols a cycle and wants each one on
+        disk immediately. A bulk population does thousands, and rewriting a
+        megabyte-sized file per symbol would be gigabytes of pointless IO.
+        """
         now = now or dt.datetime.now(dt.timezone.utc)
         self._data[symbol] = {"shares": shares, "fetched": now.isoformat(),
                               "answered": bool(answered)}
+        if flush:
+            self.save()
+
+    def save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Whole-file rewrite on every symbol, so write beside it and rename:
         # a cancelled workflow otherwise leaves a truncated cache behind.
