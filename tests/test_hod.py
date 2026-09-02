@@ -30,17 +30,44 @@ def test_price_band_is_a_hard_gate():
     ({"day_pct": 4.0}, "pct_up"),
     ({"price": 5.00, "day_high": 5.55}, "hod"),  # ~10% off the high
 ])
-def test_single_failure_lands_in_near_list(override, expected_fail):
+def test_one_missing_demand_pillar_still_qualifies(override, expected_fail):
+    """Four of five, Ross's own bar - and the miss is still recorded.
+
+    The row is bought, but `failed` keeps the name, so the dashboard says
+    which pillar was weak and the model trains on it.
+    """
     qualified, near = scan([make_state(**override)], CFG)
+    assert [r["symbol"] for r in qualified] == ["TEST"]
+    assert near == []
+    assert qualified[0]["failed"] == [expected_fail]
+
+
+@pytest.mark.parametrize("override,expected_fail", [
+    ({"price": 7.00, "day_high": 7.07}, "price"),
+    ({"above_vwap": False}, "vwap"),
+    ({"avg_volume": 300}, "liquidity"),
+])
+def test_a_disqualifying_failure_is_never_voted_down(override, expected_fail):
+    """Perfect on every demand pillar and still not buyable.
+
+    These three are not "how much demand is there" but "may I buy this"
+    and "can I get back out". One of them is enough on its own.
+    """
+    strict = Config(require_vwap=True)
+    qualified, near = scan([make_state(**override)], strict)
     assert qualified == []
-    assert len(near) == 1
     assert near[0]["failed"] == [expected_fail]
 
 
 def test_unknown_float_counts_as_failure():
+    """Unknown is not a pass. It is the one pillar this row is missing, so
+    it can carry it - but paired with a second miss the row drops out."""
     qualified, near = scan([make_state(float_shares=None)], CFG)
+    assert qualified[0]["failed"] == ["float"]
+
+    qualified, near = scan([make_state(float_shares=None, rvol=2.0)], CFG)
     assert qualified == []
-    assert near[0]["failed"] == ["float"]
+    assert sorted(near[0]["failed"]) == ["float", "rvol"]
 
 
 def test_two_failures_are_shown_as_near_misses():
@@ -68,10 +95,12 @@ def test_news_check_is_about_the_catalyst_not_just_a_headline():
     strict = Config(hod_require_news=True)
     assert len(scan([make_state()], strict)[0]) == 1     # fresh FDA approval
 
+    # No catalyst is a pillar this stock lacks - one miss, so it survives.
     qualified, near = scan([make_state(has_news=False, catalyst=None)], strict)
-    assert qualified == [] and near[0]["failed"] == ["news"]
+    assert qualified[0]["failed"] == ["news"]
 
-    # A share offering is a reason to stay OUT however good it looks.
+    # A share offering is different in kind: not a missing reason but a
+    # reason to stay OUT, however good the rest looks. It disqualifies.
     dilution = make_state(catalyst={"category": "offering", "weight": 0.05,
                                     "score": 0.05, "age_minutes": 5.0,
                                     "veto": True,
@@ -113,8 +142,13 @@ def test_volume_floor_is_off_by_default_and_applies_when_set():
     assert len(scan([thin], CFG)[0]) == 1          # no volume gate by default
 
     strict = Config(hod_min_volume=25_000)
-    qualified, near = scan([thin], strict)
-    assert qualified == [] and near[0]["failed"] == ["volume"]
+    assert scan([thin], strict)[0][0]["failed"] == ["volume"]
+
+    # ...and once it is set it counts like any other pillar: on its own the
+    # row survives, alongside a second miss it does not.
+    qualified, near = scan([make_state(day_volume=1_000, rvol=2.0)], strict)
+    assert qualified == []
+    assert sorted(near[0]["failed"]) == ["rvol", "volume"]
 
 
 def test_an_instrument_that_barely_trades_is_rejected():
@@ -139,16 +173,21 @@ def test_opening_drive_gate_is_switchable():
     from dataclasses import replace
     drifted = make_state(open_pct=1.0)          # barely moved since the bell
     q, near = scan([drifted], CFG)
+    assert q[0]["failed"] == ["open_drive"]     # counted, not fatal on its own
+    q, near = scan([make_state(open_pct=1.0, rvol=2.0)], CFG)
     assert q == [] and "open_drive" in near[0]["failed"]
 
     off = replace(CFG, hod_min_open_pct=0.0)
     q, _ = scan([drifted], off)
     assert [r["symbol"] for r in q] == ["TEST"]
+    assert q[0]["failed"] == []                 # the check is gone entirely
 
 
 def test_a_missing_open_counts_as_a_failure():
     """Unknown is not a pass - the same rule the float check follows."""
     q, near = scan([make_state(open_pct=None)], CFG)
+    assert q[0]["failed"] == ["open_drive"]
+    q, near = scan([make_state(open_pct=None, day_pct=4.0)], CFG)
     assert q == [] and "open_drive" in near[0]["failed"]
 
 
@@ -192,3 +231,33 @@ def test_an_observed_row_can_never_reach_the_bot():
                                  traded_symbols=set(), day_pnl=0.0, now=et,
                                  cfg=CFG, score_threshold=0.0)
     assert not take and "price" in reasons
+
+
+class TestQualifyingBar:
+    """How many demand pillars a row may miss - and what it may never miss."""
+
+    def test_the_bar_is_configurable_back_to_all_or_nothing(self):
+        from dataclasses import replace
+        strict = replace(CFG, hod_max_failures_to_qualify=0)
+        qualified, near = scan([make_state(rvol=2.0)], strict)
+        assert qualified == [] and near[0]["failed"] == ["rvol"]
+
+    def test_two_misses_are_still_a_near_miss(self):
+        """The near list has to keep something to show, or the dashboard
+        goes blank and reads as a broken scanner."""
+        qualified, near = scan([make_state(rvol=2.0, day_pct=4.0)], CFG)
+        assert qualified == []
+        assert sorted(near[0]["failed"]) == ["pct_up", "rvol"]
+
+    def test_a_disqualifier_outvotes_a_perfect_row(self):
+        """Not a count: one hard no beats four passing pillars."""
+        strict = Config(require_vwap=True)
+        qualified, near = scan([make_state(above_vwap=False)], strict)
+        assert qualified == [] and near[0]["failed"] == ["vwap"]
+
+    def test_a_disqualifier_is_not_forgiven_by_the_budget(self):
+        """Even as the row's ONLY failure, with the budget unspent."""
+        dead = make_state(avg_volume=300, day_volume=1_295)
+        qualified, near = scan([dead], CFG)
+        assert qualified == []
+        assert near[0]["failed"] == ["liquidity"]

@@ -74,6 +74,14 @@ class Config:
     # rows are graded for learning and never traded, so widening this
     # changes what is seen, not what is bought.
     near_filter_max_failures: int = 2   # dimmed "about to qualify" section
+    # Ross's bar is four of five, not five of five: he trades stocks meeting
+    # "at least four of the five" criteria. Nine hard AND-gates was a
+    # stricter reading than the source - over eight replayed months exactly
+    # two rows passed every one, while 1,225 failed exactly two. This is the
+    # number of DEMAND pillars a row may miss and still be bought;
+    # hod.DISQUALIFYING lists what it may never miss. Must stay below
+    # near_filter_max_failures or the near list has nothing left to show.
+    hod_max_failures_to_qualify: int = 1
 
     # --- entry setups (Ross Cameron micro-pullback / flat top) ---
     # A gapper at the open has no session bars behind it, so it gets its own

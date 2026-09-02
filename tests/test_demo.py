@@ -36,7 +36,7 @@ def test_near_miss_lands_in_near_list_with_reason():
     payload = play_session(build_demo_session(CFG))
     near = {r["symbol"]: r for r in payload["hod"]["near"]}
     assert "NEARX" in near
-    assert len(near["NEARX"]["failed"]) == 1
+    assert sorted(near["NEARX"]["failed"]) == ["float", "rvol"]
 
 
 def test_calendar_only_red_and_orange():

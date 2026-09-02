@@ -5,7 +5,9 @@ Planted actors (asserted in tests/test_demo.py):
   HODX  - low-float (8M) $3 runner at high of day with news -> HOD qualified,
           and it flags before it breaks out, so the pullback entry has
           something to fire on
-  NEARX - passes everything except relative volume -> dimmed near list
+  NEARX - misses relative volume AND float -> dimmed near list. Two misses,
+          not one: under the four-of-five bar a single weak pillar now
+          qualifies, and the demo exists to show the near tier
 The rest are believable filler. Timestamps anchor to "now" so the demo
 always looks live regardless of when it is run.
 """
@@ -45,7 +47,7 @@ def _actors():
         "HODX":  (hodx,            {"prev_close": 2.40, "final_vol": 3_000_000,
                                       "avg_volume": 400_000, "float_shares": 8_000_000}),
         "NEARX": (ramp(3.30, 3.85),  {"prev_close": 3.30, "final_vol": 150_000,
-                                      "avg_volume": 3_000_000, "float_shares": 5_000_000}),
+                                      "avg_volume": 3_000_000, "float_shares": 45_000_000}),
         "RUNA":  (ramp(7.90, 8.30),  {"prev_close": 7.20, "final_vol": 900_000,
                                       "avg_volume": 350_000, "float_shares": 12_000_000}),
         "RUNB":  (ramp(12.4, 12.9),  {"prev_close": 11.9, "final_vol": 1_400_000,
