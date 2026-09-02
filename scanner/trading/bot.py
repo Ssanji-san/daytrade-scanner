@@ -110,7 +110,7 @@ def journal_alert(journal, ts, row, now, observed, cfg: Config):
 def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
                    day_pnl, now, cfg: Config, score_threshold=None,
                    losses_today=0, open_positions=0, account=None,
-                   bankroll=None, budget=None):
+                   bankroll=None, budget=None, skips=None):
     """Best-scored qualifying rows first, never exceeding the daily cap.
 
     Picks already made in this cycle count against the daily cap, the
@@ -118,13 +118,24 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
     than the account can pay for. The budget is what makes the last slice of
     a balance a part-sized position rather than a refused one: $2,473 opens
     $1,000, $1,000 and $473 and then stops.
+
+    Pass a list as `skips` to learn why the rest were left alone. Every
+    reason here was already being computed and thrown away, and the alert
+    is tracked to its outcome regardless of whether the bot buys it - so
+    recording the decision is what makes "which rule blocked a winner" a
+    question the journal can answer.
     """
+    def note(symbol, reason, score=None):
+        if skips is not None:
+            skips.append({"symbol": symbol, "reason": reason, "score": score})
+
     scored = []
     for row in qualified_rows:
         # The momentum criteria say *what* to trade; the pullback says
         # *when*. No setup means the entry has not arrived - buying here
         # would be chasing the high.
         if not row.get("setup"):
+            note(row["symbol"], "no_setup")
             continue
         features = features_from_row(row, now)
         scored.append((scorer.score(features), row, features))
@@ -136,20 +147,24 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
         setup = row["setup"]
         stop = technical_stop(row["price"], setup.get("stop"), cfg)
         if stop is None:
+            note(row["symbol"], "stop_too_wide", score)
             continue                     # risk to the setup low is too wide
         qty, stop = size_position(row["price"], cfg, stop_price=stop,
                                   budget=budget)
         if qty < 1:
+            note(row["symbol"], "no_capital", score)
             continue                     # no capital left, or too small
-        take, _ = should_enter(row["symbol"], price=row["price"], score=score,
-                               trades_today=count, traded_symbols=taken,
-                               day_pnl=day_pnl, now=now, cfg=cfg,
-                               score_threshold=score_threshold,
-                               losses_today=losses_today,
-                               open_positions=open_positions + len(picks),
-                               account=account, notional=qty * row["price"],
-                               bankroll=bankroll)
+        take, reasons = should_enter(
+            row["symbol"], price=row["price"], score=score,
+            trades_today=count, traded_symbols=taken,
+            day_pnl=day_pnl, now=now, cfg=cfg,
+            score_threshold=score_threshold,
+            losses_today=losses_today,
+            open_positions=open_positions + len(picks),
+            account=account, notional=qty * row["price"],
+            bankroll=bankroll)
         if not take:
+            note(row["symbol"], "+".join(reasons), score)
             continue
         picks.append({"symbol": row["symbol"], "price": row["price"],
                       "qty": qty, "stop": stop, "score": score,
@@ -258,6 +273,7 @@ class TradingBot:
                 self.bankroll if self._bankroll_seeded else None)
             self._bankroll_seeded = True
         trades = self.journal.trades_today(day)
+        skips = []
         picks = choose_entries(
             qualified, self.scorer,
             trades_today=len(trades),
@@ -268,14 +284,26 @@ class TradingBot:
             losses_today=self.journal.losses_today(day),
             open_positions=len(self.open_trades),
             account=account, bankroll=self.bankroll,
-            budget=self._budget(account))
+            budget=self._budget(account), skips=skips)
+        # Record what was decided about every qualifying row, taken or not.
+        # The alert is already tracked to its outcome, so this is the half
+        # that was missing: not what the stock did, but what the bot did.
+        for skip in skips:
+            self.journal.record_decision(ts, skip["symbol"], skip["reason"])
         for pick in picks:
             try:
                 await self._enter(pick, ts)
             except Exception as exc:
                 # Don't re-hammer a symbol the broker refused; one line, once.
                 self.rejected.add(pick["symbol"])
+                self.journal.record_decision(ts, pick["symbol"],
+                                             "broker_rejected")
                 print(f"[bot] ENTRY REJECTED {pick['symbol']}: {exc}")
+            else:
+                # Only after the broker took it. "taken" is the top of the
+                # ladder and never downgrades, so claiming it for an order
+                # that was refused would be a lie the journal keeps.
+                self.journal.record_decision(ts, pick["symbol"], "taken")
 
     def _budget(self, account):
         """Capital still free to deploy, in dollars.

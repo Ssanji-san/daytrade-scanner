@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     mfe REAL DEFAULT 0, mae REAL DEFAULT 0,
     label INTEGER, resolved_ts INTEGER, resolved_r REAL,
     observed INTEGER DEFAULT 0,
+    decision TEXT,
     UNIQUE(day, symbol)
 );
 CREATE TABLE IF NOT EXISTS trades (
@@ -96,6 +97,10 @@ class Journal:
             self._db.execute("ALTER TABLE alerts ADD COLUMN resolved_r REAL")
         except sqlite3.OperationalError:
             pass
+        try:
+            self._db.execute("ALTER TABLE alerts ADD COLUMN decision TEXT")
+        except sqlite3.OperationalError:
+            pass
         self._db.commit()
 
     def _recoverable(self, exc):
@@ -158,6 +163,88 @@ class Journal:
             return cur.lastrowid
         except sqlite3.IntegrityError:
             return None          # raced with another writer; it is recorded
+
+    # A qualifying alert is journalled and tracked to its outcome whether or
+    # not the bot buys it, so the journal already knows what every setup went
+    # on to do. What it did not know was what the BOT did about it: the
+    # rejection reasons should_enter computes were thrown away at the call
+    # site. Recording them turns the alert table into the question worth
+    # asking - of the setups it declined, which ones paid, and what rule
+    # stopped it.
+    DECISION_RANK = {None: 0, "no_setup": 0}
+
+    def _decision_rank(self, decision):
+        """How informative a decision is. Only ever upgrade.
+
+        A symbol is looked at every cycle, so its decision changes through
+        the session: no setup at 10:00, a setup declined on score at 10:15,
+        maybe bought at 10:30. Last-write-wins would let a later cycle with
+        no entry trigger erase the fact that a real setup was turned down,
+        which is the one thing worth keeping. So the ladder only goes up,
+        the same way `observed` only ever upgrades to tradable.
+        """
+        if decision == "taken":
+            return 2
+        return self.DECISION_RANK.get(decision, 1)
+
+    def record_decision(self, ts, symbol, decision):
+        """What the bot did about today's alert for `symbol`.
+
+        "taken", "no_setup", or the reason it passed - should_enter's own
+        vocabulary ("score", "daily_cap", "concurrency", "loss_cap",
+        "already_traded", "window", "kill_switch"), joined with "+" when
+        more than one applied.
+        """
+        row = self._execute(
+            "SELECT id, decision FROM alerts WHERE day=? AND symbol=?",
+            (_day(ts), symbol)).fetchone()
+        if row is None:
+            return False
+        if self._decision_rank(decision) < self._decision_rank(row["decision"]):
+            return False
+        if row["decision"] == decision:
+            return False
+        self._execute("UPDATE alerts SET decision=? WHERE id=?",
+                      (decision, row["id"]))
+        self._commit()
+        return True
+
+    def decision_report(self, day=None, since_ts=None):
+        """Per decision: how many resolved, how many won, mean R.
+
+        Only resolved, non-observed alerts count - an alert still tracking
+        has no outcome yet, and a near miss was never the bot's to take.
+        """
+        sql = ("SELECT COALESCE(decision, 'no_setup') AS decision,"
+               " COUNT(*) AS n, SUM(label) AS wins,"
+               " AVG(resolved_r) AS mean_r, MAX(mfe) AS best_mfe"
+               " FROM alerts WHERE observed=0 AND label IS NOT NULL")
+        params = []
+        if day:
+            sql += " AND day=?"
+            params.append(day)
+        if since_ts:
+            sql += " AND ts>=?"
+            params.append(since_ts)
+        sql += " GROUP BY 1 ORDER BY n DESC"
+        return [dict(r) for r in self._execute(sql, tuple(params)).fetchall()]
+
+    def missed_winners(self, limit=50, since_ts=None):
+        """Alerts that hit the target after the bot declined them.
+
+        The costliest rows in the journal: the setup was real, the outcome
+        was a win, and a rule the bot owns is why it was not taken.
+        """
+        sql = ("SELECT day, symbol, ts, price, decision, resolved_r, mfe"
+               " FROM alerts WHERE observed=0 AND label=1"
+               " AND decision IS NOT NULL AND decision NOT IN ('taken')")
+        params = []
+        if since_ts:
+            sql += " AND ts>=?"
+            params.append(since_ts)
+        sql += " ORDER BY resolved_r DESC LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in self._execute(sql, tuple(params)).fetchall()]
 
     def track_alert(self, alert_id, now_ts, price, high=None, low=None):
         """Update excursions; resolve the label when a threshold is crossed.

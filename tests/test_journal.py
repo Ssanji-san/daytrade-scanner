@@ -334,3 +334,96 @@ class TestCentTargetGrading:
         aid = j.record_alert(epoch(10, 0), "HODX", 5.00, 0.25, FEATURES)
         j.track_alert(aid, epoch(10, 2), price=5.21, high=5.22, low=5.05)
         assert j.labeled_dataset() == []                 # 20c is not +2R
+
+
+class TestDecisionsAreRecorded:
+    """What the stock did was always journalled. What the BOT did was not.
+
+    Every qualifying alert is tracked to its outcome whether or not it was
+    bought, so pairing the outcome with the reason it was declined is what
+    turns the journal into "which rule blocked a winner".
+    """
+
+    def _alert(self, journal, ts, symbol="AAA"):
+        return journal.record_alert(ts, symbol, 3.00, 0.15, {"rvol": 8.0})
+
+    def test_a_declined_setup_keeps_the_reason(self, journal):
+        j = journal
+        ts = epoch(10, 0)
+        self._alert(j, ts)
+        assert j.record_decision(ts, "AAA", "score")
+        row = j._execute("SELECT decision FROM alerts").fetchone()
+        assert row["decision"] == "score"
+
+    def test_several_reasons_are_kept_together(self, journal):
+        j = journal
+        ts = epoch(10, 0)
+        self._alert(j, ts)
+        j.record_decision(ts, "AAA", "daily_cap+score")
+        row = j._execute("SELECT decision FROM alerts").fetchone()
+        assert row["decision"] == "daily_cap+score"
+
+    def test_no_setup_never_erases_a_real_refusal(self, journal):
+        """The ladder only goes up.
+
+        A symbol is looked at every cycle: a setup declined on score at
+        10:15 and no trigger at all at 10:30. Last-write-wins would erase
+        the one fact worth keeping.
+        """
+        j = journal
+        ts = epoch(10, 0)
+        self._alert(j, ts)
+        j.record_decision(ts, "AAA", "score")
+        assert not j.record_decision(epoch(10, 30), "AAA", "no_setup")
+        row = j._execute("SELECT decision FROM alerts").fetchone()
+        assert row["decision"] == "score"
+
+    def test_taken_is_the_top_of_the_ladder(self, journal):
+        j = journal
+        ts = epoch(10, 0)
+        self._alert(j, ts)
+        j.record_decision(ts, "AAA", "no_setup")
+        assert j.record_decision(epoch(10, 15), "AAA", "taken")
+        assert not j.record_decision(epoch(10, 30), "AAA", "score")
+        row = j._execute("SELECT decision FROM alerts").fetchone()
+        assert row["decision"] == "taken"
+
+    def test_an_unknown_symbol_is_not_invented(self, journal):
+        j = journal
+        assert not j.record_decision(epoch(10, 0), "GHOST", "score")
+
+    def test_the_report_pairs_the_reason_with_the_outcome(self, journal):
+        j = journal
+        ts = epoch(10, 0)
+        for symbol, decision, label, r in [("WON", "score", 1, 2.0),
+                                           ("LOST", "score", 0, -1.0),
+                                           ("MINE", "taken", 1, 2.0)]:
+            j.record_alert(ts, symbol, 3.00, 0.15, {"rvol": 8.0})
+            j.record_decision(ts, symbol, decision)
+            j._execute("UPDATE alerts SET label=?, resolved_r=?, mfe=?"
+                       " WHERE symbol=?", (label, r, max(r, 0.0), symbol))
+        j._commit()
+
+        report = {r["decision"]: r for r in j.decision_report()}
+        assert report["score"]["n"] == 2 and report["score"]["wins"] == 1
+        assert report["taken"]["n"] == 1
+
+        missed = j.missed_winners()
+        assert [m["symbol"] for m in missed] == ["WON"]   # not LOST, not MINE
+        assert missed[0]["decision"] == "score"
+
+    def test_an_unresolved_alert_has_no_outcome_to_report(self, journal):
+        j = journal
+        ts = epoch(10, 0)
+        self._alert(j, ts)
+        j.record_decision(ts, "AAA", "score")
+        assert j.decision_report() == []      # still tracking
+
+    def test_a_near_miss_is_not_the_bots_to_have_missed(self, journal):
+        j = journal
+        ts = epoch(10, 0)
+        j.record_alert(ts, "NEAR", 3.00, 0.15, {"rvol": 2.0}, observed=1)
+        j._execute("UPDATE alerts SET label=1, resolved_r=2.0")
+        j._commit()
+        assert j.decision_report() == []
+        assert j.missed_winners() == []

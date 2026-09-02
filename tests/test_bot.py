@@ -93,3 +93,59 @@ class TestChooseEntries:
                               et(10, 0), CFG) != []
         assert choose_entries(rows, HeuristicScorer(), 0, set(), 0.0,
                               et(10, 0), CFG, losses_today=4) == []
+
+
+class TestSkipsAreExplained:
+    """Every one of these reasons was already computed and thrown away.
+
+    The alert is journalled and tracked to its outcome whether or not the
+    bot buys it, so the reason it passed is the half that was missing from
+    "which rule blocked a winner".
+    """
+
+    def test_the_daily_cap_names_itself(self):
+        skips = []
+        rows = [row("AAA"), row("BBB")]
+        picks = choose_entries(rows, HeuristicScorer(), trades_today=10,
+                               traded_symbols=set(), day_pnl=0.0,
+                               now=et(10, 0), cfg=CFG, skips=skips)
+        assert picks == []
+        assert {s["reason"] for s in skips} == {"daily_cap"}
+        assert {s["symbol"] for s in skips} == {"AAA", "BBB"}
+
+    def test_a_row_with_no_trigger_yet_is_not_a_refusal(self):
+        """It is a different thing from a setup the bot turned down, and
+        the journal must be able to tell them apart."""
+        skips = []
+        no_trigger = row("AAA")
+        no_trigger["setup"] = None
+        choose_entries([no_trigger], HeuristicScorer(), 0, set(), 0.0,
+                       et(10, 0), CFG, skips=skips)
+        assert [s["reason"] for s in skips] == ["no_setup"]
+
+    def test_several_reasons_are_reported_together(self):
+        skips = []
+        choose_entries([row("DUP")], HeuristicScorer(), trades_today=10,
+                       traded_symbols={"DUP"}, day_pnl=0.0, now=et(10, 0),
+                       cfg=CFG, skips=skips)
+        reason = skips[0]["reason"]
+        assert "daily_cap" in reason and "already_traded" in reason
+
+    def test_the_score_that_lost_is_kept_with_it(self):
+        skips = []
+        choose_entries([row("WEAK", rvol=0.5, catalyst=None)],
+                       HeuristicScorer(), 0, set(), 0.0, et(10, 0), CFG,
+                       skips=skips)
+        assert skips and skips[0]["score"] is not None
+
+    def test_taken_rows_are_not_reported_as_skips(self):
+        skips = []
+        picks = choose_entries([row("GOOD")], HeuristicScorer(), 0, set(),
+                               0.0, et(10, 0), CFG, skips=skips)
+        assert [p["symbol"] for p in picks] == ["GOOD"]
+        assert skips == []
+
+    def test_asking_for_nothing_still_works(self):
+        """The backtest and every existing caller pass no list at all."""
+        assert choose_entries([row("GOOD")], HeuristicScorer(), 0, set(),
+                              0.0, et(10, 0), CFG)
