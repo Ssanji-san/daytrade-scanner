@@ -37,15 +37,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Inputs reach the script through the environment rather than being
+      # interpolated straight into the shell.
       - name: Fill the float cache
         env:
           SEC_CONTACT: ${{ vars.SEC_CONTACT }}
-        run: |
-          python -u scripts/fetch_floats.py \
-            --rate "${RATE:-5}" --limit "${LIMIT:-0}"
-        # Inputs go through the environment rather than being interpolated
-        # into the shell.
-        # yamllint disable-line
+          RATE: ${{ inputs.rate || '5' }}
+          LIMIT: ${{ inputs.limit || '0' }}
+        run: python -u scripts/fetch_floats.py --rate "$RATE" --limit "$LIMIT"
+
       - name: Commit the cache
         run: |
           git config user.name "trade-bot"
