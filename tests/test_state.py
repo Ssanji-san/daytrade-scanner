@@ -262,18 +262,32 @@ class TestOpeningDrive:
         row = [s for s in state.build_states(now) if s["symbol"] == "HODX"][0]
         assert row["open_pct"] is None
 
-    def test_a_gapper_that_drifts_sideways_is_rejected(self):
-        # Gapped from 2.20 to 3.00 (+36% day_pct) but has gone nowhere
-        # since the bell, so the opening-drive gate turns it away.
+    def test_a_gapper_that_drifts_sideways_is_marked_down(self):
+        """Gapped from 2.20 to 3.00 (+36% day_pct) and gone nowhere since.
+
+        open_drive measures demand rather than tradability, so under the
+        four-of-five bar it is counted, not fatal: alone it marks the row
+        down, and the miss is recorded either way. Paired with a second
+        weak pillar the row drops out. Whether a gap-and-die is worth
+        buying on the strength of the other four is what the backtest is
+        for - the test pins the behaviour, not the verdict.
+        """
         state = MarketState(CFG)
         now = t(9, 45)
         state.ingest(now, {"DRIFT": snap(3.00, bar_open=2.99,
                                          bar_t="2026-07-14T13:31:00Z")})
         payload = state.payload(now)
-        assert payload["hod"]["qualified"] == []
-        near = payload["hod"]["near"][0]
-        assert "open_drive" in near["failed"]
-        assert near["day_pct"] > 30          # it looked great on day_pct
+        row = payload["hod"]["qualified"][0]
+        assert row["failed"] == ["open_drive"]
+        assert row["day_pct"] > 30          # it looked great on day_pct
+
+        # Drifting AND a 90M float: two weak pillars, so it is only watched.
+        state = MarketState(CFG)
+        state.ingest(now, {"DRIFT": snap(3.00, bar_open=2.99,
+                                         float_shares=90_000_000,
+                                         bar_t="2026-07-14T13:31:00Z")})
+        near = state.payload(now)["hod"]["near"][0]
+        assert sorted(near["failed"]) == ["float", "open_drive"]
 
 
 def test_payload_states_the_gates_actually_in_force():
