@@ -29,10 +29,16 @@ class Config:
     # criteria, so the model learns what a $5-10 mover does without a cent
     # being risked on one. 0 means observe only what can be traded.
     hod_observe_max_price: float = 10.0
-    # 50M, not Ross's 20M. Across 61 replayed sessions of the whole market
-    # only 5 rows cleared all the gates at once, which is not enough trades
-    # to learn from. These four numbers are loosened together and measured
-    # by scripts/sweep.py; they are a starting point, not a claim.
+    # Ross's 20M. It was widened to 50M once to manufacture trades and put
+    # back; the comment claiming 50M outlived the value by several commits.
+    #
+    # In practice this gate is STRICTER than it reads. True float needs paid
+    # data, so scanner/floats.py approximates it with shares outstanding,
+    # which counts insider and locked-up shares the market cannot buy. A
+    # company with 30M outstanding and 5M genuinely floating is rejected
+    # here, and it is exactly the stock the strategy wants. Widening the
+    # number is the wrong fix for that - it would admit real 50M floats
+    # too. The right fix is a better float source.
     hod_max_float: float = 20_000_000   # shares (approximated by shares outstanding)
     hod_min_pct_up: float = 10.0        # % up vs previous close
     # Disabled (0 = no check). An absolute share count measures the wrong
