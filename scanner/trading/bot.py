@@ -104,7 +104,8 @@ def journal_alert(journal, ts, row, now, observed, cfg: Config):
                  else row["price"] * cfg.bot_stop_pct / 100)
     return journal.record_alert(ts, row["symbol"], row["price"], r_dollars,
                                 features_from_row(row, now),
-                                setup=setup.get("setup"), observed=observed)
+                                setup=setup.get("setup"), observed=observed,
+                                failed=row.get("failed"))
 
 
 def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,

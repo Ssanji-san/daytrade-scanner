@@ -37,7 +37,10 @@ jobs:
         run: |
           git config user.name "trade-bot"
           git config user.email "actions@github.com"
-          python -m scanner.session --until-et 12:45 &
+          # -u, or nothing reaches the log until the process exits: a
+          # five-hour session prints its whole story at 12:45 and there is
+          # no way to see what it is doing while it matters.
+          python -u -m scanner.session --until-et 12:45 &
           SESSION_PID=$!
           # push fresh status + journal every 10 minutes while it runs
           while kill -0 $SESSION_PID 2>/dev/null; do

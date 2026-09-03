@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     mfe REAL DEFAULT 0, mae REAL DEFAULT 0,
     label INTEGER, resolved_ts INTEGER, resolved_r REAL,
     observed INTEGER DEFAULT 0,
-    decision TEXT,
+    decision TEXT, failed TEXT,
     UNIQUE(day, symbol)
 );
 CREATE TABLE IF NOT EXISTS trades (
@@ -44,6 +44,17 @@ CREATE TABLE IF NOT EXISTS models (
     ts INTEGER, samples INTEGER, holdout_acc REAL, weights TEXT
 );
 """
+
+
+def _join_failed(failed):
+    """Criteria names in one field, the way `decision` joins its reasons.
+
+    An empty list is not the same as unknown: "" means the row passed every
+    criterion, NULL means nothing recorded it.
+    """
+    if failed is None:
+        return None
+    return "+".join(failed)
 
 
 def _day(ts):
@@ -101,6 +112,10 @@ class Journal:
             self._db.execute("ALTER TABLE alerts ADD COLUMN decision TEXT")
         except sqlite3.OperationalError:
             pass
+        try:
+            self._db.execute("ALTER TABLE alerts ADD COLUMN failed TEXT")
+        except sqlite3.OperationalError:
+            pass
         self._db.commit()
 
     def _recoverable(self, exc):
@@ -128,10 +143,12 @@ class Journal:
     # ---------------------------------------------------------- alerts
 
     def record_alert(self, ts, symbol, price, r_dollars, features, setup=None,
-                     observed=0):
+                     observed=0, failed=None):
         """One alert per symbol per trading day; returns id, or None if dupe.
 
         `observed` marks a near-miss: graded for learning, never traded.
+        `failed` is the criteria it missed, narrowing across the session -
+        see _narrow_failed.
 
         A symbol nearly always appears in the near list before it qualifies,
         and the row is UNIQUE(day, symbol) - so the row written for the day
@@ -143,9 +160,10 @@ class Journal:
         first recorded so the alert still measures the moment it was spotted.
         """
         row = self._execute(
-            "SELECT id, observed FROM alerts WHERE day=? AND symbol=?",
+            "SELECT id, observed, failed FROM alerts WHERE day=? AND symbol=?",
             (_day(ts), symbol)).fetchone()
         if row is not None:
+            self._narrow_failed(row, failed)
             if row["observed"] and not int(observed):
                 self._execute(
                     "UPDATE alerts SET observed=0, setup=COALESCE(?, setup)"
@@ -156,13 +174,33 @@ class Journal:
         try:
             cur = self._execute(
                 "INSERT INTO alerts (ts, day, symbol, price, r_dollars,"
-                " features, setup, observed) VALUES (?,?,?,?,?,?,?,?)",
+                " features, setup, observed, failed)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
                 (ts, _day(ts), symbol, price, r_dollars, json.dumps(features),
-                 setup, int(observed)))
+                 setup, int(observed), _join_failed(failed)))
             self._commit()
             return cur.lastrowid
         except sqlite3.IntegrityError:
             return None          # raced with another writer; it is recorded
+
+    def _narrow_failed(self, row, failed):
+        """Keep the CLOSEST the row ever came to qualifying.
+
+        A symbol is graded every cycle and its failures move with the price:
+        two missing pillars at 09:35, one at 10:15 as volume builds. The
+        interesting number is the smallest - "it got within one criterion,
+        and that criterion was float" - so this only ever narrows. Same rule
+        as `decision`, which only ever upgrades.
+        """
+        if failed is None:
+            return
+        joined = _join_failed(failed)
+        current = row["failed"]
+        if current is not None and len(current.split("+")) <= len(failed):
+            return
+        self._execute("UPDATE alerts SET failed=? WHERE id=?",
+                      (joined, row["id"]))
+        self._commit()
 
     # A qualifying alert is journalled and tracked to its outcome whether or
     # not the bot buys it, so the journal already knows what every setup went
@@ -208,6 +246,41 @@ class Journal:
                       (decision, row["id"]))
         self._commit()
         return True
+
+    def miss_reasons(self, day=None, since_ts=None):
+        """Per criterion: how many rows it blocked, and what they did next.
+
+        The question the near list could never answer. `blocked_alone`
+        counts the rows where this was the ONLY thing in the way - those
+        are the ones a change to that criterion would actually buy, and
+        `alone_wins` says how many of them went on to reach the target.
+        A criterion that blocks a lot and wins nothing is doing its job.
+        """
+        sql = ("SELECT failed, label FROM alerts"
+               " WHERE failed IS NOT NULL AND failed != ''")
+        params = []
+        if day:
+            sql += " AND day=?"
+            params.append(day)
+        if since_ts:
+            sql += " AND ts>=?"
+            params.append(since_ts)
+
+        tally = {}
+        for row in self._execute(sql, tuple(params)).fetchall():
+            names = row["failed"].split("+")
+            for name in names:
+                seen = tally.setdefault(name, {"criterion": name, "blocked": 0,
+                                               "blocked_alone": 0,
+                                               "alone_wins": 0,
+                                               "alone_resolved": 0})
+                seen["blocked"] += 1
+                if len(names) == 1:
+                    seen["blocked_alone"] += 1
+                    if row["label"] is not None:
+                        seen["alone_resolved"] += 1
+                        seen["alone_wins"] += int(row["label"])
+        return sorted(tally.values(), key=lambda r: -r["blocked"])
 
     def decision_report(self, day=None, since_ts=None):
         """Per decision: how many resolved, how many won, mean R.

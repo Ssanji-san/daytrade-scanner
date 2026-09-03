@@ -427,3 +427,78 @@ class TestDecisionsAreRecorded:
         j._commit()
         assert j.decision_report() == []
         assert j.missed_winners() == []
+
+
+class TestMissedCriteriaAreKept:
+    """Which criterion turned a row away, not just that one did.
+
+    The near list showed this on the dashboard and then forgot it, so the
+    question "what is actually costing me setups" had no data behind it.
+    """
+
+    def _near(self, journal, ts, failed, symbol="AAA"):
+        return journal.record_alert(ts, symbol, 3.00, 0.15, FEATURES,
+                                    observed=1, failed=failed)
+
+    def test_the_criteria_are_recorded(self, journal):
+        self._near(journal, epoch(10, 0), ["float", "rvol"])
+        row = journal._execute("SELECT failed FROM alerts").fetchone()
+        assert row["failed"] == "float+rvol"
+
+    def test_getting_closer_replaces_the_earlier_miss(self, journal):
+        """Two pillars short at 09:35, one at 10:15 as volume builds. The
+        useful number is how close it ever came."""
+        self._near(journal, epoch(9, 35), ["float", "rvol"])
+        self._near(journal, epoch(10, 15), ["float"])
+        row = journal._execute("SELECT failed FROM alerts").fetchone()
+        assert row["failed"] == "float"
+
+    def test_drifting_further_away_does_not(self, journal):
+        self._near(journal, epoch(9, 35), ["float"])
+        self._near(journal, epoch(10, 15), ["float", "rvol", "hod"])
+        row = journal._execute("SELECT failed FROM alerts").fetchone()
+        assert row["failed"] == "float"
+
+    def test_passing_everything_is_not_the_same_as_unknown(self, journal):
+        """"" means it cleared every criterion; NULL means nobody looked."""
+        journal.record_alert(epoch(10, 0), "PASS", 3.00, 0.15, FEATURES,
+                             failed=[])
+        journal.record_alert(epoch(10, 0), "QUIET", 3.00, 0.15, FEATURES)
+        rows = {r["symbol"]: r["failed"] for r in
+                journal._execute("SELECT symbol, failed FROM alerts")}
+        assert rows["PASS"] == "" and rows["QUIET"] is None
+
+    def test_a_near_miss_that_qualifies_keeps_its_history(self, journal):
+        """The upgrade to tradable must not lose how it got there."""
+        self._near(journal, epoch(10, 0), ["rvol"])
+        journal.record_alert(epoch(10, 30), "AAA", 3.00, 0.15, FEATURES,
+                             observed=0, failed=[])
+        row = journal._execute("SELECT observed, failed FROM alerts").fetchone()
+        assert row["observed"] == 0
+        assert row["failed"] == ""        # it did clear them in the end
+
+    def test_the_report_says_what_each_criterion_cost(self, journal):
+        ts = epoch(10, 0)
+        # float alone blocked two rows; one of them went on to win.
+        for symbol, failed, label in [("W", ["float"], 1),
+                                      ("L", ["float"], 0),
+                                      ("M", ["float", "rvol"], 1)]:
+            journal.record_alert(ts, symbol, 3.00, 0.15, FEATURES,
+                                 observed=1, failed=failed)
+            journal._execute("UPDATE alerts SET label=? WHERE symbol=?",
+                             (label, symbol))
+        journal._commit()
+
+        report = {r["criterion"]: r for r in journal.miss_reasons()}
+        assert report["float"]["blocked"] == 3
+        assert report["float"]["blocked_alone"] == 2
+        assert report["float"]["alone_wins"] == 1
+        # rvol only ever appeared alongside float, so relaxing it alone
+        # would have bought nothing.
+        assert report["rvol"]["blocked"] == 1
+        assert report["rvol"]["blocked_alone"] == 0
+
+    def test_rows_that_passed_are_not_counted_as_blocked(self, journal):
+        journal.record_alert(epoch(10, 0), "PASS", 3.00, 0.15, FEATURES,
+                             failed=[])
+        assert journal.miss_reasons() == []
