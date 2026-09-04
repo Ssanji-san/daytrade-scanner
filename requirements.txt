@@ -1,2 +1,5 @@
 aiohttp>=3.9
 pytest>=8
+# zoneinfo reads the OS tz database, which Windows does not have - without
+# this every module doing ZoneInfo("America/New_York") fails to import there.
+tzdata>=2024.1; platform_system == "Windows"

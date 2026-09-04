@@ -156,21 +156,24 @@ class Journal:
         floor. Every alert in the journal ended up marked observed=1 while
         real trades were being taken, which is the wrong distribution to
         train on. A qualifying alert therefore UPGRADES the near-miss row it
-        finds. The upgrade is one-way, and the price and features stay as
-        first recorded so the alert still measures the moment it was spotted.
+        finds, and the upgrade is one-way.
+
+        The price does NOT stay as first recorded - see _reprice_at_trigger.
         """
         row = self._execute(
-            "SELECT id, observed, failed FROM alerts WHERE day=? AND symbol=?",
-            (_day(ts), symbol)).fetchone()
+            "SELECT id, observed, failed, setup FROM alerts"
+            " WHERE day=? AND symbol=?", (_day(ts), symbol)).fetchone()
         if row is not None:
             self._narrow_failed(row, failed)
+            repriced = self._reprice_at_trigger(row, ts, price, r_dollars,
+                                                features, setup)
             if row["observed"] and not int(observed):
                 self._execute(
                     "UPDATE alerts SET observed=0, setup=COALESCE(?, setup)"
                     " WHERE id=?", (setup, row["id"]))
                 self._commit()
                 return row["id"]
-            return None
+            return row["id"] if repriced else None
         try:
             cur = self._execute(
                 "INSERT INTO alerts (ts, day, symbol, price, r_dollars,"
@@ -182,6 +185,38 @@ class Journal:
             return cur.lastrowid
         except sqlite3.IntegrityError:
             return None          # raced with another writer; it is recorded
+
+    def _reprice_at_trigger(self, row, ts, price, r_dollars, features, setup):
+        """Move the alert to the first moment the bot could have acted.
+
+        An alert is a training sample answering "if the bot had bought this
+        row, would it have worked?" - so it has to be priced where the bot
+        would have bought. The entry is the setup: with no trigger,
+        choose_entries skips the row with "no_setup" and no money moves.
+
+        Pricing at first sighting instead produced backwards labels. CDTG on
+        2026-09-04 was first seen at $1.155 with no trigger yet, dipped to
+        $1.035 - through a stop the bot never set - and was graded a full
+        -1R. The trigger came later, the bot bought at $1.40, and the trade
+        made +1.14R. The journal recorded its only winning day as a loss.
+
+        So the first time a trigger appears the row moves to it wholesale:
+        new price, new features, new clock, and the grading starts over.
+        A label from before the trigger is discarded rather than kept,
+        because it measured a trade that was never available. `setup` is
+        the flag as well as the value - once set, this never fires again,
+        so an alert is re-priced at most once and always to its first
+        tradable moment.
+        """
+        if setup is None or row["setup"] is not None:
+            return False
+        self._execute(
+            "UPDATE alerts SET ts=?, price=?, r_dollars=?, features=?,"
+            " setup=?, mfe=0, mae=0, label=NULL, resolved_ts=NULL,"
+            " resolved_r=NULL WHERE id=?",
+            (ts, price, r_dollars, json.dumps(features), setup, row["id"]))
+        self._commit()
+        return True
 
     def _narrow_failed(self, row, failed):
         """Keep the CLOSEST the row ever came to qualifying.
@@ -285,22 +320,52 @@ class Journal:
     def decision_report(self, day=None, since_ts=None):
         """Per decision: how many resolved, how many won, mean R.
 
-        Only resolved, non-observed alerts count - an alert still tracking
-        has no outcome yet, and a near miss was never the bot's to take.
+        Only non-observed alerts count - a near miss was never the bot's to
+        take. A row still tracking has no outcome and is left out.
+
+        A `taken` row is scored on what the TRADE did, not on the alert's
+        label. The alert grades a hypothetical entry at the alert price and
+        the real fill can be some way from it, so reading the label here
+        reported the bot's only winning trade as a -1R loss.
         """
-        sql = ("SELECT COALESCE(decision, 'no_setup') AS decision,"
-               " COUNT(*) AS n, SUM(label) AS wins,"
-               " AVG(resolved_r) AS mean_r, MAX(mfe) AS best_mfe"
-               " FROM alerts WHERE observed=0 AND label IS NOT NULL")
+        sql = ("SELECT COALESCE(a.decision, 'no_setup') AS decision,"
+               " a.label, a.resolved_r, a.mfe, t.r_multiple AS trade_r"
+               " FROM alerts a LEFT JOIN trades t"
+               "   ON t.day = a.day AND t.symbol = a.symbol"
+               "  AND t.exit_ts IS NOT NULL"
+               " WHERE a.observed = 0")
         params = []
         if day:
-            sql += " AND day=?"
+            sql += " AND a.day=?"
             params.append(day)
         if since_ts:
-            sql += " AND ts>=?"
+            sql += " AND a.ts>=?"
             params.append(since_ts)
-        sql += " GROUP BY 1 ORDER BY n DESC"
-        return [dict(r) for r in self._execute(sql, tuple(params)).fetchall()]
+
+        tally = {}
+        for row in self._execute(sql, tuple(params)).fetchall():
+            taken = row["decision"] == "taken" and row["trade_r"] is not None
+            if not taken and row["label"] is None:
+                continue                      # still tracking
+            seen = tally.setdefault(row["decision"],
+                                    {"decision": row["decision"], "n": 0,
+                                     "wins": 0, "_r": [], "best_mfe": 0.0})
+            seen["n"] += 1
+            if taken:
+                seen["wins"] += int(row["trade_r"] > 0)
+                seen["_r"].append(row["trade_r"])
+            else:
+                seen["wins"] += int(row["label"])
+                if row["resolved_r"] is not None:
+                    seen["_r"].append(row["resolved_r"])
+            seen["best_mfe"] = max(seen["best_mfe"], row["mfe"] or 0.0)
+
+        out = []
+        for seen in tally.values():
+            rs = seen.pop("_r")
+            seen["mean_r"] = sum(rs) / len(rs) if rs else None
+            out.append(seen)
+        return sorted(out, key=lambda r: -r["n"])
 
     def missed_winners(self, limit=50, since_ts=None):
         """Alerts that hit the target after the bot declined them.

@@ -265,7 +265,11 @@ class TestNearMissUpgrade:
         row = journal.recent_alerts(5)[0]
         assert row["observed"] == 0
         assert row["setup"] == "micro_pullback"
-        assert row["price"] == 5.00         # as first spotted, not re-priced
+        # Re-priced to the trigger, NOT left at 5.00 as first spotted. This
+        # assertion used to read the other way round, and that is the bug:
+        # the row was graded from a price the bot had no way to buy at,
+        # because there was no entry trigger when it was first seen.
+        assert row["price"] == 5.20
         assert journal.learning_progress(40)["tradable"] == 0   # not graded yet
 
     def test_a_near_miss_never_demotes_a_tradable_row(self, journal):
@@ -502,3 +506,86 @@ class TestMissedCriteriaAreKept:
         journal.record_alert(epoch(10, 0), "PASS", 3.00, 0.15, FEATURES,
                              failed=[])
         assert journal.miss_reasons() == []
+
+
+class TestAlertIsPricedWhereTheBotCouldBuy:
+    """An alert answers "would buying this row have worked?", so it has to
+    be priced where the bot would actually have bought - at the trigger.
+
+    CDTG on 2026-09-04 is the case that forced this: first seen at $1.155
+    with no setup, dipped to $1.035 through a stop that did not exist yet,
+    graded -1R. The trigger came later, the bot bought at $1.40 and made
+    +1.14R. The journal filed its only winning trade as a loss.
+    """
+
+    def test_a_row_without_a_trigger_moves_to_the_trigger(self, journal):
+        journal.record_alert(epoch(9, 40), "CDTG", 1.155, 0.0578, FEATURES)
+        journal.record_alert(epoch(10, 54), "CDTG", 1.40, 0.07, FEATURES,
+                             setup="micro_pullback")
+        row = journal._execute("SELECT * FROM alerts").fetchone()
+        assert row["price"] == 1.40
+        assert row["r_dollars"] == 0.07
+        assert row["setup"] == "micro_pullback"
+        assert row["ts"] == epoch(10, 54)      # the clock restarts too
+
+    def test_a_label_from_before_the_trigger_is_discarded(self, journal):
+        """It measured a trade that was never on offer."""
+        aid = journal.record_alert(epoch(9, 40), "CDTG", 1.155, 0.0578,
+                                   FEATURES)
+        journal.track_alert(aid, epoch(9, 45), 1.035, high=1.16, low=1.035)
+        pre = journal._execute("SELECT label, resolved_r FROM alerts").fetchone()
+        assert pre["label"] == 0 and pre["resolved_r"] == -1.0   # the old bug
+
+        journal.record_alert(epoch(10, 54), "CDTG", 1.40, 0.07, FEATURES,
+                             setup="micro_pullback")
+        row = journal._execute("SELECT * FROM alerts").fetchone()
+        assert row["label"] is None and row["resolved_r"] is None
+        assert row["mfe"] == 0 and row["mae"] == 0     # excursions restart
+
+    def test_it_happens_once_and_only_to_the_first_trigger(self, journal):
+        journal.record_alert(epoch(9, 40), "AAA", 1.00, 0.05, FEATURES)
+        journal.record_alert(epoch(10, 0), "AAA", 1.40, 0.07, FEATURES,
+                             setup="micro_pullback")
+        journal.record_alert(epoch(11, 0), "AAA", 2.00, 0.10, FEATURES,
+                             setup="flat_top")
+        row = journal._execute("SELECT * FROM alerts").fetchone()
+        assert row["price"] == 1.40 and row["setup"] == "micro_pullback"
+
+    def test_a_row_that_arrives_with_a_trigger_is_left_alone(self, journal):
+        journal.record_alert(epoch(9, 40), "AAA", 1.00, 0.05, FEATURES,
+                             setup="micro_pullback")
+        journal.record_alert(epoch(10, 0), "AAA", 1.40, 0.07, FEATURES,
+                             setup="micro_pullback")
+        row = journal._execute("SELECT * FROM alerts").fetchone()
+        assert row["price"] == 1.00      # already priced where it could buy
+
+    def test_a_near_miss_can_be_repriced_and_still_upgrade(self, journal):
+        journal.record_alert(epoch(9, 40), "AAA", 1.00, 0.05, FEATURES,
+                             observed=1)
+        journal.record_alert(epoch(10, 0), "AAA", 1.40, 0.07, FEATURES,
+                             observed=0, setup="micro_pullback")
+        row = journal._execute("SELECT * FROM alerts").fetchone()
+        assert row["observed"] == 0 and row["price"] == 1.40
+
+
+class TestTakenRowsAreScoredOnTheTrade:
+    def test_the_trade_result_beats_the_alert_label(self, journal):
+        """The alert grades a hypothetical fill; the trade is what happened."""
+        journal.record_alert(epoch(10, 0), "CDTG", 1.155, 0.0578, FEATURES)
+        journal.record_decision(epoch(10, 0), "CDTG", "taken")
+        journal._execute("UPDATE alerts SET label=0, resolved_r=-1.0")
+        tid = journal.record_trade_open(epoch(10, 54), "CDTG", 714, 1.40,
+                                        1.33, [1.60], FEATURES)
+        journal.record_trade_close(tid, epoch(11, 4), 1.48, "time_stop")
+
+        report = {r["decision"]: r for r in journal.decision_report()}
+        assert report["taken"]["wins"] == 1
+        assert report["taken"]["mean_r"] > 0
+
+    def test_a_declined_row_still_uses_its_alert_label(self, journal):
+        journal.record_alert(epoch(10, 0), "SKIP", 3.00, 0.15, FEATURES)
+        journal.record_decision(epoch(10, 0), "SKIP", "score")
+        journal._execute("UPDATE alerts SET label=1, resolved_r=2.0")
+        journal._commit()
+        report = {r["decision"]: r for r in journal.decision_report()}
+        assert report["score"]["wins"] == 1 and report["score"]["mean_r"] == 2.0

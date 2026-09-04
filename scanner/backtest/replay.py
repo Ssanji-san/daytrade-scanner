@@ -112,13 +112,26 @@ def _mark(journal, tracked, ts, symbol_bars):
 
 
 def _record(journal, tracked, ts, row, now, observed, cfg):
-    """Journal a row once per session and remember its id for grading."""
+    """Journal a row, and keep offering it while the session runs.
+
+    The live cycle calls this every three seconds for as long as a symbol
+    is on screen, and record_alert depends on being called again: that is
+    how a near miss upgrades to tradable and how an alert is re-priced when
+    its entry trigger finally appears. Returning early on the second
+    sighting - which this did - froze every replayed alert at whatever it
+    was the first minute it showed up, so the replay graded a different
+    distribution from the one the live bot records. That is precisely the
+    skew journal_alert exists to prevent.
+
+    Only the first sighting counts towards `seen`, so the number stays a
+    count of distinct alerts rather than row-minutes.
+    """
     symbol = row["symbol"]
-    if symbol in tracked:
-        return None
+    first = symbol not in tracked
     alert_id = journal_alert(journal, ts, row, now, observed, cfg)
-    tracked[symbol] = alert_id      # None for a duplicate day+symbol
-    return alert_id
+    if first:
+        tracked[symbol] = alert_id  # None for a duplicate day+symbol
+    return first and alert_id is not None
 
 
 def replay_day(day, minute_bars, news_items, context, journal: Journal,
