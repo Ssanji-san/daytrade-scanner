@@ -166,7 +166,7 @@ class Journal:
         if row is not None:
             self._narrow_failed(row, failed)
             repriced = self._reprice_at_trigger(row, ts, price, r_dollars,
-                                                features, setup)
+                                                features, setup, observed)
             if row["observed"] and not int(observed):
                 self._execute(
                     "UPDATE alerts SET observed=0, setup=COALESCE(?, setup)"
@@ -186,7 +186,8 @@ class Journal:
         except sqlite3.IntegrityError:
             return None          # raced with another writer; it is recorded
 
-    def _reprice_at_trigger(self, row, ts, price, r_dollars, features, setup):
+    def _reprice_at_trigger(self, row, ts, price, r_dollars, features,
+                            setup, observed):
         """Move the alert to the first moment the bot could have acted.
 
         An alert is a training sample answering "if the bot had bought this
@@ -203,12 +204,18 @@ class Journal:
         So the first time a trigger appears the row moves to it wholesale:
         new price, new features, new clock, and the grading starts over.
         A label from before the trigger is discarded rather than kept,
-        because it measured a trade that was never available. `setup` is
-        the flag as well as the value - once set, this never fires again,
-        so an alert is re-priced at most once and always to its first
-        tradable moment.
+        because it measured a trade that was never available.
+
+        A row counts as priced only when it is triggered AND tradable, not
+        merely triggered. Reading `setup` alone as the flag left a second
+        door open: a near miss that already carried a trigger kept its
+        near-miss price when it later qualified, and the bot cannot buy a
+        near miss either. Both rows in the live training set were that
+        shape. Once a row is qualified with a trigger this never fires
+        again, so an alert is re-priced at most once.
         """
-        if setup is None or row["setup"] is not None:
+        already_priced = row["setup"] is not None and not row["observed"]
+        if setup is None or int(observed) or already_priced:
             return False
         self._execute(
             "UPDATE alerts SET ts=?, price=?, r_dollars=?, features=?,"
@@ -290,6 +297,11 @@ class Journal:
         are the ones a change to that criterion would actually buy, and
         `alone_wins` says how many of them went on to reach the target.
         A criterion that blocks a lot and wins nothing is doing its job.
+
+        Near misses are counted here, unlike decision_report which is
+        observed=0 only. That is deliberate rather than an oversight: a
+        near miss IS a row some criterion blocked, and they are most of
+        them - filtering them out would leave the report almost empty.
         """
         sql = ("SELECT failed, label FROM alerts"
                " WHERE failed IS NOT NULL AND failed != ''")
@@ -328,11 +340,16 @@ class Journal:
         the real fill can be some way from it, so reading the label here
         reported the bot's only winning trade as a -1R loss.
         """
+        # One trade per alert. Joining on day+symbol alone would count the
+        # row twice if a symbol were ever traded twice in a session; the
+        # earliest closed trade is the one `decision` recorded "taken" for.
         sql = ("SELECT COALESCE(a.decision, 'no_setup') AS decision,"
                " a.label, a.resolved_r, a.mfe, t.r_multiple AS trade_r"
-               " FROM alerts a LEFT JOIN trades t"
-               "   ON t.day = a.day AND t.symbol = a.symbol"
-               "  AND t.exit_ts IS NOT NULL"
+               " FROM alerts a LEFT JOIN trades t ON t.id = ("
+               "   SELECT id FROM trades x"
+               "    WHERE x.day = a.day AND x.symbol = a.symbol"
+               "      AND x.exit_ts IS NOT NULL"
+               "    ORDER BY x.ts LIMIT 1)"
                " WHERE a.observed = 0")
         params = []
         if day:
@@ -447,9 +464,21 @@ class Journal:
 
         A resolved alert keeps getting marked until it falls out of the
         tracking horizon, so mfe records how far a winner really ran.
+
+        Only rows with a trigger. A row with no setup is priced wherever it
+        happened to be first seen, and grading from there does not measure
+        a trade the bot could have made - it measures a coin flip taken at
+        a local high, which is where a momentum scanner flags things. Every
+        one of the 17 such rows in the live journal resolved to exactly
+        -1.00R before they were cleared. The counterpart is
+        _reprice_at_trigger: together they say an alert is graded only from
+        a moment the bot could have entered. The replay enforces the same
+        rule when it decides what to put in its `tracked` map - see
+        backtest.replay._record.
         """
         rows = self._execute(
-            "SELECT id, symbol FROM alerts WHERE day=? AND ts > ?",
+            "SELECT id, symbol FROM alerts"
+            " WHERE day=? AND ts > ? AND setup IS NOT NULL",
             (day, now_ts - self.alert_window_seconds)).fetchall()
         return [(r["id"], r["symbol"]) for r in rows]
 

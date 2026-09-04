@@ -589,3 +589,82 @@ class TestTakenRowsAreScoredOnTheTrade:
         journal._commit()
         report = {r["decision"]: r for r in journal.decision_report()}
         assert report["score"]["wins"] == 1 and report["score"]["mean_r"] == 2.0
+
+
+class TestOnlyTriggeredRowsAreGraded:
+    """An alert is graded only from a moment the bot could have entered.
+
+    _reprice_at_trigger moves a row to its trigger; this is the other half -
+    a row that never gets one is never graded at all. Grading from first
+    sighting measured a coin flip taken at a local high, which is where a
+    momentum scanner flags things: all 17 such rows in the live journal
+    resolved to exactly -1.00R.
+    """
+
+    def test_an_untriggered_row_is_not_offered_for_grading(self, journal):
+        journal.record_alert(epoch(10, 0), "NOSETUP", 3.00, 0.15, FEATURES)
+        assert journal.tracking_alerts("2026-07-14", epoch(10, 5)) == []
+
+    def test_it_becomes_gradable_the_moment_it_triggers(self, journal):
+        journal.record_alert(epoch(10, 0), "AAA", 3.00, 0.15, FEATURES)
+        assert journal.tracking_alerts("2026-07-14", epoch(10, 5)) == []
+        journal.record_alert(epoch(10, 6), "AAA", 3.10, 0.15, FEATURES,
+                             setup="micro_pullback")
+        assert [s for _, s in
+                journal.tracking_alerts("2026-07-14", epoch(10, 7))] == ["AAA"]
+
+    def test_a_row_that_arrives_triggered_is_gradable_at_once(self, journal):
+        journal.record_alert(epoch(10, 0), "AAA", 3.00, 0.15, FEATURES,
+                             setup="flat_top")
+        assert [s for _, s in
+                journal.tracking_alerts("2026-07-14", epoch(10, 1))] == ["AAA"]
+
+    def test_an_untriggered_row_still_carries_its_miss_reasons(self, journal):
+        """It is dropped from training, not from the diagnosis."""
+        journal.record_alert(epoch(10, 0), "AAA", 3.00, 0.15, FEATURES,
+                             observed=1, failed=["float"])
+        journal.record_decision(epoch(10, 0), "AAA", "no_setup")
+        assert journal.tracking_alerts("2026-07-14", epoch(10, 5)) == []
+        assert journal.miss_reasons()[0]["criterion"] == "float"
+
+
+class TestNearMissWithATriggerIsRepriced:
+    """The second door: `setup` alone was the "already priced" flag, so a
+    near miss that arrived WITH a trigger kept its near-miss price when it
+    later qualified - and the bot cannot buy a near miss either."""
+
+    def test_it_reprices_when_it_qualifies(self, journal):
+        journal.record_alert(epoch(9, 40), "AAA", 1.00, 0.05, FEATURES,
+                             observed=1, setup="micro_pullback")
+        journal.record_alert(epoch(10, 54), "AAA", 1.40, 0.07, FEATURES,
+                             observed=0, setup="micro_pullback")
+        row = journal._execute("SELECT * FROM alerts").fetchone()
+        assert row["price"] == 1.40 and row["ts"] == epoch(10, 54)
+        assert row["observed"] == 0
+
+    def test_a_label_from_its_near_miss_life_is_discarded(self, journal):
+        aid = journal.record_alert(epoch(9, 40), "AAA", 1.00, 0.05, FEATURES,
+                                   observed=1, setup="micro_pullback")
+        journal.track_alert(aid, epoch(9, 45), 0.94, high=1.01, low=0.94)
+        assert journal._execute("SELECT label FROM alerts").fetchone()["label"] == 0
+
+        journal.record_alert(epoch(10, 54), "AAA", 1.40, 0.07, FEATURES,
+                             observed=0, setup="micro_pullback")
+        row = journal._execute("SELECT label, mfe FROM alerts").fetchone()
+        assert row["label"] is None and row["mfe"] == 0
+
+    def test_one_that_never_qualifies_keeps_its_own_price(self, journal):
+        """A near miss is a deliberate counterfactual, not a missed trade."""
+        journal.record_alert(epoch(9, 40), "AAA", 1.00, 0.05, FEATURES,
+                             observed=1, setup="micro_pullback")
+        journal.record_alert(epoch(10, 54), "AAA", 1.40, 0.07, FEATURES,
+                             observed=1, setup="micro_pullback")
+        assert journal._execute("SELECT price FROM alerts").fetchone()["price"] == 1.00
+
+    def test_a_qualified_row_is_never_repriced_twice(self, journal):
+        journal.record_alert(epoch(9, 40), "AAA", 1.00, 0.05, FEATURES,
+                             observed=0, setup="micro_pullback")
+        journal.record_alert(epoch(10, 54), "AAA", 1.40, 0.07, FEATURES,
+                             observed=0, setup="flat_top")
+        row = journal._execute("SELECT price, setup FROM alerts").fetchone()
+        assert row["price"] == 1.00 and row["setup"] == "micro_pullback"

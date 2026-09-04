@@ -111,7 +111,7 @@ def _mark(journal, tracked, ts, symbol_bars):
                                 high=bar.get("h"), low=bar.get("l"))
 
 
-def _record(journal, tracked, ts, row, now, observed, cfg):
+def _record(journal, tracked, counted, ts, row, now, observed, cfg):
     """Journal a row, and keep offering it while the session runs.
 
     The live cycle calls this every three seconds for as long as a symbol
@@ -123,14 +123,24 @@ def _record(journal, tracked, ts, row, now, observed, cfg):
     distribution from the one the live bot records. That is precisely the
     skew journal_alert exists to prevent.
 
+    `counted` is every symbol journalled today; `tracked` is only those with
+    an entry trigger, because those are the only ones that may be graded -
+    the same rule journal.tracking_alerts applies to the live loop. The
+    replay grades through its own in-memory map rather than that query, so
+    the rule has to be applied here too or the replay labels a population
+    the live bot never labels.
+
     Only the first sighting counts towards `seen`, so the number stays a
     count of distinct alerts rather than row-minutes.
     """
     symbol = row["symbol"]
-    first = symbol not in tracked
+    first = symbol not in counted
     alert_id = journal_alert(journal, ts, row, now, observed, cfg)
-    if first:
-        tracked[symbol] = alert_id  # None for a duplicate day+symbol
+    counted.add(symbol)
+    if row.get("setup") and symbol not in tracked and alert_id is not None:
+        # The cycle its trigger appears: record_alert returns the id because
+        # it just re-priced the row to this moment.
+        tracked[symbol] = alert_id
     return first and alert_id is not None
 
 
@@ -154,7 +164,8 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
     cursor = SessionCursor()
     timeline = bars_by_minute(minute_bars, cfg)
     last_bar = {}
-    tracked = {}          # symbol -> alert id, this session only
+    tracked = {}          # symbol -> alert id, gradable rows only
+    counted = set()       # every symbol journalled, so `seen` counts once
     seen = 0
 
     for minute, symbol_bars in timeline.items():
@@ -191,11 +202,11 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
 
         payload = state.payload(now, require_news=cfg.backtest_require_news)
         for row in payload["hod"]["qualified"]:
-            if _record(journal, tracked, now_ts, row, now, 0, cfg):
+            if _record(journal, tracked, counted, now_ts, row, now, 0, cfg):
                 seen += 1
         if cfg.learn_from_near_misses:
             for row in payload["hod"].get("near") or []:
-                if _record(journal, tracked, now_ts, row, now, 1, cfg):
+                if _record(journal, tracked, counted, now_ts, row, now, 1, cfg):
                     seen += 1
 
         # Entries come after management so a position closing on this bar

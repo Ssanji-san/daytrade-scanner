@@ -18,6 +18,23 @@ def bar(t, o, h, l, c, v=20_000):
     return {"t": t, "o": o, "h": h, "l": l, "c": c, "v": v}
 
 
+def pullback_bars(day, start_minute=30, v=60_000):
+    """Bars that actually form a micro-pullback, so a trigger appears.
+
+    An alert is only graded once it has one - see
+    Journal.tracking_alerts - so a fixture of flat or monotonically rising
+    bars is never labelled, which is correct and not what these tests are
+    about. Rise to a swing high, pull back inside the configured depth
+    band, then break it.
+    """
+    shape = [(4.50, 4.55, 4.48, 4.55),
+             (4.55, 4.70, 4.53, 4.70),      # swing high 4.70
+             (4.70, 4.66, 4.60, 4.62),      # pullback: 2.1% deep, trigger 4.66
+             (4.62, 4.80, 4.62, 4.78)]      # breaks it -> micro_pullback
+    return [bar(f"{day}T13:{start_minute + i:02d}:00Z", o, h, l, c, v=v)
+            for i, (o, h, l, c) in enumerate(shape)]
+
+
 class TestNoLookahead:
     def test_unpublished_headlines_are_invisible(self):
         items = [{"symbol": "AAA", "headline": "already out", "ts": 1_000},
@@ -177,11 +194,8 @@ def test_a_thin_symbol_still_gets_resolved_at_the_close(tmp_path):
     """
     journal = Journal(str(tmp_path / "backtest.db"))
     day = "2026-08-12"
-    rows = []
-    for i in range(3):                       # prints, then goes quiet
-        stamp = f"{day}T13:{30 + i:02d}:00Z"
-        rows.append(bar(stamp, 5.0, 5.02, 4.98, 5.0, v=60_000))
-    rows.append(bar(f"{day}T15:00:00Z", 5.0, 5.02, 4.98, 5.0, v=60_000))
+    rows = pullback_bars(day)                # triggers, then goes quiet
+    rows.append(bar(f"{day}T15:00:00Z", 4.78, 4.80, 4.76, 4.78, v=60_000))
     context = {"prev_close": {"THIN": 4.00},
                "avg_volume": {"THIN": 400_000},
                "float_shares": {"THIN": 8_000_000}}
@@ -299,11 +313,7 @@ def test_grading_continues_past_the_entry_cutoff_but_recording_stops(tmp_path):
                       alert_window_minutes=CFG.bot_alert_window_minutes)
     day = "2026-08-12"
 
-    morning = []
-    for i in range(12):                       # 09:30-09:41 ET
-        price = 5.00 + i * 0.10
-        morning.append(bar(f"{day}T13:{30 + i:02d}:00Z", price, price + 0.02,
-                           round(price * 0.995, 4), price, v=40_000))
+    morning = pullback_bars(day, v=40_000)    # 09:30-09:33 ET, triggers
     # 17:00Z = 13:00 ET: past the entry cutoff, inside the 4-hour hold.
     morning.append(bar(f"{day}T17:00:00Z", 6.2, 9.00, 6.1, 8.90, v=40_000))
     # A mover that only shows up in the afternoon must never be recorded.
