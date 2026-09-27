@@ -110,6 +110,22 @@ def journal_alert(journal, ts, row, now, observed, cfg: Config):
                                 failed=row.get("failed"))
 
 
+def _position_qty(pos, trade):
+    """Shares actually held, from the broker; the journal's view if absent.
+
+    A pre-market exit sells what is really there. A scale-out limit that
+    only partly filled leaves more than runner_qty behind, and the stop has
+    to take all of it.
+    """
+    try:
+        qty = int(abs(float(pos.get("qty"))))
+    except (TypeError, ValueError):
+        qty = 0
+    if qty >= 1:
+        return qty
+    return trade["runner_qty"] if trade["banked"] else trade["qty"]
+
+
 def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
                    day_pnl, now, cfg: Config, score_threshold=None,
                    losses_today=0, open_positions=0, account=None,
@@ -434,7 +450,10 @@ class TradingBot:
                         symbol, trade, ts):
                     continue
                 exit_price = await self._closed_exit_price(symbol, trade)
-                reason = "trailing" if trade["banked"] else "stop"
+                # A pre-market exit is sent as a limit and recorded here, when
+                # the position is actually gone, under the reason it was sent.
+                reason = (trade.get("exit") or {}).get("reason") or (
+                    "trailing" if trade["banked"] else "stop")
                 self.journal.record_trade_close(trade["trade_id"], ts,
                                                 exit_price, reason)
                 del self.open_trades[symbol]
@@ -451,6 +470,14 @@ class TradingBot:
 
             if flatten:
                 await self._flatten_trade(symbol, trade, ts, pos, "flatten")
+                continue
+
+            if trade.get("managed_stop"):
+                if is_premarket(now):
+                    await self._manage_premarket(symbol, trade, state, now,
+                                                 ts, pos, price)
+                else:
+                    await self._hand_off_at_bell(symbol, trade, ts, pos, price)
                 continue
 
             if self.cfg.bot_scalp_mode:
@@ -631,6 +658,159 @@ class TradingBot:
                 and (ts - trade["opened_ts"]) / 60
                 >= self.cfg.bot_time_stop_minutes):
             await self._flatten_trade(symbol, trade, ts, pos, "time_stop")
+
+    # ------------------------------------------------ pre-market positions
+    #
+    # Before 09:30 Alpaca accepts only extended-hours limit orders, so the
+    # broker will hold no stop, no trailing stop and no market exit. The bot
+    # runs all three itself, and every order it sends here is a limit.
+
+    async def _manage_premarket(self, symbol, trade, state, now, ts, pos, price):
+        """One cycle of a position whose stop only the bot can enforce.
+
+        The order matters. An exit already working is chased first. A stale
+        price closes the position, because a stop is only as live as the
+        price it watches. Then the stop - which must never be skipped - and
+        only after it the target, the stall and the clock.
+        """
+        if trade.get("exit"):
+            await self._chase_exit(symbol, trade, state, ts, pos, price)
+            return
+        if not self._fresh(state, symbol, now):
+            broker_px = float(pos.get("current_price") or price)
+            await self._premarket_exit(symbol, trade, state, ts, pos,
+                                       broker_px, "stale")
+            return
+        if trade["banked"]:
+            self._trail_runner(trade, price)
+        if price <= trade["stop"]:
+            await self._premarket_exit(symbol, trade, state, ts, pos, price,
+                                       "trailing" if trade["banked"] else "stop")
+            return
+        if not trade["banked"] and price >= trade["scale_out"]:
+            await self._premarket_scale_out(symbol, trade, state, ts, pos, price)
+            return
+        if self._stalled(state, symbol, trade["opened_ts"]):
+            await self._premarket_exit(symbol, trade, state, ts, pos, price,
+                                       "stall")
+            return
+        if (not trade["banked"]
+                and (ts - trade["opened_ts"]) / 60
+                >= self.cfg.bot_time_stop_minutes):
+            await self._premarket_exit(symbol, trade, state, ts, pos, price,
+                                       "time_stop")
+
+    def _fresh(self, state, symbol, now):
+        """Has this symbol's price been updated recently enough to trust?
+
+        Held symbols stay in the snapshot set for candidate_ttl_minutes
+        after leaving the screener lists. A runner that outlives that goes
+        stale and is closed - giving up upside, never sitting unprotected.
+        """
+        history = getattr(state, "histories", {}).get(symbol)
+        last = history.latest if history is not None else None
+        if not last:
+            return False
+        age = (now - last[0]).total_seconds()
+        return age <= self.cfg.bot_stale_quote_seconds
+
+    def _trail_runner(self, trade, price):
+        """Ratchet the runner's stop up behind the high. Never down."""
+        trade["high"] = max(trade.get("high") or price, price)
+        pct = trade.get("trail_pct")
+        if pct:
+            trailed = round(trade["high"] * (1 - pct / 100), 2)
+            trade["stop"] = max(trade["stop"], trailed)
+
+    def _bid(self, state, symbol):
+        return (getattr(state, "latest", {}).get(symbol) or {}).get("bid")
+
+    async def _premarket_exit(self, symbol, trade, state, ts, pos, price,
+                              reason):
+        """Send the exit as an extended-hours limit, and do NOT record it.
+
+        _flatten_trade records the close straight away because a market
+        order fills; a limit may not. The close is written by _manage_open
+        once the position is really gone, and _chase_exit re-prices this
+        order if it sits unfilled.
+        """
+        await self.broker.cancel_orders_for(symbol)
+        qty = _position_qty(pos, trade)
+        px = premarket_exit_limit(price, self._bid(state, symbol), self.cfg)
+        order = await self.broker.submit_limit_sell(symbol, qty, px,
+                                                    extended_hours=True)
+        trade["exit"] = {"reason": reason, "order_id": (order or {}).get("id"),
+                         "ts": ts, "px": px}
+        print(f"[bot] EXIT {symbol} ({reason}): limit sell {qty} "
+              f"floor {px:.2f}, extended hours")
+
+    async def _chase_exit(self, symbol, trade, state, ts, pos, price):
+        """An exit limit that has not filled is re-priced one offset lower.
+
+        Each attempt is at least one offset under the one before and never
+        above the current bid less the offset, so a stop keeps walking down
+        a thin book until something takes it rather than sitting unfilled
+        while the price falls away.
+        """
+        pending = trade["exit"]
+        if ts - pending["ts"] < self.cfg.bot_premarket_chase_seconds:
+            return
+        await self.broker.cancel_orders_for(symbol)
+        fresh = premarket_exit_limit(price, self._bid(state, symbol), self.cfg)
+        px = max(0.01, round(min(pending["px"], fresh)
+                             - self.cfg.bot_premarket_offset_cents, 2))
+        qty = _position_qty(pos, trade)
+        order = await self.broker.submit_limit_sell(symbol, qty, px,
+                                                    extended_hours=True)
+        pending.update(order_id=(order or {}).get("id"), ts=ts, px=px)
+        print(f"[bot] CHASE {symbol}: exit unfilled, re-priced to floor "
+              f"{px:.2f}")
+
+    async def _premarket_scale_out(self, symbol, trade, state, ts, pos, price):
+        """Bank most of it at the target; the runner's stop goes to entry."""
+        if trade["runner_qty"] < 1:
+            await self._premarket_exit(symbol, trade, state, ts, pos, price,
+                                       "target")
+            return
+        await self.broker.cancel_orders_for(symbol)
+        px = premarket_exit_limit(price, self._bid(state, symbol), self.cfg)
+        await self.broker.submit_limit_sell(symbol, trade["bank_qty"], px,
+                                            extended_hours=True)
+        trade["banked"] = True
+        trade["stop"] = round(trade["entry"], 2)   # break-even floor
+        trade["trail_pct"] = (runner_trail_pct(trade["entry"], price, self.cfg)
+                              if self.cfg.bot_scalp_runner_trail else None)
+        trade["high"] = price
+        print(f"[bot] SCALE-OUT {symbol}: banked {trade['bank_qty']} limit "
+              f"floor {px:.2f}, runner {trade['runner_qty']} on a bot-run "
+              f"trail from {trade['stop']:.2f}")
+
+    async def _hand_off_at_bell(self, symbol, trade, ts, pos, price):
+        """At 09:30 give the stop back to the broker.
+
+        From the bell Alpaca takes stop and trailing orders again, and a
+        broker-held stop survives this process dying where a bot-run one
+        does not. An exit still working is finished at market. The handoff
+        never lowers protection: a runner goes to a native trailing stop
+        only if its trail would start at or above the stop the bot was
+        holding, and otherwise to a fixed stop at that level.
+        """
+        if trade.get("exit"):
+            await self._flatten_trade(symbol, trade, ts, pos,
+                                      trade["exit"]["reason"])
+            return
+        await self.broker.cancel_orders_for(symbol)
+        qty = _position_qty(pos, trade)
+        pct = trade.get("trail_pct") if trade["banked"] else None
+        if pct and round(price * (1 - pct / 100), 2) >= trade["stop"]:
+            order = await self.broker.submit_trailing_stop(symbol, qty, pct)
+            trade["trailing_order_id"] = (order or {}).get("id")
+            how = f"trailing {pct:g}%"
+        else:
+            await self.broker.submit_stop(symbol, qty, trade["stop"])
+            how = f"stop {trade['stop']:.2f}"
+        trade["managed_stop"] = False
+        print(f"[bot] BELL {symbol}: stop handed to the broker ({how})")
 
     async def _flatten_trade(self, symbol, trade, ts, pos, reason):
         # Clear protective orders first: an open sell blocks the close as a

@@ -718,3 +718,243 @@ class TestPremarketEntry:
         assert buy["limit_price"] == pytest.approx(2.00 * 1.003)
         assert "extended_hours" not in buy
         assert bot.open_trades["PRE"]["managed_stop"] is False
+
+
+class _Hist:
+    """Just what _fresh and _stalled read: when the price last came in, and
+    completed bars (none, so nothing reads as a stall)."""
+
+    def __init__(self, at, price):
+        self.latest = (at, price, 1_000_000)
+        self.completed_bars = []
+
+
+class PremarketState:
+    def __init__(self, at, price, bid=None, fresh=True):
+        seen = at if fresh else at - dt.timedelta(
+            seconds=CFG.bot_stale_quote_seconds + 1)
+        self.latest = {"PRE": {"price": price, "bid": bid}}
+        self.histories = {"PRE": _Hist(seen, price)}
+
+
+def _at(hour, minute, second=0):
+    return et(hour, minute) + dt.timedelta(seconds=second)
+
+
+class TestPremarketStop:
+    """Before 09:30 the broker holds no stop for us - the bot runs it.
+
+    Alpaca refuses stop, trailing and market orders outside regular hours,
+    so a pre-market position is entered with no stop attached. If anything
+    here is wrong, a position has no stop at all. Every behaviour is pinned.
+    """
+
+    OPEN = (8, 40)
+
+    def _open(self, tmp_path):
+        bot, broker, journal = make_bot(tmp_path)
+        pick = {"symbol": "PRE", "price": 2.00, "premarket": True,
+                "limit": 2.13, "qty": 200, "stop": 1.90, "score": 0.9,
+                "setup": "micro_pullback", "features": {"rvol": 9.0}}
+        asyncio.run(bot._enter(pick, ts=int(et(*self.OPEN).timestamp())))
+        broker._positions = [{"symbol": "PRE", "qty": "200",
+                              "avg_entry_price": "2.00",
+                              "current_price": 2.00}]
+        return bot, broker, journal
+
+    def _manage(self, bot, state, at):
+        asyncio.run(bot._manage_open(state, now=at, ts=int(at.timestamp())))
+
+    def _sells(self, broker):
+        return [o for o in broker.orders if o["side"] == "sell"]
+
+    def test_the_stop_fires_as_an_extended_hours_limit(self, tmp_path):
+        bot, broker, journal = self._open(tmp_path)
+        at = _at(8, 41)
+        self._manage(bot, PremarketState(at, 1.89, bid=1.88), at)
+
+        sell = self._sells(broker)[-1]
+        assert sell["type"] == "limit" and sell["extended_hours"] is True
+        assert sell["qty"] == 200
+        assert sell["limit_price"] == pytest.approx(1.78)   # bid 1.88 - 10c
+        assert bot.open_trades["PRE"]["exit"]["reason"] == "stop"
+
+    def test_the_close_is_not_recorded_until_the_position_is_gone(self, tmp_path):
+        """A limit may not fill. Recording it straight away - as the market
+        flatten does - would journal a close that has not happened."""
+        bot, broker, journal = self._open(tmp_path)
+        at = _at(8, 41)
+        self._manage(bot, PremarketState(at, 1.89, bid=1.88), at)
+        assert journal.recent_trades(5) == []
+        assert "PRE" in bot.open_trades
+
+        broker._positions = []                         # the sell filled
+        broker.closed_orders = [{"side": "sell", "filled_qty": "200",
+                                 "filled_avg_price": "1.87", "legs": []}]
+        later = _at(8, 41, 3)
+        self._manage(bot, PremarketState(later, 1.87, bid=1.86), later)
+        closed = journal.recent_trades(1)[0]
+        assert closed["exit_reason"] == "stop"
+        assert closed["exit_price"] == pytest.approx(1.87)
+        assert "PRE" not in bot.open_trades
+
+    def test_an_unfilled_stop_is_repriced_lower(self, tmp_path):
+        bot, broker, journal = self._open(tmp_path)
+        at = _at(8, 41)
+        self._manage(bot, PremarketState(at, 1.89, bid=1.88), at)
+        first = self._sells(broker)[-1]["limit_price"]
+
+        later = at + dt.timedelta(seconds=CFG.bot_premarket_chase_seconds)
+        self._manage(bot, PremarketState(later, 1.89, bid=1.88), later)
+        second = self._sells(broker)[-1]
+        assert broker.cancelled                         # the old one pulled
+        assert second["limit_price"] == pytest.approx(first - 0.10)
+        assert second["extended_hours"] is True
+
+    def test_it_is_not_repriced_before_the_chase_interval(self, tmp_path):
+        bot, broker, journal = self._open(tmp_path)
+        at = _at(8, 41)
+        self._manage(bot, PremarketState(at, 1.89, bid=1.88), at)
+        n = len(self._sells(broker))
+        soon = at + dt.timedelta(seconds=CFG.bot_premarket_chase_seconds - 2)
+        self._manage(bot, PremarketState(soon, 1.89, bid=1.88), soon)
+        assert len(self._sells(broker)) == n
+
+    def test_a_stale_price_closes_the_position(self, tmp_path):
+        """The stop is only as live as the price it watches."""
+        bot, broker, journal = self._open(tmp_path)
+        at = _at(8, 45)
+        self._manage(bot, PremarketState(at, 2.05, fresh=False), at)
+        assert bot.open_trades["PRE"]["exit"]["reason"] == "stale"
+        assert self._sells(broker)[-1]["extended_hours"] is True
+
+    def test_holding_above_the_stop_sends_nothing(self, tmp_path):
+        bot, broker, journal = self._open(tmp_path)
+        at = _at(8, 41)
+        self._manage(bot, PremarketState(at, 2.05, bid=2.04), at)
+        assert self._sells(broker) == []
+
+    def test_the_time_stop_exits_with_a_limit(self, tmp_path):
+        bot, broker, journal = self._open(tmp_path)
+        late = et(*self.OPEN) + dt.timedelta(minutes=CFG.bot_time_stop_minutes)
+        self._manage(bot, PremarketState(late, 2.05, bid=2.04), late)
+        assert bot.open_trades["PRE"]["exit"]["reason"] == "time_stop"
+        assert self._sells(broker)[-1]["type"] == "limit"
+
+    def test_scale_out_banks_with_a_limit_and_lifts_the_stop(self, tmp_path):
+        bot, broker, journal = self._open(tmp_path)
+        at = _at(8, 42)
+        self._manage(bot, PremarketState(at, 2.21, bid=2.20), at)
+        trade = bot.open_trades["PRE"]
+        bank = self._sells(broker)[-1]
+        assert bank["type"] == "limit" and bank["extended_hours"] is True
+        assert bank["qty"] == trade["bank_qty"]
+        assert trade["banked"] is True
+        assert trade["stop"] == pytest.approx(2.00)     # break-even
+
+    def test_the_runner_trail_ratchets_up_and_never_down(self, tmp_path):
+        bot, broker, journal = self._open(tmp_path)
+        at = _at(8, 42)
+        self._manage(bot, PremarketState(at, 2.21, bid=2.20), at)
+        trade = bot.open_trades["PRE"]
+        pct = trade["trail_pct"]
+        assert pct
+
+        up = _at(8, 43)
+        self._manage(bot, PremarketState(up, 2.60, bid=2.59), up)
+        high_stop = trade["stop"]
+        assert high_stop == pytest.approx(round(2.60 * (1 - pct / 100), 2))
+
+        dip = _at(8, 44)
+        self._manage(bot, PremarketState(dip, high_stop + 0.01), dip)
+        assert trade["stop"] == pytest.approx(high_stop)   # did not follow down
+
+        hit = _at(8, 45)
+        self._manage(bot, PremarketState(hit, high_stop - 0.01), hit)
+        assert trade["exit"]["reason"] == "trailing"
+
+
+class TestTheBellHandsTheStopBack:
+    """From 09:30 the broker takes stop orders again, and a broker-held stop
+    survives this process dying. The handoff must never lower protection."""
+
+    def _open(self, tmp_path):
+        return TestPremarketStop()._open(tmp_path)
+
+    def _manage(self, bot, state, at):
+        asyncio.run(bot._manage_open(state, now=at, ts=int(at.timestamp())))
+
+    def test_an_open_position_gets_a_broker_stop(self, tmp_path):
+        bot, broker, journal = self._open(tmp_path)
+        bell = _at(9, 30)
+        self._manage(bot, PremarketState(bell, 2.05), bell)
+        stop = [o for o in broker.orders if o["type"] == "stop"][-1]
+        assert stop["stop_price"] == pytest.approx(1.90)
+        assert stop["qty"] == 200
+        assert bot.open_trades["PRE"]["managed_stop"] is False
+
+    def test_an_exit_still_working_is_finished_at_market(self, tmp_path):
+        bot, broker, journal = self._open(tmp_path)
+        at = _at(9, 29, 50)
+        self._manage(bot, PremarketState(at, 1.89, bid=1.88), at)   # stop fires
+        broker.closed_orders = [{"side": "sell", "filled_qty": "200",
+                                 "filled_avg_price": "1.86", "legs": []}]
+        bell = _at(9, 30)
+        self._manage(bot, PremarketState(bell, 1.86), bell)
+        assert journal.recent_trades(1)[0]["exit_reason"] == "stop"
+        assert "PRE" not in bot.open_trades
+
+    def test_a_runner_whose_trail_would_start_lower_keeps_a_fixed_stop(self, tmp_path):
+        """A native trail restarts from the price at the bell. If that would
+        put it under the stop the bot was holding, the higher one stays."""
+        bot, broker, journal = self._open(tmp_path)
+        at = _at(9, 0)
+        self._manage(bot, PremarketState(at, 2.21, bid=2.20), at)   # bank
+        up = _at(9, 10)
+        self._manage(bot, PremarketState(up, 2.60), up)             # trail up
+        held = bot.open_trades["PRE"]["stop"]
+
+        bell = _at(9, 30)
+        self._manage(bot, PremarketState(bell, held + 0.02), bell)  # dipped
+        handed = [o for o in broker.orders
+                  if o["type"] in ("stop", "trailing_stop")][-1]
+        assert handed["type"] == "stop"
+        assert handed["stop_price"] == pytest.approx(held)
+
+
+def test_premarket_never_sends_an_order_alpaca_refuses_outside_hours(tmp_path):
+    """The guard that replaces "premarket is never traded".
+
+    Pre-market trading is now intended. What must never happen before 09:30
+    is a market, stop, trailing or OTO order - Alpaca rejects all of them
+    outside regular hours, and a rejected stop is a position with no stop.
+    Walk a whole pre-market life - entry, target, trail, exit, chase - and
+    check every order the bot sent.
+    """
+    bot, broker, journal = TestPremarketStop()._open(tmp_path)
+    steps = [(_at(8, 41), 2.10), (_at(8, 42), 2.21), (_at(8, 43), 2.50),
+             (_at(8, 44), 2.20), (_at(8, 44, 10), 2.19)]
+    for at, px in steps:
+        asyncio.run(bot._manage_open(PremarketState(at, px, bid=px - 0.01),
+                                     now=at, ts=int(at.timestamp())))
+
+    assert broker.orders, "nothing was sent - the walk did not exercise it"
+    for order in broker.orders:
+        assert order["type"] == "limit", order
+        assert order.get("extended_hours") is True, order
+        assert "order_class" not in order, order
+
+
+def test_the_runner_trail_never_drops_below_break_even(tmp_path):
+    """The max() in _trail_runner is what holds the floor.
+
+    A trail taken from a high only a little above entry would sit under what
+    was paid - 5% below $2.05 is $1.95 on a $2.00 entry. The runner is
+    playing with the market's money; it must never be allowed to lose.
+    """
+    bot, _, _ = make_bot(tmp_path)
+    trade = {"stop": 2.00, "trail_pct": 5.0, "high": None}
+    bot._trail_runner(trade, 2.05)
+    assert trade["stop"] == pytest.approx(2.00)
+    bot._trail_runner(trade, 2.40)                 # high enough to lift it
+    assert trade["stop"] == pytest.approx(2.28)

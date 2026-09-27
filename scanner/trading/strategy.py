@@ -192,15 +192,16 @@ def premarket_entry_limit(price, ask, cfg: Config):
     return round(base + cfg.bot_premarket_offset_cents, 2)
 
 
-def premarket_exit_limit(price, bid, cfg: Config, steps=1):
-    """The floor for a pre-market sell: the bid less the offset, per step.
+def premarket_exit_limit(price, bid, cfg: Config):
+    """The floor for a pre-market sell: the bid less the offset.
 
     A sell limit is a floor, not a price - it fills at the best bid above
-    it - so this is how far the bot is willing to be walked down a thin
-    book. Each unfilled re-price takes one more step. Never below a cent.
+    it - so this is how far the bot will let a thin book walk it down on
+    one attempt. Falls back to the last trade with no quote. Never below a
+    cent.
     """
     base = bid if bid else price
-    return max(0.01, round(base - steps * cfg.bot_premarket_offset_cents, 2))
+    return max(0.01, round(base - cfg.bot_premarket_offset_cents, 2))
 
 
 def max_positions(bankroll, cfg: Config):
