@@ -27,13 +27,15 @@ def ok_kwargs(**overrides):
 
 class TestWindow:
     def test_window_edges(self):
-        # Opens on the bell, shuts three hours later. Both edges are
-        # inclusive, so 12:30 still admits an entry and 12:31 does not.
-        assert not in_window(et(9, 29), CFG)
-        assert in_window(et(9, 30), CFG)
-        assert in_window(et(10, 31), CFG)   # was the old close
-        assert in_window(et(12, 30), CFG)
-        assert not in_window(et(12, 31), CFG)
+        # Pre-market from 08:00 (IEX's pre-market open) through the first
+        # half hour after the bell. Both edges are inclusive.
+        assert not in_window(et(7, 59), CFG)
+        assert in_window(et(8, 0), CFG)
+        assert in_window(et(9, 29), CFG)     # pre-market
+        assert in_window(et(9, 30), CFG)     # the bell
+        assert in_window(et(10, 0), CFG)
+        assert not in_window(et(10, 1), CFG)
+        assert not in_window(et(12, 30), CFG)   # the old close
 
     def test_handles_other_timezones(self):
         utc_10et = et(10, 0).astimezone(dt.timezone.utc)
@@ -48,8 +50,8 @@ class TestShouldEnter:
     @pytest.mark.parametrize("overrides,expected", [
         ({"price": 0.50}, "price"),
         ({"price": 25.0}, "price"),
-        ({"now": et(9, 20)}, "window"),
-        ({"now": et(12, 31)}, "window"),
+        ({"now": et(7, 50)}, "window"),
+        ({"now": et(10, 1)}, "window"),
         ({"trades_today": 10}, "daily_cap"),
         ({"losses_today": 4}, "loss_cap"),
         ({"open_positions": 5}, "concurrency"),
@@ -311,3 +313,25 @@ class TestRunnerTrail:
         assert runner_trail_pct(5.00, 5.00, CFG) is None
         assert runner_trail_pct(5.00, 4.90, CFG) is None
         assert runner_trail_pct(0, 5.00, CFG) is None
+
+
+class TestMaxPositions:
+    """Smaller pre-market positions must not become more positions."""
+
+    def test_the_account_caps_open_positions_at_its_slots(self):
+        from scanner.trading.strategy import max_positions
+        assert max_positions(2473.74, CFG) == 3
+        assert max_positions(1000.00, CFG) == 1
+
+    def test_a_large_account_hits_the_configured_ceiling(self):
+        from scanner.trading.strategy import max_positions
+        assert max_positions(100_000, CFG) == CFG.bot_max_concurrent_positions
+
+    def test_an_unknown_bankroll_falls_back_to_the_ceiling(self):
+        from scanner.trading.strategy import max_positions
+        assert max_positions(None, CFG) == CFG.bot_max_concurrent_positions
+
+    def test_should_enter_refuses_past_the_slots(self):
+        take, reasons = should_enter("X", **ok_kwargs(open_positions=3,
+                                                      bankroll=2473.74))
+        assert not take and "concurrency" in reasons

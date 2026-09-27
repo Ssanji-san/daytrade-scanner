@@ -83,7 +83,9 @@ class TestChooseEntries:
     def test_nothing_outside_the_window(self):
         rows = [row()]
         assert choose_entries(rows, HeuristicScorer(), 0, set(), 0.0,
-                              et(9, 20), CFG) == []
+                              et(7, 50), CFG) == []     # before IEX opens
+        assert choose_entries(rows, HeuristicScorer(), 0, set(), 0.0,
+                              et(10, 1), CFG) == []     # after the close
 
     def test_four_losses_ends_the_day(self):
         # The kill switch is a loss count now, not a dollar figure, so a

@@ -275,13 +275,13 @@ def test_journal_failure_after_entry_unwinds_the_order(tmp_path):
     assert broker._positions == []                # position closed
 
 
-def test_premarket_is_observed_and_journalled_but_never_traded(tmp_path):
-    """Starting the session early must not start trading early.
+def test_before_the_window_opens_is_observed_but_never_traded(tmp_path):
+    """Starting the session at 07:30 must not start trading at 07:30.
 
-    Premarket observation needs no separate mode: the entry window gate
-    already refuses entries before the bell, while the alert journal still
-    records what happened - which is exactly the data a premarket strategy
-    would have to be trained on.
+    The window opens at 08:00, when IEX's pre-market session does; before
+    that there is no IEX print to trade against. The alert journal still
+    records what it sees. (Pre-market entries from 08:00 go through their
+    own extended-hours path - see TestPremarketExecution.)
     """
     bot, broker, journal = make_bot(tmp_path)
     row = {"symbol": "GAPR", "price": 5.0, "rvol": 30.0, "day_pct": 180.0,

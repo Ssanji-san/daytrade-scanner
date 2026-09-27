@@ -93,7 +93,7 @@ def should_enter(symbol="", *, price, score, trades_today, traded_symbols,
         reasons.append("daily_cap")
     if losses_today >= cfg.bot_max_losses_per_day:
         reasons.append("loss_cap")
-    if open_positions >= cfg.bot_max_concurrent_positions:
+    if open_positions >= max_positions(bankroll, cfg):
         reasons.append("concurrency")
     if symbol in traded_symbols:
         reasons.append("already_traded")
@@ -170,6 +170,21 @@ def position_slots(bankroll, cfg: Config):
     if bankroll - whole * unit >= cfg.bot_min_position_dollars:
         whole += 1
     return max(0, min(whole, cfg.bot_max_concurrent_positions))
+
+
+def max_positions(bankroll, cfg: Config):
+    """How many positions may be open at once: the account's slots.
+
+    The budget used to do this job implicitly - every position cost about a
+    $1,000 unit, so $2,473 ran out after three. Pre-market positions are
+    sized on their entry limit and come out smaller, and without an explicit
+    cap the same budget would fit more of them: more total risk, not less.
+    Capping at the slot count keeps the account's TOTAL risk where it was.
+    Unknown bankroll falls back to the configured ceiling.
+    """
+    if not bankroll:
+        return cfg.bot_max_concurrent_positions
+    return min(cfg.bot_max_concurrent_positions, position_slots(bankroll, cfg))
 
 
 def size_position(price, cfg: Config, stop_price=None, unit=None, budget=None):

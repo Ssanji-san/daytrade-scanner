@@ -196,19 +196,22 @@ class Config:
     # The grading horizon must match the holding horizon, or the journal
     # labels a trade a loss while the bot is still holding it.
     bot_alert_window_minutes: int = 10
-    # 09:30, not 09:35: the first five minutes are often the best move of the
-    # day on a gapper, and the opening-range break lives in exactly that slot.
-    bot_window_open: str = "09:30"       # ET; no entries before/after the window
-    # Three hours, not one. A single hour fires roughly once every ten
-    # sessions; Ross takes several trades a day off this setup, and the
-    # window was the only lever that adds trades without relaxing a
-    # criterion. Three and not four because the runner is the ceiling:
-    # cron-job.org starts the session at 07:30 ET and GitHub kills a job at
-    # six hours, so a 12:30 close (session to 12:45 = 5h15m) fits and a
-    # 13:30 close does not. Watch open_pct: it measures from the 09:30
-    # bell, so a midday row "up 5% since the open" may be riding a move
-    # hours old. If the late entries are the losing ones, bring this back.
-    bot_window_close: str = "12:30"
+    # 08:00: pre-market, per Ross ("The REAL Reason Pre-Market Trading Is
+    # Better") - small caps put news out before the bell, and by 09:30 the
+    # move has often already run. 08:00 rather than his 07:00 because the
+    # live feed is IEX, whose pre-market session opens at 8:00 a.m.; a
+    # replay opened at 07:00 made zero IEX trades before 08:00 in eight
+    # months. Pre-market entries go through their own execution path
+    # (extended-hours limits, a stop the bot runs itself) because Alpaca
+    # refuses every other order type outside regular hours.
+    bot_window_open: str = "08:00"       # ET; no entries before/after the window
+    # 10:00: pre-market plus the first half hour, Ross's window. Stated
+    # plainly because it is a choice made against the replay: on Jan-Aug
+    # 2026 (IEX) the 08:00-10:00 slots came to about -0.25R a trade, the
+    # weakest configuration measured, and 10:00-12:30 was the least bad.
+    # The session still runs to 12:45, so positions opened near 10:00 are
+    # managed to their exit and every alert is still journalled.
+    bot_window_close: str = "10:00"
     bot_flatten_time: str = "15:50"      # ET; close everything before the bell
     # 0 = disabled. The day now ends on a loss COUNT
     # (bot_max_losses_per_day), not a dollar figure. Worth knowing: a count
