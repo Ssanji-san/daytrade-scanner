@@ -209,10 +209,12 @@ class Config:
     # Pre-Market Trading Is Better"): small caps put news out pre-market,
     # the move runs before the bell, and at 09:30 the bot buys its tail.
     # This is damage control, not an edge - the other 35 trades still
-    # average about -0.095R. It also retires the opening-range break,
-    # which fires in the first minutes after the bell (1 trade in that
-    # run). The session still starts 07:30 and journals everything it
-    # sees, so 09:30-10:00 keeps being measured; only entries move.
+    # average about -0.095R. Opening-range breaks inside that half hour
+    # are skipped too, but not the setup itself: the range forms
+    # 09:30-09:35 and a late break still triggers after 10:00 (one did in
+    # the replay of this change). The session still starts 07:30 and
+    # journals everything it sees, so 09:30-10:00 keeps being measured;
+    # only entries move.
     bot_window_open: str = "10:00"       # ET; no entries before/after the window
     # Three hours, not one. A single hour fires roughly once every ten
     # sessions; Ross takes several trades a day off this setup, and the
