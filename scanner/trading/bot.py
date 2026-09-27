@@ -502,6 +502,14 @@ class TradingBot:
             self.journal.delete_trade(trade["trade_id"])
         except Exception as exc:
             print(f"[bot] could not remove the pending trade row: {exc}")
+        try:
+            # "taken" was recorded when the broker accepted the order; it
+            # never filled, so it was never taken. This is what makes the
+            # fill rate - and whether the misses would have won - a query.
+            self.journal.record_decision(trade["opened_ts"], symbol,
+                                         "unfilled", override=True)
+        except Exception as exc:
+            print(f"[bot] could not record the unfilled entry: {exc}")
         self.open_trades.pop(symbol, None)
         print(f"[bot] ENTRY DROPPED {symbol}: {why}")
 

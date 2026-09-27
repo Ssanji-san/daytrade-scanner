@@ -510,6 +510,45 @@ class TestPendingEntries:
         assert broker.cancelled                   # the order was pulled
         assert journal.trades_today("2026-07-14") == []
 
+    def _as_a_cycle_records_it(self, journal, open_ts):
+        """The alert and the "taken" decision a real cycle writes first."""
+        journal.record_alert(open_ts, "HODX", 5.00, 0.25, {"rvol": 8.0},
+                             setup="micro_pullback")
+        journal.record_decision(open_ts, "HODX", "taken")
+
+    def _decision(self, journal):
+        return journal._execute(
+            "SELECT decision FROM alerts WHERE symbol='HODX'").fetchone()[0]
+
+    def test_an_entry_that_never_fills_is_recorded_unfilled(self, tmp_path):
+        """"taken" meant the broker accepted it. It never filled, so it was
+        never taken - and until this, the journal could not tell."""
+        bot, broker, journal, open_ts = self._pending(tmp_path)
+        self._as_a_cycle_records_it(journal, open_ts)
+        late = et(9, 40) + dt.timedelta(
+            seconds=CFG.bot_entry_timeout_seconds + 1)
+
+        self._manage(bot, late)
+
+        assert self._decision(journal) == "unfilled"
+
+    def test_a_rejected_entry_is_recorded_unfilled(self, tmp_path):
+        bot, broker, journal, open_ts = self._pending(tmp_path,
+                                                      status="rejected")
+        self._as_a_cycle_records_it(journal, open_ts)
+        self._manage(bot, et(9, 40) + dt.timedelta(seconds=3))
+        assert self._decision(journal) == "unfilled"
+
+    def test_a_filled_entry_stays_taken(self, tmp_path):
+        bot, broker, journal, open_ts = self._pending(tmp_path)
+        self._as_a_cycle_records_it(journal, open_ts)
+        broker.order_status = "filled"
+        broker.order_fill_price = "5.01"
+        broker._positions = [{"symbol": "HODX", "current_price": 5.01,
+                              "avg_entry_price": "5.01"}]
+        self._manage(bot, et(9, 41))
+        assert self._decision(journal) == "taken"
+
     def test_a_fill_with_no_position_still_records_the_close(self, tmp_path):
         """Bought and stopped out between two polls - that is a real trade."""
         bot, broker, journal, _ = self._pending(tmp_path)
