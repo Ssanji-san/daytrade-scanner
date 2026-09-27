@@ -119,17 +119,13 @@ class TestCaps:
                  "setup": {"setup": "micro_pullback", "stop": 4.85}}
                 for i in range(n)]
 
-    def test_the_account_holds_its_slots(self, sim):
-        """$2,500 opens its three slots, like the live bot, then stops.
-
-        Sized on the entry limit, positions no longer spend a whole $1,000
-        unit, so it is the slot count - passed through as the bankroll, the
-        way the live bot passes it - that binds, not cash running out.
-        """
+    def test_the_account_runs_out_before_the_concurrency_cap(self, sim):
+        """$2,500 buys two $1,000 positions and a $500 slice, then stops."""
         sim.enter(et(10, 0), int(et(10, 0).timestamp()), self._rows(10))
         assert len(sim.open) == 3
         spent = sum(p.qty * p.entry for p in sim.open.values())
         assert spent <= CFG.bot_bankroll
+        assert spent == pytest.approx(CFG.bot_bankroll, abs=15)
 
     def test_never_more_than_the_concurrency_cap(self, sim, tmp_path):
         """With capital to spare, the ceiling is what binds."""

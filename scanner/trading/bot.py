@@ -17,7 +17,6 @@ from .model import train
 from .strategy import (ET, bankroll_from, buying_power, exit_levels,
                        is_doji, position_slots, runner_trail_pct,
                        scalp_levels, scalp_split, should_enter, size_position,
-                       entry_limit,
                        split_qty, technical_stop, weighted_exit,
                        _parse_hhmm)
 
@@ -151,11 +150,8 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
         if stop is None:
             note(row["symbol"], "stop_too_wide", score)
             continue                     # risk to the setup low is too wide
-        # Sized on the worst fill the order allows, not on the signal: the
-        # limit may pay up to bot_limit_offset_cents more, and a stop-out
-        # from there must still cost only the intended risk.
-        limit = entry_limit(row["price"], cfg)
-        qty, stop = size_position(limit, cfg, stop_price=stop, budget=budget)
+        qty, stop = size_position(row["price"], cfg, stop_price=stop,
+                                  budget=budget)
         if qty < 1:
             note(row["symbol"], "no_capital", score)
             continue                     # no capital left, or too small
@@ -166,17 +162,17 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
             score_threshold=score_threshold,
             losses_today=losses_today,
             open_positions=open_positions + len(picks),
-            account=account, notional=qty * limit,
+            account=account, notional=qty * row["price"],
             bankroll=bankroll)
         if not take:
             note(row["symbol"], "+".join(reasons), score)
             continue
         picks.append({"symbol": row["symbol"], "price": row["price"],
-                      "limit": limit, "qty": qty, "stop": stop, "score": score,
+                      "qty": qty, "stop": stop, "score": score,
                       "setup": setup.get("setup"), "features": features})
         taken.add(row["symbol"])
         if budget is not None:
-            budget -= qty * limit
+            budget -= qty * row["price"]
     return picks
 
 
@@ -366,9 +362,7 @@ class TradingBot:
         # fill. Submitting buy and stop separately is rejected as a wash trade
         # ("opposite side market/stop order exists"), which is what kept every
         # entry from going through.
-        # Exactly the limit the position was sized on. Recomputing it here
-        # would let the order and the sizing disagree about the worst case.
-        limit = pick.get("limit") or entry_limit(entry, self.cfg)
+        limit = entry * (1 + self.cfg.bot_limit_slippage_pct / 100)
         parent = await self.broker.submit_oto_stop(
             pick["symbol"], total_qty, levels["stop"], limit_price=limit)
 
@@ -393,8 +387,7 @@ class TradingBot:
             "trade_id": trade_id, "parent_order_id": parent["id"],
             "trailing_order_id": None, "qty": total_qty,
             "bank_qty": bank_qty, "runner_qty": runner_qty,
-            "entry": entry, "signal_price": entry, "limit": limit,
-            "stop": levels["stop"],
+            "entry": entry, "signal_price": entry, "stop": levels["stop"],
             "scale_out": levels["scale_out"], "opened_ts": ts,
             # The order is accepted, not filled. Until a position exists this
             # trade is pending: a missing position means "not yet", not
@@ -402,7 +395,6 @@ class TradingBot:
             "filled": False,
             "banked": False}
         print(f"[bot] ENTER {pick['symbol']} x{total_qty} @~{entry:.2f} "
-              f"limit {limit:.2f} "
               f"[{pick.get('setup')}] stop {levels['stop']:.2f} "
               f"scale-out {levels['scale_out']:.2f}")
 
