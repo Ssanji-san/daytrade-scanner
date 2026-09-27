@@ -526,11 +526,15 @@ class TestPendingEntries:
 
 
 class TestCapitalIsSpentInUnits:
-    """A balance holds several $1,000 positions, not one trade for the lot.
+    """A balance holds several positions, not one trade for the lot.
 
     $2,473.74 used to go into a single position risking $123.69, with
-    bot_max_concurrent_positions=1 blocking anything else. It now opens
-    $1,000 + $1,000 + $473 and stops when the cash runs out.
+    bot_max_concurrent_positions=1 blocking anything else. Then it opened
+    $1,000 + $1,000 + $473. Now each position is sized on its entry limit
+    (signal + 10c) so the worst fill still risks $50, which makes them
+    smaller - and the account's slot count, not its cash, caps how many,
+    so total risk stays three positions' worth rather than growing into
+    the capital the smaller positions leave free.
     """
 
     def _rows(self, n, price=3.00):
@@ -550,26 +554,30 @@ class TestCapitalIsSpentInUnits:
                 return {"hod": {"qualified": rows, "near": []}}
         return State()
 
-    def test_one_cycle_fills_the_account_in_units(self, tmp_path):
+    def test_one_cycle_fills_the_accounts_slots(self, tmp_path):
         bot, broker, _ = make_bot(tmp_path)
         broker.equity = "2473.74"
 
         asyncio.run(bot.cycle(self._state(self._rows(4)), et(10, 0)))
 
-        notionals = sorted((t["qty"] * t["entry"]
-                            for t in bot.open_trades.values()), reverse=True)
-        assert len(notionals) == 3          # the fourth had no capital left
-        assert notionals[0] == pytest.approx(999.0, abs=3)
-        assert notionals[1] == pytest.approx(999.0, abs=3)
-        assert notionals[2] == pytest.approx(474.0, abs=3)
-        assert sum(notionals) <= 2473.74
+        trades = list(bot.open_trades.values())
+        # Three slots on $2,473.74; the fourth is refused on concurrency even
+        # though the smaller positions left cash for it.
+        assert len(trades) == 3
+        worst = [t["qty"] * (t["limit"] - t["stop"]) for t in trades]
+        assert all(r == pytest.approx(50.0, abs=1.0) for r in worst)
+        assert sum(worst) <= 150.0          # total risk no larger than before
+        assert sum(t["qty"] * t["limit"] for t in trades) <= 2473.74
 
     def test_risk_per_position_stays_50_dollars(self, tmp_path):
         bot, broker, _ = make_bot(tmp_path)
         broker.equity = "2473.74"
         asyncio.run(bot.cycle(self._state(self._rows(2)), et(10, 0)))
         for trade in bot.open_trades.values():
-            risk = (trade["entry"] - trade["stop"]) * trade["qty"]
+            # Measured from the worst fill the order allows, not the signal:
+            # a stop-out after a full 10c fill must still cost $50.
+            assert trade["limit"] == pytest.approx(trade["entry"] + 0.10)
+            risk = (trade["limit"] - trade["stop"]) * trade["qty"]
             assert risk == pytest.approx(50.0, abs=1.0)
 
     def test_a_thousand_dollar_account_still_gets_one_trade(self, tmp_path):

@@ -185,7 +185,15 @@ class Config:
     bot_stop_pct: float = 5.0            # fallback stop when no setup low exists
     bot_min_stop_pct: float = 5.0        # floor: never risk less than noise
     bot_max_stop_pct: float = 5.0        # skip setups whose stop is this far away
-    bot_limit_slippage_pct: float = 0.3  # marketable limit above the ask
+    # The most an entry may pay above the signal: Ross's 10c, so a stock
+    # breaking out still fills. It was 0.3% of price, which the broker's
+    # two-decimal limit rounds to ZERO on anything under $1.67 - six of the
+    # first seven live trades - so the "marketable limit above the ask" was
+    # really a limit at the last trade. Positions are sized on this worst
+    # case (see entry_limit), so a full 10c fill still risks the intended
+    # amount; the cost is size, about 57% fewer shares on a $1.50 stock
+    # where the 5% stop is only 7.5c.
+    bot_limit_offset_cents: float = 0.10
     bot_scale_out_r: float = 2.0         # bank half here
     bot_runner_trail_pct: float = 5.0    # native trailing-stop width for the runner
     # Scalping: in and out. Last entry 12:30 + 10m = 12:40, long before the

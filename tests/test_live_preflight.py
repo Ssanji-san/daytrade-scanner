@@ -108,11 +108,12 @@ def test_a_full_session_enters_scales_and_stalls_out(rig):
     assert "HODX" in bot.open_trades, "the bot did not take the trade"
     trade = bot.open_trades["HODX"]
     entry = trade["entry"]
-    assert trade["qty"] * entry == pytest.approx(1000, abs=15), "not the full account"
-    assert (entry - trade["stop"]) * trade["qty"] == pytest.approx(50, abs=2), "risk is not $50"
+    assert trade["limit"] == pytest.approx(round(entry + 0.10, 2)), "limit is not signal + 10c"
+    assert (trade["limit"] - trade["stop"]) * trade["qty"] == pytest.approx(50, abs=2),         "a full 10c fill would not risk $50"
     assert trade["scale_out"] == pytest.approx(round(entry + 0.20, 2)), "target is not +20c"
     orders = [o for o in broker.orders if o["side"] == "buy"]
     assert len(orders) == 1 and orders[0]["order_class"] == "oto", "entry must be one OTO order"
+    assert orders[0]["limit_price"] == pytest.approx(trade["limit"]),         "the order must carry the limit the position was sized on"
 
     # --- +20c: bank 65%, runner stop to break-even ---
     broker._positions = [{"symbol": "HODX", "current_price": entry + 0.22}]
