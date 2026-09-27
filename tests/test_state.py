@@ -290,3 +290,28 @@ def test_payload_states_the_gates_actually_in_force():
     assert c["max_float"] == CFG.hod_max_float
     assert c["min_rvol"] == CFG.hod_min_rvol
     assert c["min_open_pct"] == CFG.hod_min_open_pct
+
+
+class TestRowsKnowWhichSideOfTheBellTheyAreOn:
+    def test_before_the_bell(self):
+        state = MarketState(CFG)
+        now = t(8, 15)
+        state.ingest(now, {"PRE": snap(3.00, bar_t="2026-07-14T12:15:00Z")})
+        row = [s for s in state.build_states(now) if s["symbol"] == "PRE"][0]
+        assert row["premarket"] is True
+
+    def test_at_the_bell(self):
+        state = MarketState(CFG)
+        now = t(9, 30)
+        state.ingest(now, {"BELL": snap(3.00, bar_t="2026-07-14T13:30:00Z")})
+        row = [s for s in state.build_states(now) if s["symbol"] == "BELL"][0]
+        assert row["premarket"] is False
+
+    def test_a_premarket_mover_can_now_qualify(self):
+        """End to end: the live journal saw rvol-500 movers at 07:30 and
+        could qualify none of them, because the open did not exist yet."""
+        state = MarketState(CFG)
+        now = t(8, 15)
+        state.ingest(now, {"PRE": snap(3.00, bar_t="2026-07-14T12:15:00Z")})
+        qualified = state.payload(now)["hod"]["qualified"]
+        assert [r["symbol"] for r in qualified] == ["PRE"]
