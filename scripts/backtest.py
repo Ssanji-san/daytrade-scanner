@@ -308,26 +308,69 @@ def _bucket_report(rows, cfg):
 
 
 def _hour_report(rows, cfg):
-    """Results by entry hour, in ET.
+    """Results by entry time, in half-hour ET buckets.
 
     Ross stops trading at 10:00 because his own P&L told him to. This is how
     the replay says whether the same is true of this setup, rather than
     importing his conclusion.
+
+    Half hours, not hours: Ross splits his own statistics this way, and an
+    hourly bucket cannot separate 09:00-09:30 (pre-market) from 09:30-10:00
+    (the bell), or 07:00-07:30 (needs an earlier session start) from 07:30
+    onward (reachable today). Those are exactly the boundaries that matter.
     """
-    by_hour = {}
+    def bucket(row):
+        et = dt.datetime.fromtimestamp(row["ts"], ET)
+        return et.hour, 0 if et.minute < 30 else 30
+
+    by_slot = {}
     for row in rows:
-        by_hour.setdefault(dt.datetime.fromtimestamp(row["ts"], ET).hour,
-                           []).append(row)
-    print(f"[trades] {'entry hr':>12} {'n':>5} {'win':>6} {'mean R':>8} "
-          f"{'$':>9}")
-    for hour in sorted(by_hour):
-        block = by_hour[hour]
+        by_slot.setdefault(bucket(row), []).append(row)
+    print(f"[trades] {'entry ET':>12} {'n':>5} {'win':>6} {'stop':>6} "
+          f"{'mean R':>8} {'$':>9}")
+    for hour, minute in sorted(by_slot):
+        block = by_slot[(hour, minute)]
         rs = [r["r_multiple"] or 0.0 for r in block]
         wins = sum(1 for x in rs if x > 0)
+        stops = sum(1 for r in block if r.get("exit_reason") == "stop")
         pnl = sum(r["pnl"] or 0.0 for r in block)
-        print(f"[trades] {f'{hour:02d}:00 ET':>12} {len(block):>5} "
-              f"{wins / len(block):>5.1%} {sum(rs) / len(rs):>+7.2f}R "
-              f"{pnl:>+8.0f}")
+        print(f"[trades] {f'{hour:02d}:{minute:02d} ET':>12} {len(block):>5} "
+              f"{wins / len(block):>5.1%} {stops / len(block):>5.1%} "
+              f"{sum(rs) / len(rs):>+7.2f}R {pnl:>+8.0f}")
+    _session_split(rows)
+
+
+def _session_split(rows):
+    """Before the bell against after it - the pre-market decision in one table.
+
+    The simulator fills a stop exactly at the stop price. A stop the bot has
+    to manage itself, on a thin pre-market book, will not. `absorbs` is how
+    much extra loss per stop-out the block could take before its expectancy
+    reached zero: expectancy / stop rate, in R. That is the margin real
+    execution has to fit inside, and it is what decides whether pre-market
+    is worth building an execution path for.
+    """
+    bell = (9, 30)
+    halves = {"before 09:30": [], "from 09:30": []}
+    for row in rows:
+        et = dt.datetime.fromtimestamp(row["ts"], ET)
+        key = "before 09:30" if (et.hour, et.minute) < bell else "from 09:30"
+        halves[key].append(row)
+    print(f"[trades] {'session':>12} {'n':>5} {'mean R':>8} {'+/-SE':>7} "
+          f"{'stop':>6} {'absorbs':>9}")
+    for name, block in halves.items():
+        if not block:
+            print(f"[trades] {name:>12} {0:>5}")
+            continue
+        rs = [r["r_multiple"] or 0.0 for r in block]
+        n = len(rs)
+        mean = sum(rs) / n
+        se = ((sum((x - mean) ** 2 for x in rs) / (n - 1)) / n) ** 0.5             if n > 1 else float("nan")
+        stop_rate = sum(1 for r in block if r.get("exit_reason") == "stop") / n
+        absorbs = (f"{mean / stop_rate:>+8.2f}R" if stop_rate and mean > 0
+                   else f"{'-':>9}")
+        print(f"[trades] {name:>12} {n:>5} {mean:>+7.3f}R {se:>6.3f} "
+              f"{stop_rate:>5.1%} {absorbs}")
 
 
 def trade_report(journal, cfg):
