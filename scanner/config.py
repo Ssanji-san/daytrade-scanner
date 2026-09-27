@@ -196,9 +196,18 @@ class Config:
     # The grading horizon must match the holding horizon, or the journal
     # labels a trade a loss while the bot is still holding it.
     bot_alert_window_minutes: int = 10
-    # 09:30, not 09:35: the first five minutes are often the best move of the
-    # day on a gapper, and the opening-range break lives in exactly that slot.
-    bot_window_open: str = "09:30"       # ET; no entries before/after the window
+    # 10:00, not 09:30. The first half hour after the bell was the worst
+    # slot in every replay: on current main (Jan-Aug 2026, IEX) 25 of 60
+    # trades entered 09:30-10:00 at -0.32R, -$403 of the run's -$559, with
+    # 48% stopped out. Ross gives the mechanism ("The REAL Reason
+    # Pre-Market Trading Is Better"): small caps put news out pre-market,
+    # the move runs before the bell, and at 09:30 the bot buys its tail.
+    # This is damage control, not an edge - the other 35 trades still
+    # average about -0.095R. It also retires the opening-range break,
+    # which fires in the first minutes after the bell (1 trade in that
+    # run). The session still starts 07:30 and journals everything it
+    # sees, so 09:30-10:00 keeps being measured; only entries move.
+    bot_window_open: str = "10:00"       # ET; no entries before/after the window
     # Three hours, not one. A single hour fires roughly once every ten
     # sessions; Ross takes several trades a day off this setup, and the
     # window was the only lever that adds trades without relaxing a

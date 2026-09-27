@@ -45,23 +45,28 @@ def feed(state, now, price, cum, o=None, h=None, l=None):
 
 
 def a_session(state, news_ts):
-    """Ramp off the open, pull back three bars, then break out."""
+    """Ramp, pull back three bars, then break out - inside the entry window.
+
+    Runs from 10:00, not the bell: entries open at 10:00 because 09:30-10:00
+    was the worst half hour in every replay. The shape is what this proves,
+    not the clock.
+    """
     cum = 0
-    # 09:30-09:38 drive off the bell: 2.75 -> 3.05
+    # 10:00-10:08 drive: 2.75 -> 3.05
     for i in range(9):
-        now = et(9, 30 + i)
+        now = et(10, 0 + i)
         px = round(2.75 + 0.30 * i / 8, 2)
         cum += 90_000
         feed(state, now, px, cum, o=round(px - 0.02, 2),
              h=round(px + 0.01, 2), l=round(px - 0.03, 2))
-    # 09:39-09:41 pull back to 2.96
+    # 10:09-10:11 pull back to 2.96
     for i, px in enumerate((3.02, 2.99, 2.96)):
-        now = et(9, 39 + i)
+        now = et(10, 9 + i)
         cum += 60_000
         feed(state, now, px, cum, o=round(px + 0.03, 2),
              h=round(px + 0.04, 2), l=round(px - 0.01, 2))
-    # 09:42 breaks the prior candle high -> the entry
-    now = et(9, 42)
+    # 10:12 breaks the prior candle high -> the entry
+    now = et(10, 12)
     cum += 95_000
     feed(state, now, 3.05, cum, o=2.97, h=3.06, l=2.96)
     state.set_news(now, [{"symbol": "HODX", "ts": news_ts,
@@ -111,7 +116,7 @@ def test_a_full_session_enters_scales_and_stalls_out(rig):
 
     # --- +20c: bank 65%, runner stop to break-even ---
     broker._positions = [{"symbol": "HODX", "current_price": entry + 0.22}]
-    later = et(9, 45)
+    later = et(10, 15)
     cum += 90_000
     feed(state, later, round(entry + 0.22, 2), cum,
          o=round(entry + 0.10, 2), h=round(entry + 0.24, 2), l=round(entry + 0.08, 2))
@@ -132,11 +137,11 @@ def test_a_full_session_enters_scales_and_stalls_out(rig):
 
     # --- two dojis: the stall closes the runner ---
     for i in range(2):
-        t = et(9, 46 + i)
+        t = et(10, 16 + i)
         cum += 20_000
         px = round(entry + 0.21, 2)
         feed(state, t, px, cum, o=px, h=round(px + 0.05, 2), l=round(px - 0.05, 2))
-    end = et(9, 49)
+    end = et(10, 19)
     cum += 20_000
     feed(state, end, round(entry + 0.21, 2), cum)
     asyncio.run(bot.cycle(state, end))

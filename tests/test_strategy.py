@@ -27,11 +27,12 @@ def ok_kwargs(**overrides):
 
 class TestWindow:
     def test_window_edges(self):
-        # Opens on the bell, shuts three hours later. Both edges are
-        # inclusive, so 12:30 still admits an entry and 12:31 does not.
+        # Opens half an hour after the bell, shuts at 12:30. Both edges are
+        # inclusive, so 10:00 and 12:30 admit an entry; 09:59 and 12:31 do not.
         assert not in_window(et(9, 29), CFG)
-        assert in_window(et(9, 30), CFG)
-        assert in_window(et(10, 31), CFG)   # was the old close
+        assert not in_window(et(9, 30), CFG)   # the bell: no longer an entry
+        assert not in_window(et(9, 59), CFG)   # the worst half hour, skipped
+        assert in_window(et(10, 0), CFG)
         assert in_window(et(12, 30), CFG)
         assert not in_window(et(12, 31), CFG)
 
