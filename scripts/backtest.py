@@ -68,6 +68,11 @@ def _lookback_start(start, days=BASELINE_LOOKBACK_DAYS):
 async def run(start, end, feed, fetch_only, trades=False, require_news=True,
               score_bar=0.0, scale_out=None):
     cfg = replace(DEFAULT, backtest_require_news=require_news)
+    if cfg.backtest_window_open:
+        # The replay's entry window only; the live bot reads bot_window_open.
+        cfg = replace(cfg, bot_window_open=cfg.backtest_window_open)
+        print(f"[backtest] entry window {cfg.bot_window_open}-"
+              f"{cfg.bot_window_close} ET (live: {DEFAULT.bot_window_open})")
     if scale_out is not None:
         cfg = replace(cfg, bot_scalp_scale_out_pct=scale_out)
     cache = fetch.Cache(cfg)

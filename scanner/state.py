@@ -142,6 +142,11 @@ class MarketState:
 
     def build_states(self, now):
         states = []
+        # Before the bell some criteria are undefined rather than failed -
+        # open_drive measures from an open that has not happened yet. The
+        # row says which side of 09:30 it is on so hod.scan can tell the
+        # difference between "no open yet" and "open unknown".
+        premarket = now.astimezone(ET).time() < MARKET_OPEN
         for sym, data in self.latest.items():
             history = self.histories[sym]
             price, prev_close = data["price"], data.get("prev_close")
@@ -169,6 +174,7 @@ class MarketState:
                                and price >= symbol_vwap),
                 "gap_pct": gap_pct,
                 "open_pct": open_pct,
+                "premarket": premarket,
                 "opening_range": opening_range,
                 "setup": setup,
                 "symbol": sym,

@@ -233,7 +233,19 @@ class Config:
     # The replay must cover the same hours the live session does. Training
     # on afternoons the bot never trades would teach it a market it does not
     # see - the same train/serve skew that argues against SIP training data.
-    backtest_open_et: str = "07:30"     # cron-job.org starts the session here
+    # 07:00, not the 07:30 cron-job.org start: the half-hour report shows
+    # whether 07:00-07:30 is worth asking for an earlier session.
+    backtest_open_et: str = "07:00"
+    # Opens the REPLAY's entry window pre-market without touching the live
+    # one. Ross: "by the time the market opens, the major move has already
+    # happened" - this measures whether that holds for this setup before
+    # anything is built to trade it. The live bot cannot trade pre-market
+    # yet: its entry is an OTO whose stop leg Alpaca rejects outside regular
+    # hours, and every exit it uses is an order type Alpaca refuses there.
+    # bot_window_open stays 09:30 so that gap cannot be walked into, which
+    # test_premarket_is_observed_and_journalled_but_never_traded enforces.
+    # "" = the replay uses the live window.
+    backtest_window_open: str = "07:00"
     backtest_close_et: str = "12:30"    # session.py --until-et
     # Simulated results live in their own journal. Mixing them into the live
     # one would let a biased replay quietly poison what the bot has learned

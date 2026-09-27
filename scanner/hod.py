@@ -21,10 +21,18 @@ def _criteria(state, cfg: Config):
                   and state["float_shares"] < cfg.hod_max_float),
         ("hod", dist is not None and dist <= cfg.hod_near_high_pct),
     ]
-    if cfg.hod_min_open_pct:
+    if cfg.hod_min_open_pct and not state.get("premarket"):
         # Not "gapped up overnight" but "is being bought right now". A stock
         # that gapped 40% and has drifted sideways since the bell fails
         # this; one grinding up off the open passes.
+        #
+        # Only after the bell. It measures "% gained since 09:30", which is
+        # not a weak number before 09:30 but an undefined one - there is no
+        # open yet. Counting that as a failure blocked 31 of 33 pre-market
+        # rows in the live journal, so no pre-market setup could ever
+        # qualify. An open that is merely UNKNOWN after the bell still fails
+        # (test_a_missing_open_counts_as_a_failure). Pre-market, "still
+        # being bought" is carried by the hod check (within 6% of the high).
         checks.append(("open_drive",
                        (state.get("open_pct") or 0) >= cfg.hod_min_open_pct))
     if cfg.hod_min_avg_volume:
