@@ -181,6 +181,8 @@ class MarketState:
                 "price": price,
                 "day_pct": day_pct,
                 "day_volume": data["cum_volume"],
+                "bid": data.get("bid"),
+                "ask": data.get("ask"),
                 "day_high": data.get("day_high"),
                 "rvol": rvol(data["cum_volume"], data.get("avg_volume"), now, self.cfg),
                 "avg_volume": data.get("avg_volume"),

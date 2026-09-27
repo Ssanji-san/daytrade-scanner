@@ -185,7 +185,22 @@ class Config:
     bot_stop_pct: float = 5.0            # fallback stop when no setup low exists
     bot_min_stop_pct: float = 5.0        # floor: never risk less than noise
     bot_max_stop_pct: float = 5.0        # skip setups whose stop is this far away
-    bot_limit_slippage_pct: float = 0.3  # marketable limit above the ask
+    # Regular-hours entry limit, as a % above the signal. The broker takes a
+    # two-decimal price, so under $1.67 this rounds to zero cents: the limit
+    # sits at the last trade. Live, 9 of 10 regular-hours entries filled.
+    bot_limit_slippage_pct: float = 0.3
+    # PRE-MARKET ONLY. Ross's fixed offset: buy 10c above the ask, sell 10c
+    # under the bid, because the pre-market book is thin and moves fast. Never
+    # used in regular hours. A limit is a ceiling (a floor on sells), not a
+    # price: the order still fills at the best available quote inside it.
+    bot_premarket_offset_cents: float = 0.10
+    # Pre-market the broker will not hold a stop, so the bot runs it. An exit
+    # limit that has not filled after this long is cancelled and re-priced
+    # another offset lower.
+    bot_premarket_chase_seconds: int = 5
+    # A pre-market stop exists only while the bot can see the price. A
+    # position whose symbol has not been updated for this long is closed.
+    bot_stale_quote_seconds: int = 30
     bot_scale_out_r: float = 2.0         # bank half here
     bot_runner_trail_pct: float = 5.0    # native trailing-stop width for the runner
     # Scalping: in and out. Last entry 12:30 + 10m = 12:40, long before the

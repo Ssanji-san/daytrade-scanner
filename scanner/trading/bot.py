@@ -17,6 +17,8 @@ from .model import train
 from .strategy import (ET, bankroll_from, buying_power, exit_levels,
                        is_doji, position_slots, runner_trail_pct,
                        scalp_levels, scalp_split, should_enter, size_position,
+                       is_premarket, premarket_entry_limit,
+                       premarket_exit_limit,
                        split_qty, technical_stop, weighted_exit,
                        _parse_hhmm)
 
@@ -143,6 +145,7 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
     scored.sort(key=lambda t: -t[0])
 
     picks, taken = [], set(traded_symbols)
+    premarket = is_premarket(now)
     for score, row, features in scored:
         count = trades_today + len(picks)
         setup = row["setup"]
@@ -150,8 +153,14 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
         if stop is None:
             note(row["symbol"], "stop_too_wide", score)
             continue                     # risk to the setup low is too wide
-        qty, stop = size_position(row["price"], cfg, stop_price=stop,
-                                  budget=budget)
+        # Pre-market the order is a limit at the ask plus Ross's offset, and
+        # the position is sized on that limit so a fill at the very top of it
+        # still risks the intended amount. Regular hours are untouched: sized
+        # on the signal, entered by OTO.
+        limit = (premarket_entry_limit(row["price"], row.get("ask"), cfg)
+                 if premarket else None)
+        cost = limit or row["price"]
+        qty, stop = size_position(cost, cfg, stop_price=stop, budget=budget)
         if qty < 1:
             note(row["symbol"], "no_capital", score)
             continue                     # no capital left, or too small
@@ -162,17 +171,18 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
             score_threshold=score_threshold,
             losses_today=losses_today,
             open_positions=open_positions + len(picks),
-            account=account, notional=qty * row["price"],
+            account=account, notional=qty * cost,
             bankroll=bankroll)
         if not take:
             note(row["symbol"], "+".join(reasons), score)
             continue
         picks.append({"symbol": row["symbol"], "price": row["price"],
+                      "premarket": premarket, "limit": limit,
                       "qty": qty, "stop": stop, "score": score,
                       "setup": setup.get("setup"), "features": features})
         taken.add(row["symbol"])
         if budget is not None:
-            budget -= qty * row["price"]
+            budget -= qty * cost
     return picks
 
 
@@ -357,14 +367,24 @@ class TradingBot:
             levels = exit_levels(entry, self.cfg, stop_price=pick.get("stop"))
             bank_qty, runner_qty = split_qty(pick["qty"])
         total_qty = pick["qty"]
+        premarket = bool(pick.get("premarket"))
 
-        # One atomic order: the stop rides along and Alpaca arms it after the
-        # fill. Submitting buy and stop separately is rejected as a wash trade
-        # ("opposite side market/stop order exists"), which is what kept every
-        # entry from going through.
-        limit = entry * (1 + self.cfg.bot_limit_slippage_pct / 100)
-        parent = await self.broker.submit_oto_stop(
-            pick["symbol"], total_qty, levels["stop"], limit_price=limit)
+        if premarket:
+            # Before the bell Alpaca takes only extended-hours limit orders -
+            # no OTO, so no stop can ride along. The bot runs this position's
+            # stop itself (_manage_premarket) until the bell, when it hands
+            # it to the broker (_hand_off_at_bell).
+            limit = pick["limit"]
+            parent = await self.broker.submit_limit_buy(
+                pick["symbol"], total_qty, limit, extended_hours=True)
+        else:
+            # One atomic order: the stop rides along and Alpaca arms it after
+            # the fill. Submitting buy and stop separately is rejected as a
+            # wash trade ("opposite side market/stop order exists"), which is
+            # what kept every entry from going through.
+            limit = entry * (1 + self.cfg.bot_limit_slippage_pct / 100)
+            parent = await self.broker.submit_oto_stop(
+                pick["symbol"], total_qty, levels["stop"], limit_price=limit)
 
         try:
             trade_id = self.journal.record_trade_open(
@@ -389,13 +409,17 @@ class TradingBot:
             "bank_qty": bank_qty, "runner_qty": runner_qty,
             "entry": entry, "signal_price": entry, "stop": levels["stop"],
             "scale_out": levels["scale_out"], "opened_ts": ts,
+            # True while the bot, not the broker, holds this position's stop.
+            "managed_stop": premarket, "limit": limit,
             # The order is accepted, not filled. Until a position exists this
             # trade is pending: a missing position means "not yet", not
             # "closed". See _settle_pending.
             "filled": False,
             "banked": False}
+        how = (f"pre-market limit {limit:.2f} (ext. hours), stop run by the bot"
+               if premarket else f"limit {limit:.2f}")
         print(f"[bot] ENTER {pick['symbol']} x{total_qty} @~{entry:.2f} "
-              f"[{pick.get('setup')}] stop {levels['stop']:.2f} "
+              f"[{pick.get('setup')}] {how} stop {levels['stop']:.2f} "
               f"scale-out {levels['scale_out']:.2f}")
 
     async def _manage_open(self, state, now, ts):

@@ -73,6 +73,18 @@ class Broker:
         return payload
 
     @staticmethod
+    def limit_payload(symbol, qty, side, limit_price, extended_hours=False):
+        """A plain limit order - the ONLY type Alpaca accepts outside
+        regular hours, and only with extended_hours set. Market, stop,
+        trailing, OTO and bracket orders are all rejected then."""
+        payload = {"symbol": symbol, "qty": str(qty), "side": side,
+                   "type": "limit", "time_in_force": "day",
+                   "limit_price": f"{limit_price:.2f}"}
+        if extended_hours:
+            payload["extended_hours"] = True
+        return payload
+
+    @staticmethod
     def trailing_stop_payload(symbol, qty, trail_percent, side="sell"):
         return {"symbol": symbol, "qty": str(qty), "side": side,
                 "type": "trailing_stop", "time_in_force": "day",
@@ -138,6 +150,16 @@ class Broker:
     async def submit_market_sell(self, symbol, qty):
         return await self._request("POST", "/v2/orders",
                                    json=self.market_payload(symbol, qty, "sell"))
+
+    async def submit_limit_buy(self, symbol, qty, limit_price,
+                               extended_hours=False):
+        return await self._request("POST", "/v2/orders", json=self.limit_payload(
+            symbol, qty, "buy", limit_price, extended_hours))
+
+    async def submit_limit_sell(self, symbol, qty, limit_price,
+                                extended_hours=False):
+        return await self._request("POST", "/v2/orders", json=self.limit_payload(
+            symbol, qty, "sell", limit_price, extended_hours))
 
     async def submit_oto_stop(self, symbol, qty, stop_price, limit_price=None):
         return await self._request(

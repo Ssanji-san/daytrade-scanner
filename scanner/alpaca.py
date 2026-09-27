@@ -32,6 +32,17 @@ def parse_most_actives(raw):
     return [a["symbol"] for a in raw.get("most_actives", [])]
 
 
+def _quote(quote):
+    """(bid, ask) from a snapshot's latestQuote, or None for either side that
+    is missing or zero. A crossed quote (bid above ask) is not a price
+    anyone can trade at, so both sides are dropped."""
+    bid = quote.get("bp") or None
+    ask = quote.get("ap") or None
+    if bid and ask and bid > ask:
+        return None, None
+    return bid, ask
+
+
 def parse_snapshots(raw):
     out = {}
     for sym, snap in raw.items():
@@ -41,6 +52,7 @@ def parse_snapshots(raw):
         prev = snap.get("prevDailyBar") or {}
         trade = snap.get("latestTrade") or {}
         minute = snap.get("minuteBar") or {}
+        bid, ask = _quote(snap.get("latestQuote") or {})
         price = trade.get("p") or minute.get("c") or daily.get("c")
         if not price or not daily.get("h") or not prev.get("c"):
             continue
@@ -51,6 +63,11 @@ def parse_snapshots(raw):
             "prev_close": prev["c"],
             "avg_volume": None,
             "float_shares": None,
+            # Ross enters 10c above the ASK and sells at the BID pre-market,
+            # where the spread is wide enough to matter. None when the feed
+            # has no usable quote; callers fall back to the last trade.
+            "bid": bid,
+            "ask": ask,
             # Real 1-minute OHLC: the setup detector and the honest alert
             # labels both need true highs/lows, not polled last prices.
             "minute_bar": ({"t": minute["t"], "o": minute.get("o"),

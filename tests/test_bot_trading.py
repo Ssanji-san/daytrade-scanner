@@ -55,6 +55,16 @@ class FakeBroker:
         return self._new(side="sell", type="stop", symbol=symbol, qty=qty,
                          stop_price=stop_price)
 
+    async def submit_limit_buy(self, symbol, qty, limit_price,
+                               extended_hours=False):
+        return self._new(side="buy", type="limit", symbol=symbol, qty=qty,
+                         limit_price=limit_price, extended_hours=extended_hours)
+
+    async def submit_limit_sell(self, symbol, qty, limit_price,
+                                extended_hours=False):
+        return self._new(side="sell", type="limit", symbol=symbol, qty=qty,
+                         limit_price=limit_price, extended_hours=extended_hours)
+
     async def submit_oto_stop(self, symbol, qty, stop_price, limit_price=None):
         return self._new(side="buy", type="market", order_class="oto",
                          symbol=symbol, qty=qty, stop_price=stop_price,
@@ -644,3 +654,67 @@ class TestCapitalIsSpentInUnits:
         asyncio.run(bot.cycle(self._state([]), et(10, 0)))
         assert bot.bankroll == pytest.approx(4_000.0)
         assert bot.status("2026-07-14")["slots"] == 4
+
+
+
+# ------------------------------------------------------ pre-market execution
+
+class TestPremarketEntry:
+    """08:00-09:30: Ross's pre-market entry, and nothing Alpaca will refuse.
+
+    Outside regular hours Alpaca takes only extended-hours limit orders.
+    The entry is a plain limit at the ask plus the offset - no OTO, so no
+    stop rides along; the bot runs it (TestPremarketStop)."""
+
+    def _rows(self, price=2.00, ask=2.03):
+        return [{"symbol": "PRE", "price": price, "ask": ask, "bid": price - 0.02,
+                 "rvol": 9.0, "day_pct": 30.0, "float_shares": 8e6,
+                 "has_news": True, "dist_from_hod": 0.0, "day_high": price,
+                 "changes": {"5": 3.0}, "above_vwap": True,
+                 # 3% under: inside the 5% band, so technical_stop clamps it
+                 # to exactly 5%. A setup stop AT 5% sits on a floating-point
+                 # knife edge and can read as too wide.
+                 "setup": {"setup": "micro_pullback",
+                           "stop": round(price * 0.97, 2)}}]
+
+    def _state(self, rows):
+        class State:
+            latest = {}
+
+            def payload(self, now, require_news=None):
+                return {"hod": {"qualified": rows, "near": []}}
+        return State()
+
+    def _cycle(self, tmp_path, at, **rows):
+        bot, broker, journal = make_bot(tmp_path)
+        broker.equity = "2473.74"
+        asyncio.run(bot.cycle(self._state(self._rows(**rows)), at))
+        return bot, broker
+
+    def test_it_is_an_extended_hours_limit_at_the_ask_plus_10c(self, tmp_path):
+        bot, broker = self._cycle(tmp_path, et(8, 45))
+        buys = [o for o in broker.orders if o["side"] == "buy"]
+        assert len(buys) == 1
+        assert buys[0]["type"] == "limit" and buys[0]["extended_hours"] is True
+        assert buys[0]["limit_price"] == pytest.approx(2.13)   # ask 2.03 + 10c
+        assert "order_class" not in buys[0]                     # no OTO
+        assert bot.open_trades["PRE"]["managed_stop"] is True
+
+    def test_it_is_sized_so_a_full_fill_still_risks_50(self, tmp_path):
+        bot, broker = self._cycle(tmp_path, et(8, 45))
+        trade = bot.open_trades["PRE"]
+        assert trade["qty"] * (trade["limit"] - 2.00 * 0.95) == pytest.approx(50, abs=1)
+
+    def test_no_quote_falls_back_to_the_last_trade(self, tmp_path):
+        bot, broker = self._cycle(tmp_path, et(8, 45), ask=None)
+        buy = [o for o in broker.orders if o["side"] == "buy"][0]
+        assert buy["limit_price"] == pytest.approx(2.10)
+
+    def test_after_the_bell_the_entry_is_the_old_oto_unchanged(self, tmp_path):
+        """09:30-10:00 keeps today's path exactly: OTO, 0.3%, broker stop."""
+        bot, broker = self._cycle(tmp_path, et(9, 45))
+        buy = [o for o in broker.orders if o["side"] == "buy"][0]
+        assert buy["order_class"] == "oto"
+        assert buy["limit_price"] == pytest.approx(2.00 * 1.003)
+        assert "extended_hours" not in buy
+        assert bot.open_trades["PRE"]["managed_stop"] is False

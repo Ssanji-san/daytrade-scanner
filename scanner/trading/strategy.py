@@ -8,6 +8,7 @@ pullback, bank most of the position a fixed number of cents up, and let the
 rest ride a trail that can never come back under what was paid. The R-based
 2R/3R path is still here and still reachable by configuration.
 """
+import datetime as dt
 import math
 from zoneinfo import ZoneInfo
 
@@ -170,6 +171,36 @@ def position_slots(bankroll, cfg: Config):
     if bankroll - whole * unit >= cfg.bot_min_position_dollars:
         whole += 1
     return max(0, min(whole, cfg.bot_max_concurrent_positions))
+
+
+MARKET_OPEN = dt.time(9, 30)
+
+
+def is_premarket(now):
+    """Before the 09:30 bell, when Alpaca takes only extended-hours limits."""
+    return now.astimezone(ET).time() < MARKET_OPEN
+
+
+def premarket_entry_limit(price, ask, cfg: Config):
+    """Ross's pre-market entry: the ask plus a fixed offset.
+
+    The ask, not the last trade: pre-market the spread is wide, and a limit
+    pinned to the last print sits below what any seller is asking. Falls
+    back to the last trade when the feed has no usable quote.
+    """
+    base = ask if ask else price
+    return round(base + cfg.bot_premarket_offset_cents, 2)
+
+
+def premarket_exit_limit(price, bid, cfg: Config, steps=1):
+    """The floor for a pre-market sell: the bid less the offset, per step.
+
+    A sell limit is a floor, not a price - it fills at the best bid above
+    it - so this is how far the bot is willing to be walked down a thin
+    book. Each unfilled re-price takes one more step. Never below a cent.
+    """
+    base = bid if bid else price
+    return max(0.01, round(base - steps * cfg.bot_premarket_offset_cents, 2))
 
 
 def max_positions(bankroll, cfg: Config):
