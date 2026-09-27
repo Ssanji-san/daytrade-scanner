@@ -462,3 +462,41 @@ class TestPolicyExpectancy:
         import scripts.sweep as sweep
         from scripts.backtest import alert_r
         assert sweep.alert_r is alert_r
+
+
+class TestHalfHourReport:
+    """The pre-market decision is read off this table, so it has to split at
+    the right boundaries and compute the margin correctly."""
+
+    @staticmethod
+    def _trade(hh, mm, r, reason):
+        ts = int(dt.datetime(2026, 3, 10, hh, mm,
+                             tzinfo=dt.timezone(dt.timedelta(hours=-4))).timestamp())
+        return {"ts": ts, "r_multiple": r, "pnl": r * 50, "exit_reason": reason}
+
+    def test_the_bell_is_a_bucket_boundary(self, capsys):
+        from scripts.backtest import _hour_report
+        rows = [self._trade(9, 29, 1.0, "trailing"),
+                self._trade(9, 31, -1.0, "stop")]
+        _hour_report(rows, CFG)
+        out = capsys.readouterr().out
+        assert "09:00 ET" in out and "09:30 ET" in out
+
+    def test_the_session_split_says_what_premarket_can_absorb(self, capsys):
+        """+0.2R a trade with half of them stopped absorbs 0.4R per stop."""
+        from scripts.backtest import _session_split
+        rows = [self._trade(8, 0, 1.4, "trailing"),
+                self._trade(8, 5, -1.0, "stop"),
+                self._trade(10, 0, -1.0, "stop")]
+        _session_split(rows)
+        pre = next(l for l in capsys.readouterr().out.splitlines()
+                   if "before 09:30" in l)
+        assert "+0.200R" in pre and "50.0%" in pre and "+0.40R" in pre
+
+    def test_a_losing_block_absorbs_nothing(self, capsys):
+        from scripts.backtest import _session_split
+        _session_split([self._trade(8, 0, -1.0, "stop"),
+                        self._trade(8, 5, -0.5, "stall")])
+        pre = next(l for l in capsys.readouterr().out.splitlines()
+                   if "before 09:30" in l)
+        assert pre.rstrip().endswith("-")
