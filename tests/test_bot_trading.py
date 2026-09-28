@@ -31,13 +31,24 @@ class FakeBroker:
         self.order_fill_price = None
         self.equity = "100000"
         self.buying_power = None
+        # Symbols whose cancels have not settled yet: Alpaca still reserves
+        # their shares, so a sell sent now would be refused.
+        self.slow_cancels = set()
+        # order type -> symbols the broker refuses it for.
+        self.refuse = {}
+        self.open_list = []
         self._id = 0
 
     def _new(self, **kw):
+        if kw.get("symbol") in self.refuse.get(kw.get("type"), ()):
+            raise RuntimeError(f"broker refused {kw['type']} {kw['symbol']}")
         self._id += 1
         kw["id"] = f"o{self._id}"
         self.orders.append(kw)
         return {"id": kw["id"]}
+
+    async def open_orders(self):
+        return list(self.open_list)
 
     async def account(self):
         account = {"equity": self.equity}
@@ -70,10 +81,11 @@ class FakeBroker:
                          symbol=symbol, qty=qty, stop_price=stop_price,
                          limit_price=limit_price)
 
-    async def cancel_orders_for(self, symbol):
+    async def cancel_orders_for(self, symbol, settle_seconds=0.0):
         for o in self.orders:
             if o.get("symbol") == symbol:
                 self.cancelled.append(o["id"])
+        return symbol not in self.slow_cancels
 
     async def submit_trailing_stop(self, symbol, qty, trail_percent):
         return self._new(side="sell", type="trailing_stop", symbol=symbol,

@@ -199,12 +199,24 @@ class Config:
     # another offset lower.
     bot_premarket_chase_seconds: int = 5
     # A pre-market stop exists only while the bot can see the price. A
-    # position whose symbol has not been updated for this long is closed.
+    # position whose tape has not printed for this long is closed. Measured
+    # from the last IEX trade, not from the poll: the poller refreshes every
+    # held symbol every few seconds whether or not anything traded.
     bot_stale_quote_seconds: int = 30
+    # PRE-MARKET ONLY. The free feed's ask is IEX's own book - often
+    # one-sided, stale, or far from where the stock trades. An ask further
+    # than this from the last trade is ignored and the entry limit is built
+    # on the last trade instead, which is also all the replay ever sizes on.
+    bot_premarket_quote_band_pct: float = 3.0
+    # Alpaca keeps an order's shares reserved until its cancel completes, so
+    # a sell sent straight after a cancel can be refused for quantity. Wait
+    # up to this long for the cancel to settle; if it has not, try the sell
+    # again next cycle rather than send one the broker will refuse.
+    bot_cancel_settle_seconds: float = 2.0
     bot_scale_out_r: float = 2.0         # bank half here
     bot_runner_trail_pct: float = 5.0    # native trailing-stop width for the runner
-    # Scalping: in and out. Last entry 12:30 + 10m = 12:40, long before the
-    # 15:50 flatten. Note this fires far more often than the +20c target -
+    # Scalping: in and out. Last entry 10:00 + 10m = 10:10, long before the
+    # session ends at 12:45. Note this fires far more often than the +20c target -
     # both live scalps so far ended on the stall or the stop, neither on
     # the target.
     bot_time_stop_minutes: int = 10

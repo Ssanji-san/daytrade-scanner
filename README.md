@@ -54,8 +54,8 @@ anything else. Rules (all tunable in `scanner/config.py`):
 It trades Ross Cameron's cents-on-the-dollar scalp: take the 20c, bank
 most of it, let the rest ride.
 
-- $1–$5 symbols only, entries **09:30–12:30 ET**, max 10 trades/day, never
-  the same symbol twice in a day
+- $1–$5 symbols only, entries **08:00–10:00 ET** (pre-market plus the first
+  half hour), max 10 trades/day, never the same symbol twice in a day
 - Entry is the **pullback, not the high**: one to three red candles off a
   swing high, then a break of the prior candle's high — or, for a gapper
   with no flag yet, a break of the first five minutes' range. No setup, no
@@ -107,9 +107,15 @@ servers every weekday.
 
 - **trading-session** starts before the open, scans + trades until
   12:45 ET, and pushes the journal + a status snapshot every ~10 min.
+- When the session ends — at the cutoff, on a crash, or because the bot
+  died — a **protect** step checks every open position has a stop at the
+  broker, and places one if not. Regular-hours stops already live at
+  Alpaca; a pre-market position's stop is the bot itself, so a session that
+  dies holding one would otherwise leave it unguarded until 15:50. Before
+  the bell it first tries to sell with an extended-hours limit.
 - **flatten** runs near 15:50 ET as a safety net: reconciles fills and
-  closes anything still open. (Bracket stops/targets live on Alpaca's
-  servers, so exits work even with no process running.)
+  closes anything still open. (Broker-held stops and trailing stops work
+  with no process running.)
 - **GitHub Pages** (from `/docs`) serves the same dashboard, readable
   from your phone; it updates each time the session pushes (~10 min lag).
 
@@ -124,14 +130,27 @@ One-time setup:
 4. Actions tab → enable workflows. Test with "Run workflow" on
    `trading-session` during market hours.
 
-### Premarket observation
+### Pre-market trading
 
-The session may be started before the bell (cron-job.org fires it at 07:30
-ET). No separate mode is needed: the bot's entry window is 09:30-12:30 ET, so
-premarket it scans and journals but **cannot** place an order. Those rows land
-in the alert journal as observation-only data, which is what a premarket
-strategy would have to be trained on - the bot has never seen that regime, so
-it is being recorded before anything is built on it.
+cron-job.org starts the session at 07:30 ET; entries open at **08:00**,
+when IEX's pre-market session starts (a free-feed session gets no prints
+before then). Before 09:30 Alpaca accepts only extended-hours **limit**
+orders — no stop, no OTO, no market order — so pre-market positions run
+differently:
+
+- Entry is a limit at the ask **+10c** (Ross's offset), using the ask only
+  when it sits within 3% of the last trade; sized so a fill at the top of
+  the limit still risks $50. The 10c offset is pre-market only.
+- **The bot runs the stop itself**, as extended-hours limit sells that are
+  re-priced 10c lower every 5 seconds until they fill. A position whose tape
+  hasn't printed for 30 seconds is closed — the stop can't see a price that
+  isn't trading.
+- At **09:30** the stop is handed to Alpaca as a real stop order, unless
+  the price is already through it, in which case the position is closed.
+
+Measured honestly: the Jan–Aug 2026 replay of this 08:00–10:00 window lost
+about −0.26R a trade, and the replay assumes stops fill at the stop price,
+which a thin pre-market book won't. It runs on paper to be observed live.
 
 Note the two different news sources: the red/orange **economic calendar**
 (ForexFactory) is macro - CPI, FOMC - and moves the whole market. Per-stock

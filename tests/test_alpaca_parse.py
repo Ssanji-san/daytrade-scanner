@@ -32,6 +32,8 @@ def test_parse_snapshots_maps_fields():
                           "day_high": 5.60, "prev_close": 4.00,
                           "avg_volume": None, "float_shares": None,
                           "bid": None, "ask": None,   # no latestQuote here
+                          # 2026-07-14T15:59:00Z, when the tape printed
+                          "trade_ts": 1784044740.0,
                           "minute_bar": None}   # no t/h on this bar
 
 

@@ -43,6 +43,25 @@ def _quote(quote):
     return bid, ask
 
 
+def _epoch(stamp):
+    """Epoch seconds from an Alpaca timestamp, or None.
+
+    Alpaca sends nanoseconds ("...:05.123456789Z"); fromisoformat takes at
+    most microseconds, so the fraction is cut to six digits first.
+    """
+    if not stamp:
+        return None
+    text = str(stamp).replace("Z", "+00:00")
+    head, dot, rest = text.partition(".")
+    if dot:
+        digits = len(rest) - len(rest.lstrip("0123456789"))
+        text = f"{head}.{rest[:min(digits, 6)]}{rest[digits:]}"
+    try:
+        return dt.datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
 def parse_snapshots(raw):
     out = {}
     for sym, snap in raw.items():
@@ -68,6 +87,10 @@ def parse_snapshots(raw):
             # has no usable quote; callers fall back to the last trade.
             "bid": bid,
             "ask": ask,
+            # When the tape last printed. The poll time says nothing about
+            # this - a symbol is re-polled every cycle whether or not it
+            # traded - and a stop the bot runs itself is only as live as it.
+            "trade_ts": _epoch(trade.get("t")),
             # Real 1-minute OHLC: the setup detector and the honest alert
             # labels both need true highs/lows, not polled last prices.
             "minute_bar": ({"t": minute["t"], "o": minute.get("o"),

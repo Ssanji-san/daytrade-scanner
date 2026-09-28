@@ -557,6 +557,15 @@ class Journal:
         self._execute("UPDATE trades SET entry=? WHERE id=?", (entry, trade_id))
         self._commit()
 
+    def update_trade_qty(self, trade_id, qty):
+        """Correct the quantity to what was actually bought.
+
+        record_trade_open stores the ordered size. A limit that only partly
+        fills holds fewer shares, and P&L multiplies by this column.
+        """
+        self._execute("UPDATE trades SET qty=? WHERE id=?", (qty, trade_id))
+        self._commit()
+
     def delete_trade(self, trade_id):
         """Drop a trade that never happened - an entry that never filled."""
         self._execute("DELETE FROM trades WHERE id=?", (trade_id,))

@@ -365,7 +365,8 @@ def _session_split(rows):
         rs = [r["r_multiple"] or 0.0 for r in block]
         n = len(rs)
         mean = sum(rs) / n
-        se = ((sum((x - mean) ** 2 for x in rs) / (n - 1)) / n) ** 0.5             if n > 1 else float("nan")
+        se = (((sum((x - mean) ** 2 for x in rs) / (n - 1)) / n) ** 0.5
+              if n > 1 else float("nan"))
         stop_rate = sum(1 for r in block if r.get("exit_reason") == "stop") / n
         absorbs = (f"{mean / stop_rate:>+8.2f}R" if stop_rate and mean > 0
                    else f"{'-':>9}")

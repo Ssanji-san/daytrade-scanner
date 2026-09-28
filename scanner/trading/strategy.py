@@ -13,6 +13,7 @@ import math
 from zoneinfo import ZoneInfo
 
 from ..config import Config
+from ..history import SESSION_OPEN as MARKET_OPEN
 
 ET = ZoneInfo("America/New_York")
 
@@ -173,11 +174,12 @@ def position_slots(bankroll, cfg: Config):
     return max(0, min(whole, cfg.bot_max_concurrent_positions))
 
 
-MARKET_OPEN = dt.time(9, 30)
-
-
 def is_premarket(now):
-    """Before the 09:30 bell, when Alpaca takes only extended-hours limits."""
+    """Before the 09:30 bell, when Alpaca takes only extended-hours limits.
+
+    The one definition. Row qualification (hod skips open_drive before the
+    bell) and order routing both ask this, and they must never disagree.
+    """
     return now.astimezone(ET).time() < MARKET_OPEN
 
 
@@ -185,10 +187,14 @@ def premarket_entry_limit(price, ask, cfg: Config):
     """Ross's pre-market entry: the ask plus a fixed offset.
 
     The ask, not the last trade: pre-market the spread is wide, and a limit
-    pinned to the last print sits below what any seller is asking. Falls
-    back to the last trade when the feed has no usable quote.
+    pinned to the last print sits below what any seller is asking. But only
+    an ask within bot_premarket_quote_band_pct of the last trade - the free
+    feed's quote is IEX's own book, and a stale or one-sided one either
+    oversizes the limit or, sitting under the stop, zeroes the position.
+    Falls back to the last trade, which is what the replay sizes on.
     """
-    base = ask if ask else price
+    band = price * cfg.bot_premarket_quote_band_pct / 100
+    base = ask if ask and abs(ask - price) <= band else price
     return round(base + cfg.bot_premarket_offset_cents, 2)
 
 

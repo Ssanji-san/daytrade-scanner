@@ -166,15 +166,33 @@ class Broker:
             "POST", "/v2/orders",
             json=self.oto_stop_payload(symbol, qty, stop_price, limit_price))
 
-    async def cancel_orders_for(self, symbol):
-        """Cancel every open order on a symbol, attached stop legs included."""
-        orders = await self._request(
-            "GET", "/v2/orders", params={"status": "open", "symbols": symbol})
-        for order in orders or []:
+    async def _open_orders_for(self, symbol):
+        return await self._request(
+            "GET", "/v2/orders",
+            params={"status": "open", "symbols": symbol}) or []
+
+    async def cancel_orders_for(self, symbol, settle_seconds=0.0):
+        """Cancel every open order on a symbol, attached stop legs included.
+
+        A cancel is a request: until it completes Alpaca keeps the order's
+        shares reserved, and a sell sent in the meantime can be refused for
+        quantity. With `settle_seconds`, wait that long for the symbol to
+        show no open orders. Returns True once it is clear (always True
+        without waiting, which is the old fire-and-forget behaviour).
+        """
+        for order in await self._open_orders_for(symbol):
             try:
                 await self.cancel_order(order["id"])
             except aiohttp.ClientResponseError:
                 pass   # already filled or cancelled
+        if not settle_seconds:
+            return True
+        deadline = asyncio.get_running_loop().time() + settle_seconds
+        while await self._open_orders_for(symbol):
+            if asyncio.get_running_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(0.25)
+        return True
 
     async def submit_stop(self, symbol, qty, stop_price):
         return await self._request("POST", "/v2/orders",
