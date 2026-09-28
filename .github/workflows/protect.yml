@@ -1,16 +1,16 @@
 name: protect
 
-# Makes sure no open position is left without a broker stop.
+# Makes sure no open position is left without a broker stop - by hand.
 #
-# The trading-session workflow already runs this as its last step, however
-# the session ended. This standalone copy covers the one case that step
-# cannot: GitHub losing the machine the session ran on, so no later step
-# runs at all. Fire it from cron-job.org shortly after the bell (09:36 ET).
+# Nothing needs to schedule this: the trading-session workflow runs the same
+# check as its own final job however the session ended, a lost machine
+# included. This copy is for running it manually, and for a dry run
+# (dry_run: true) that prints the plan against the real account and sends
+# nothing.
 #
 # It shares the trading-session concurrency group on purpose: while a
 # session is alive it WAITS rather than act beside a bot that is still
-# managing its own positions, and it starts the moment that session is gone
-# - including when GitHub marks a lost runner's job as failed.
+# managing its own positions.
 
 on:
   workflow_dispatch:

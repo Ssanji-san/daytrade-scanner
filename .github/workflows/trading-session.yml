@@ -61,16 +61,6 @@ jobs:
           done
           wait $SESSION_PID
 
-      # However the session ended - cutoff, crash, dead bot - no position
-      # is left without a stop. Regular-hours stops are broker orders and
-      # are found in place; a pre-market position's stop was the process.
-      - name: Protect open positions
-        if: always()
-        env:
-          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
-          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
-        run: python -u -m scanner.flatten --protect
-
       # Also after a failed session: the journal holds the day's alerts and
       # trades, which is the learning data.
       - name: Final commit
@@ -82,3 +72,34 @@ jobs:
             git pull --rebase --autostash --quiet || true
             git push --quiet
           fi
+
+  # However the session ended - cutoff, crash, dead bot, or GitHub losing
+  # the machine it ran on - no position is left without a stop. A separate
+  # job, not a step: a lost runner takes every remaining step with it, but
+  # GitHub still starts this job on a fresh machine once it has marked the
+  # session failed. Regular-hours stops are broker orders and are found in
+  # place; a pre-market position's stop was the session itself.
+  protect:
+    needs: session
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      # The latest main, not the commit this run started from: the journal
+      # pushed during the session holds the stops this job needs to place.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Protect open positions
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+        run: python -u -m scanner.flatten --protect
