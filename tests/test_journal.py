@@ -668,3 +668,26 @@ class TestNearMissWithATriggerIsRepriced:
                              observed=0, setup="flat_top")
         row = journal._execute("SELECT price, setup FROM alerts").fetchone()
         assert row["price"] == 1.00 and row["setup"] == "micro_pullback"
+
+
+class TestUnfilledEntries:
+    """The one downgrade the decision ladder allows."""
+
+    def test_override_replaces_a_taken_that_never_filled(self, journal):
+        ts = epoch(10, 0)
+        journal.record_alert(ts, "AAA", 3.00, 0.15, FEATURES, setup="flat_top")
+        journal.record_decision(ts, "AAA", "taken")
+        assert not journal.record_decision(ts, "AAA", "unfilled")   # ladder holds
+        assert journal.record_decision(ts, "AAA", "unfilled", override=True)
+        row = journal._execute("SELECT decision FROM alerts").fetchone()
+        assert row["decision"] == "unfilled"
+
+    def test_a_later_fill_the_same_day_upgrades_it_back(self, journal):
+        """CDTG on 2026-09-08: dropped unfilled, re-entered, filled."""
+        ts = epoch(10, 0)
+        journal.record_alert(ts, "AAA", 3.00, 0.15, FEATURES, setup="flat_top")
+        journal.record_decision(ts, "AAA", "taken")
+        journal.record_decision(ts, "AAA", "unfilled", override=True)
+        assert journal.record_decision(epoch(10, 5), "AAA", "taken")
+        row = journal._execute("SELECT decision FROM alerts").fetchone()
+        assert row["decision"] == "taken"

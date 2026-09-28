@@ -192,3 +192,27 @@ def test_an_observed_row_can_never_reach_the_bot():
                                  traded_symbols=set(), day_pnl=0.0, now=et,
                                  cfg=CFG, score_threshold=0.0)
     assert not take and "price" in reasons
+
+
+class TestOpenDriveBeforeTheBell:
+    """open_drive measures "% gained since the 09:30 bell". Before the bell
+    that is not a weak number but an undefined one, and counting it as a
+    failure blocked 31 of 33 pre-market rows in the live journal."""
+
+    def test_a_premarket_row_is_not_failed_on_open_drive(self):
+        early = make_state(open_pct=None, premarket=True)
+        qualified, near = scan([early], CFG)
+        assert [r["symbol"] for r in qualified] == ["TEST"]
+        assert qualified[0]["failed"] == []
+
+    def test_the_same_row_after_the_bell_still_fails_it(self):
+        """An open that is unknown AFTER 09:30 is still not a pass."""
+        late = make_state(open_pct=None, premarket=False)
+        qualified, near = scan([late], CFG)
+        assert qualified == [] and "open_drive" in near[0]["failed"]
+
+    def test_every_other_gate_still_applies_premarket(self):
+        """It removes one undefined measurement, nothing else."""
+        early = make_state(open_pct=None, premarket=True, float_shares=90_000_000)
+        qualified, near = scan([early], CFG)
+        assert qualified == [] and near[0]["failed"] == ["float"]

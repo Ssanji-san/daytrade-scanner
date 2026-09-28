@@ -31,6 +31,9 @@ def test_parse_snapshots_maps_fields():
     assert out["AAA"] == {"price": 5.43, "cum_volume": 1_234_567,
                           "day_high": 5.60, "prev_close": 4.00,
                           "avg_volume": None, "float_shares": None,
+                          "bid": None, "ask": None,   # no latestQuote here
+                          # 2026-07-14T15:59:00Z, when the tape printed
+                          "trade_ts": 1784044740.0,
                           "minute_bar": None}   # no t/h on this bar
 
 
@@ -131,3 +134,27 @@ class TestNewsIsNotCrowdedOut:
         client, calls = self._client(endless)
         asyncio.run(client.news(["AAA"], start="2026-07-14T00:00:00Z"))
         assert len(calls) == NEWS_MAX_PAGES
+
+
+class TestQuotes:
+    """Pre-market Ross buys 10c over the ASK and sells under the BID, where
+    the spread is wide enough to matter - so the quote has to come through."""
+
+    def _snap(self, quote):
+        return {"AAA": {"latestTrade": {"p": 2.00},
+                        "latestQuote": quote,
+                        "dailyBar": {"h": 2.10, "c": 2.00, "v": 100},
+                        "prevDailyBar": {"c": 1.50}}}
+
+    def test_bid_and_ask_come_through(self):
+        out = parse_snapshots(self._snap({"bp": 1.98, "ap": 2.03}))["AAA"]
+        assert (out["bid"], out["ask"]) == (1.98, 2.03)
+
+    def test_a_missing_or_zero_side_is_none(self):
+        out = parse_snapshots(self._snap({"bp": 0, "ap": 2.03}))["AAA"]
+        assert (out["bid"], out["ask"]) == (None, 2.03)
+
+    def test_a_crossed_quote_is_dropped(self):
+        """Bid above ask is not a price anyone can trade at."""
+        out = parse_snapshots(self._snap({"bp": 2.05, "ap": 2.01}))["AAA"]
+        assert (out["bid"], out["ask"]) == (None, None)

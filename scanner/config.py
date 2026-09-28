@@ -185,30 +185,60 @@ class Config:
     bot_stop_pct: float = 5.0            # fallback stop when no setup low exists
     bot_min_stop_pct: float = 5.0        # floor: never risk less than noise
     bot_max_stop_pct: float = 5.0        # skip setups whose stop is this far away
-    bot_limit_slippage_pct: float = 0.3  # marketable limit above the ask
+    # Regular-hours entry limit, as a % above the signal. The broker takes a
+    # two-decimal price, so under $1.67 this rounds to zero cents: the limit
+    # sits at the last trade. Live, 9 of 10 regular-hours entries filled.
+    bot_limit_slippage_pct: float = 0.3
+    # PRE-MARKET ONLY. Ross's fixed offset: buy 10c above the ask, sell 10c
+    # under the bid, because the pre-market book is thin and moves fast. Never
+    # used in regular hours. A limit is a ceiling (a floor on sells), not a
+    # price: the order still fills at the best available quote inside it.
+    bot_premarket_offset_cents: float = 0.10
+    # Pre-market the broker will not hold a stop, so the bot runs it. An exit
+    # limit that has not filled after this long is cancelled and re-priced
+    # another offset lower.
+    bot_premarket_chase_seconds: int = 5
+    # A pre-market stop exists only while the bot can see the price. A
+    # position whose tape has not printed for this long is closed. Measured
+    # from the last IEX trade, not from the poll: the poller refreshes every
+    # held symbol every few seconds whether or not anything traded.
+    bot_stale_quote_seconds: int = 30
+    # PRE-MARKET ONLY. The free feed's ask is IEX's own book - often
+    # one-sided, stale, or far from where the stock trades. An ask further
+    # than this from the last trade is ignored and the entry limit is built
+    # on the last trade instead, which is also all the replay ever sizes on.
+    bot_premarket_quote_band_pct: float = 3.0
+    # Alpaca keeps an order's shares reserved until its cancel completes, so
+    # a sell sent straight after a cancel can be refused for quantity. Wait
+    # up to this long for the cancel to settle; if it has not, try the sell
+    # again next cycle rather than send one the broker will refuse.
+    bot_cancel_settle_seconds: float = 2.0
     bot_scale_out_r: float = 2.0         # bank half here
     bot_runner_trail_pct: float = 5.0    # native trailing-stop width for the runner
-    # Scalping: in and out. Last entry 12:30 + 10m = 12:40, long before the
-    # 15:50 flatten. Note this fires far more often than the +20c target -
+    # Scalping: in and out. Last entry 10:00 + 10m = 10:10, long before the
+    # session ends at 12:45. Note this fires far more often than the +20c target -
     # both live scalps so far ended on the stall or the stop, neither on
     # the target.
     bot_time_stop_minutes: int = 10
     # The grading horizon must match the holding horizon, or the journal
     # labels a trade a loss while the bot is still holding it.
     bot_alert_window_minutes: int = 10
-    # 09:30, not 09:35: the first five minutes are often the best move of the
-    # day on a gapper, and the opening-range break lives in exactly that slot.
-    bot_window_open: str = "09:30"       # ET; no entries before/after the window
-    # Three hours, not one. A single hour fires roughly once every ten
-    # sessions; Ross takes several trades a day off this setup, and the
-    # window was the only lever that adds trades without relaxing a
-    # criterion. Three and not four because the runner is the ceiling:
-    # cron-job.org starts the session at 07:30 ET and GitHub kills a job at
-    # six hours, so a 12:30 close (session to 12:45 = 5h15m) fits and a
-    # 13:30 close does not. Watch open_pct: it measures from the 09:30
-    # bell, so a midday row "up 5% since the open" may be riding a move
-    # hours old. If the late entries are the losing ones, bring this back.
-    bot_window_close: str = "12:30"
+    # 08:00: pre-market, per Ross ("The REAL Reason Pre-Market Trading Is
+    # Better") - small caps put news out before the bell, and by 09:30 the
+    # move has often already run. 08:00 rather than his 07:00 because the
+    # live feed is IEX, whose pre-market session opens at 8:00 a.m.; a
+    # replay opened at 07:00 made zero IEX trades before 08:00 in eight
+    # months. Pre-market entries go through their own execution path
+    # (extended-hours limits, a stop the bot runs itself) because Alpaca
+    # refuses every other order type outside regular hours.
+    bot_window_open: str = "08:00"       # ET; no entries before/after the window
+    # 10:00: pre-market plus the first half hour, Ross's window. Stated
+    # plainly because it is a choice made against the replay: on Jan-Aug
+    # 2026 (IEX) the 08:00-10:00 slots came to about -0.25R a trade, the
+    # weakest configuration measured, and 10:00-12:30 was the least bad.
+    # The session still runs to 12:45, so positions opened near 10:00 are
+    # managed to their exit and every alert is still journalled.
+    bot_window_close: str = "10:00"
     bot_flatten_time: str = "15:50"      # ET; close everything before the bell
     # 0 = disabled. The day now ends on a loss COUNT
     # (bot_max_losses_per_day), not a dollar figure. Worth knowing: a count

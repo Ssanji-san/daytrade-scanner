@@ -1,0 +1,52 @@
+name: protect
+
+# Makes sure no open position is left without a broker stop.
+#
+# The trading-session workflow already runs this as its last step, however
+# the session ended. This standalone copy covers the one case that step
+# cannot: GitHub losing the machine the session ran on, so no later step
+# runs at all. Fire it from cron-job.org shortly after the bell (09:36 ET).
+#
+# It shares the trading-session concurrency group on purpose: while a
+# session is alive it WAITS rather than act beside a bot that is still
+# managing its own positions, and it starts the moment that session is gone
+# - including when GitHub marks a lost runner's job as failed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print the plan only - place and cancel nothing"
+        type: boolean
+        default: false
+
+concurrency: trading-session
+
+permissions:
+  contents: read
+
+jobs:
+  protect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Protect open positions
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            python -u -m scanner.flatten --protect --dry-run
+          else
+            python -u -m scanner.flatten --protect
+          fi

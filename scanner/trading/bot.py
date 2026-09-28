@@ -14,13 +14,15 @@ from ..config import Config
 from .broker import Broker
 from .journal import Journal
 from .model import train
-from .strategy import (ET, bankroll_from, buying_power, exit_levels,
-                       is_doji, position_slots, runner_trail_pct,
+from .strategy import (ET, MARKET_OPEN, bankroll_from, buying_power,
+                       exit_levels, is_doji, position_slots, runner_trail_pct,
                        scalp_levels, scalp_split, should_enter, size_position,
+                       is_premarket, premarket_entry_limit,
+                       premarket_exit_limit,
                        split_qty, technical_stop, weighted_exit,
                        _parse_hhmm)
 
-MARKET_OPEN = dt.time(9, 30)
+STARTUP_ATTEMPTS = 10
 
 # An entry order in one of these states bought nothing and never will.
 DEAD_ORDER_STATES = ("canceled", "cancelled", "expired", "rejected",
@@ -108,6 +110,30 @@ def journal_alert(journal, ts, row, now, observed, cfg: Config):
                                 failed=row.get("failed"))
 
 
+def _held(pos):
+    """Signed shares the broker reports, or None when it reports none."""
+    try:
+        return int(float(pos.get("qty")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _position_qty(pos, trade):
+    """Shares there are to sell, from the broker; the journal's view if absent.
+
+    A pre-market exit sells what is really there. A scale-out limit that
+    only partly filled leaves more than runner_qty behind, and the stop has
+    to take all of it.
+
+    A short is zero, never its size: every exit here is a sell, and reading
+    -50 as 50 would sell fifty more and double the short.
+    """
+    held = _held(pos)
+    if held is None:
+        return trade["runner_qty"] if trade["banked"] else trade["qty"]
+    return max(0, held)
+
+
 def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
                    day_pnl, now, cfg: Config, score_threshold=None,
                    losses_today=0, open_positions=0, account=None,
@@ -143,6 +169,7 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
     scored.sort(key=lambda t: -t[0])
 
     picks, taken = [], set(traded_symbols)
+    premarket = is_premarket(now)
     for score, row, features in scored:
         count = trades_today + len(picks)
         setup = row["setup"]
@@ -150,8 +177,14 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
         if stop is None:
             note(row["symbol"], "stop_too_wide", score)
             continue                     # risk to the setup low is too wide
-        qty, stop = size_position(row["price"], cfg, stop_price=stop,
-                                  budget=budget)
+        # Pre-market the order is a limit at the ask plus Ross's offset, and
+        # the position is sized on that limit so a fill at the very top of it
+        # still risks the intended amount. Regular hours are untouched: sized
+        # on the signal, entered by OTO.
+        limit = (premarket_entry_limit(row["price"], row.get("ask"), cfg)
+                 if premarket else None)
+        cost = limit or row["price"]
+        qty, stop = size_position(cost, cfg, stop_price=stop, budget=budget)
         if qty < 1:
             note(row["symbol"], "no_capital", score)
             continue                     # no capital left, or too small
@@ -162,17 +195,18 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
             score_threshold=score_threshold,
             losses_today=losses_today,
             open_positions=open_positions + len(picks),
-            account=account, notional=qty * row["price"],
+            account=account, notional=qty * cost,
             bankroll=bankroll)
         if not take:
             note(row["symbol"], "+".join(reasons), score)
             continue
         picks.append({"symbol": row["symbol"], "price": row["price"],
+                      "premarket": premarket, "limit": limit,
                       "qty": qty, "stop": stop, "score": score,
                       "setup": setup.get("setup"), "features": features})
         taken.add(row["symbol"])
         if budget is not None:
-            budget -= qty * row["price"]
+            budget -= qty * cost
     return picks
 
 
@@ -357,14 +391,24 @@ class TradingBot:
             levels = exit_levels(entry, self.cfg, stop_price=pick.get("stop"))
             bank_qty, runner_qty = split_qty(pick["qty"])
         total_qty = pick["qty"]
+        premarket = bool(pick.get("premarket"))
 
-        # One atomic order: the stop rides along and Alpaca arms it after the
-        # fill. Submitting buy and stop separately is rejected as a wash trade
-        # ("opposite side market/stop order exists"), which is what kept every
-        # entry from going through.
-        limit = entry * (1 + self.cfg.bot_limit_slippage_pct / 100)
-        parent = await self.broker.submit_oto_stop(
-            pick["symbol"], total_qty, levels["stop"], limit_price=limit)
+        if premarket:
+            # Before the bell Alpaca takes only extended-hours limit orders -
+            # no OTO, so no stop can ride along. The bot runs this position's
+            # stop itself (_manage_premarket) until the bell, when it hands
+            # it to the broker (_hand_off_at_bell).
+            limit = pick["limit"]
+            parent = await self.broker.submit_limit_buy(
+                pick["symbol"], total_qty, limit, extended_hours=True)
+        else:
+            # One atomic order: the stop rides along and Alpaca arms it after
+            # the fill. Submitting buy and stop separately is rejected as a
+            # wash trade ("opposite side market/stop order exists"), which is
+            # what kept every entry from going through.
+            limit = entry * (1 + self.cfg.bot_limit_slippage_pct / 100)
+            parent = await self.broker.submit_oto_stop(
+                pick["symbol"], total_qty, levels["stop"], limit_price=limit)
 
         try:
             trade_id = self.journal.record_trade_open(
@@ -389,13 +433,17 @@ class TradingBot:
             "bank_qty": bank_qty, "runner_qty": runner_qty,
             "entry": entry, "signal_price": entry, "stop": levels["stop"],
             "scale_out": levels["scale_out"], "opened_ts": ts,
+            # True while the bot, not the broker, holds this position's stop.
+            "managed_stop": premarket, "limit": limit,
             # The order is accepted, not filled. Until a position exists this
             # trade is pending: a missing position means "not yet", not
             # "closed". See _settle_pending.
             "filled": False,
             "banked": False}
+        how = (f"pre-market limit {limit:.2f} (ext. hours), stop run by the bot"
+               if premarket else f"limit {limit:.2f}")
         print(f"[bot] ENTER {pick['symbol']} x{total_qty} @~{entry:.2f} "
-              f"[{pick.get('setup')}] stop {levels['stop']:.2f} "
+              f"[{pick.get('setup')}] {how} stop {levels['stop']:.2f} "
               f"scale-out {levels['scale_out']:.2f}")
 
     async def _manage_open(self, state, now, ts):
@@ -404,53 +452,158 @@ class TradingBot:
         positions = {p["symbol"]: p for p in await self.broker.positions()}
         flatten = _past(now, self.cfg.bot_flatten_time)
         for symbol, trade in list(self.open_trades.items()):
-            pos = positions.get(symbol)
-            if pos is None:
-                if not trade.get("filled") and not await self._settle_pending(
-                        symbol, trade, ts):
-                    continue
-                exit_price = await self._closed_exit_price(symbol, trade)
-                reason = "trailing" if trade["banked"] else "stop"
-                self.journal.record_trade_close(trade["trade_id"], ts,
-                                                exit_price, reason)
-                del self.open_trades[symbol]
-                print(f"[bot] CLOSED {symbol} @~{exit_price:.2f} ({reason})")
-                continue
+            # One position's broker error must not cost the others their
+            # stop check. The loop used to abort on the first exception, and
+            # a refusal that repeats every cycle starved every position after
+            # it - fatal for one whose only stop is this loop.
+            try:
+                await self._manage_one(symbol, trade, positions.get(symbol),
+                                       state, now, ts, flatten)
+            except Exception as exc:
+                print(f"[bot] managing {symbol} failed, the rest carry on: "
+                      f"{exc!r}")
 
+    async def _manage_one(self, symbol, trade, pos, state, now, ts, flatten):
+        if pos is None:
+            just_filled = False
             if not trade.get("filled"):
-                # The position is proof of the fill, and carries its price.
-                self._adopt_fill(symbol, trade, pos.get("avg_entry_price"))
+                if not await self._settle_pending(symbol, trade, ts):
+                    return
+                just_filled = True
+            exit_price = await self._closed_exit_price(symbol, trade)
+            if exit_price is None:
+                if just_filled:
+                    # Filled after positions() was read, and nothing has been
+                    # sold: the position exists, this poll just missed it.
+                    # Closing here journalled a 0R exit at the entry price and
+                    # dropped a live position - pre-market, one with no stop.
+                    return
+                exit_price = trade["entry"]
+            # A pre-market exit is sent as a limit and recorded here, when
+            # the position is actually gone, under the reason it was sent.
+            reason = (trade.get("exit") or {}).get("reason") or (
+                "trailing" if trade["banked"] else "stop")
+            self.journal.record_trade_close(trade["trade_id"], ts,
+                                            exit_price, reason)
+            del self.open_trades[symbol]
+            print(f"[bot] CLOSED {symbol} @~{exit_price:.2f} ({reason})")
+            return
 
-            latest = state.latest.get(symbol)
-            price = (latest["price"] if latest
-                     else float(pos.get("current_price") or trade["entry"]))
+        held = _held(pos)
+        if held is not None and held < 0:
+            # Every exit this bot sends is a sell, so any of them would add
+            # to a short. Nothing it does can make this better; a person can.
+            if not trade.get("short_reported"):
+                trade["short_reported"] = True
+                print(f"[bot] !! SHORT {held} {symbol}: the account is short. "
+                      "The bot will not sell against it - cover it by hand.")
+            return
 
-            if flatten:
-                await self._flatten_trade(symbol, trade, ts, pos, "flatten")
-                continue
+        if not trade.get("filled"):
+            # The position is proof of the fill, and carries its price.
+            self._adopt_fill(symbol, trade, pos.get("avg_entry_price"))
 
-            if self.cfg.bot_scalp_mode:
-                await self._manage_scalp(symbol, trade, state, ts, pos, price)
-                continue
+        latest = state.latest.get(symbol)
+        price = (latest["price"] if latest
+                 else float(pos.get("current_price") or trade["entry"]))
 
-            if not trade["banked"] and price >= trade["scale_out"]:
-                await self.broker.cancel_orders_for(symbol)
-                if trade["runner_qty"] >= 1:
-                    await self.broker.submit_market_sell(symbol, trade["bank_qty"])
-                    tr = await self.broker.submit_trailing_stop(
-                        symbol, trade["runner_qty"], self.cfg.bot_runner_trail_pct)
-                    trade["trailing_order_id"] = tr["id"]
-                else:
-                    await self.broker.submit_market_sell(symbol, trade["qty"])
-                trade["banked"] = True
-                print(f"[bot] SCALE-OUT {symbol}: banked {trade['bank_qty']} "
-                      f"@~{price:.2f}, runner {trade['runner_qty']} trailing "
-                      f"{self.cfg.bot_runner_trail_pct:g}%")
-                continue
+        if flatten:
+            await self._flatten_trade(symbol, trade, ts, pos, "flatten")
+            return
 
-            age_min = (ts - trade["opened_ts"]) / 60
-            if not trade["banked"] and age_min >= self.cfg.bot_time_stop_minutes:
-                await self._flatten_trade(symbol, trade, ts, pos, "time_stop")
+        if trade.get("managed_stop"):
+            if is_premarket(now):
+                await self._manage_premarket(symbol, trade, state, now,
+                                             ts, pos, price)
+            else:
+                await self._hand_off_at_bell(symbol, trade, ts, pos, price)
+            return
+
+        if self.cfg.bot_scalp_mode:
+            await self._manage_scalp(symbol, trade, state, ts, pos, price)
+            return
+
+        if not trade["banked"] and price >= trade["scale_out"]:
+            await self.broker.cancel_orders_for(symbol)
+            held = await self._held_now(symbol, trade, fallback=pos)
+            if held < 1:
+                return
+            self._resplit(trade, held)
+            if trade["runner_qty"] >= 1:
+                await self.broker.submit_market_sell(symbol, trade["bank_qty"])
+                tr = await self.broker.submit_trailing_stop(
+                    symbol, trade["runner_qty"], self.cfg.bot_runner_trail_pct)
+                trade["trailing_order_id"] = tr["id"]
+            else:
+                await self.broker.submit_market_sell(symbol, trade["qty"])
+            trade["banked"] = True
+            print(f"[bot] SCALE-OUT {symbol}: banked {trade['bank_qty']} "
+                  f"@~{price:.2f}, runner {trade['runner_qty']} trailing "
+                  f"{self.cfg.bot_runner_trail_pct:g}%")
+            return
+
+        age_min = (ts - trade["opened_ts"]) / 60
+        if not trade["banked"] and age_min >= self.cfg.bot_time_stop_minutes:
+            await self._flatten_trade(symbol, trade, ts, pos, "time_stop")
+
+    async def _held_now(self, symbol, trade, fallback=None):
+        """Shares held right now - re-read, because a cancel just went out.
+
+        The cycle's position snapshot predates the cancel. An order that
+        filled in between (the tail of a partly filled entry, or an exit
+        racing its own cancel) changed what is there to sell. 0 when the
+        position is gone or short.
+
+        If the re-read fails: with a `fallback` snapshot, use it - in regular
+        hours the broker stop was just cancelled, and aborting now would
+        leave the position with neither the stop nor the sale. Without one
+        the error propagates and the cycle retries, which is only safe where
+        the bot, not the broker, holds the stop.
+        """
+        try:
+            positions = await self.broker.positions() or []
+        except Exception as exc:
+            if fallback is None:
+                raise
+            print(f"[bot] {symbol}: position re-read failed ({exc!r}); "
+                  "using this cycle's snapshot")
+            return _position_qty(fallback, trade)
+        for pos in positions:
+            if pos["symbol"] == symbol:
+                return _position_qty(pos, trade)
+        return 0
+
+    def _resplit(self, trade, held):
+        """Split the shares actually held into bank and runner.
+
+        The split was fixed when the order went in, on the size ASKED for. A
+        limit that filled 80 of 200 then tried to bank 130: refused, or on a
+        margin account a short. The journal's quantity follows, since P&L
+        multiplies by it.
+        """
+        if held != trade["qty"]:
+            trade["qty"] = held
+            self.journal.update_trade_qty(trade["trade_id"], held)
+        trade["bank_qty"], trade["runner_qty"] = (
+            scalp_split(held, self.cfg) if self.cfg.bot_scalp_mode
+            else split_qty(held))
+
+    async def _clear_then_count(self, symbol, trade):
+        """Cancel this symbol's orders and wait for them to settle, then
+        return how many shares there are to sell.
+
+        0 means send nothing this cycle: the cancel has not settled (its
+        shares are still reserved and a sell would be refused), or there is
+        no long position left. Only for positions whose stop the bot holds
+        itself: the orders being cancelled are its own limits, never a broker
+        stop, so waiting a cycle leaves nothing less protected than it was.
+        """
+        cleared = await self.broker.cancel_orders_for(
+            symbol, settle_seconds=self.cfg.bot_cancel_settle_seconds)
+        if not cleared:
+            print(f"[bot] {symbol}: cancel not settled yet, sell waits a cycle")
+            return 0
+        return await self._held_now(symbol, trade)
 
     async def _settle_pending(self, symbol, trade, ts):
         """No position yet: is the entry still working, or is it dead?
@@ -502,6 +655,14 @@ class TradingBot:
             self.journal.delete_trade(trade["trade_id"])
         except Exception as exc:
             print(f"[bot] could not remove the pending trade row: {exc}")
+        try:
+            # "taken" was recorded when the broker accepted the order; it
+            # never filled, so it was never taken. This is what makes the
+            # fill rate - and whether the misses would have won - a query.
+            self.journal.record_decision(trade["opened_ts"], symbol,
+                                         "unfilled", override=True)
+        except Exception as exc:
+            print(f"[bot] could not record the unfilled entry: {exc}")
         self.open_trades.pop(symbol, None)
         print(f"[bot] ENTRY DROPPED {symbol}: {why}")
 
@@ -541,19 +702,29 @@ class TradingBot:
                 if (_bar_ts(b) or 0) > opened_ts][-want:]
         return len(bars) == want and all(is_doji(b, self.cfg) for b in bars)
 
+    def _arm_runner(self, trade, price):
+        """The runner's rules once the bulk is banked. Returns the trail %.
+
+        The stop goes to break-even - the floor, whatever the trail does -
+        and the trail width is capped by runner_trail_pct so the first stop
+        can never sit below what was paid. One definition for both sides of
+        the bell: who holds the stop differs, the rule must not.
+        """
+        trade["stop"] = round(trade["entry"], 2)
+        trade["trail_pct"] = (runner_trail_pct(trade["entry"], price, self.cfg)
+                              if self.cfg.bot_scalp_runner_trail else None)
+        trade["high"] = price
+        return trade["trail_pct"]
+
     async def _protect_runner(self, symbol, trade, price):
         """Lift the runner's stop once the bulk is banked. Returns a label.
 
         A trailing stop ratchets up behind the high water mark, so a runner
         that keeps running keeps more of it - the fixed break-even stop used
-        to hand back every cent above entry the moment price came off. The
-        width is capped by runner_trail_pct so the first stop can never sit
-        below what was paid.
+        to hand back every cent above entry the moment price came off.
         """
-        breakeven = round(trade["entry"], 2)
-        trade["stop"] = breakeven         # the floor, whatever the trail does
-        pct = (runner_trail_pct(trade["entry"], price, self.cfg)
-               if self.cfg.bot_scalp_runner_trail else None)
+        pct = self._arm_runner(trade, price)
+        breakeven = trade["stop"]
         if pct is None:
             await self.broker.submit_stop(symbol, trade["runner_qty"], breakeven)
             return f"stop at break-even {breakeven:.2f}"
@@ -574,6 +745,10 @@ class TradingBot:
         """
         if not trade["banked"] and price >= trade["scale_out"]:
             await self.broker.cancel_orders_for(symbol)
+            held = await self._held_now(symbol, trade, fallback=pos)
+            if held < 1:
+                return
+            self._resplit(trade, held)
             if trade["runner_qty"] >= 1:
                 await self.broker.submit_market_sell(symbol, trade["bank_qty"])
                 protection = await self._protect_runner(symbol, trade, price)
@@ -600,6 +775,197 @@ class TradingBot:
                 >= self.cfg.bot_time_stop_minutes):
             await self._flatten_trade(symbol, trade, ts, pos, "time_stop")
 
+    # ------------------------------------------------ pre-market positions
+    #
+    # Before 09:30 Alpaca accepts only extended-hours limit orders, so the
+    # broker will hold no stop, no trailing stop and no market exit. The bot
+    # runs all three itself, and every order it sends here is a limit.
+
+    async def _manage_premarket(self, symbol, trade, state, now, ts, pos, price):
+        """One cycle of a position whose stop only the bot can enforce.
+
+        The order matters. An exit already working is chased first. A stale
+        price closes the position, because a stop is only as live as the
+        price it watches. Then the stop - which must never be skipped - and
+        only after it the target, the stall and the clock.
+        """
+        if trade.get("exit"):
+            await self._chase_exit(symbol, trade, state, ts, pos, price)
+            return
+        if not self._fresh(state, symbol, now):
+            broker_px = float(pos.get("current_price") or price)
+            await self._premarket_exit(symbol, trade, state, ts, pos,
+                                       broker_px, "stale")
+            return
+        if trade["banked"]:
+            self._trail_runner(trade, price)
+        if price <= trade["stop"]:
+            await self._premarket_exit(symbol, trade, state, ts, pos, price,
+                                       "trailing" if trade["banked"] else "stop")
+            return
+        if not trade["banked"] and price >= trade["scale_out"]:
+            await self._premarket_scale_out(symbol, trade, state, ts, pos, price)
+            return
+        if self._stalled(state, symbol, trade["opened_ts"]):
+            await self._premarket_exit(symbol, trade, state, ts, pos, price,
+                                       "stall")
+            return
+        if (not trade["banked"]
+                and (ts - trade["opened_ts"]) / 60
+                >= self.cfg.bot_time_stop_minutes):
+            await self._premarket_exit(symbol, trade, state, ts, pos, price,
+                                       "time_stop")
+
+    def _fresh(self, state, symbol, now):
+        """Has this symbol's tape printed recently enough to trust its price?
+
+        Measured from the last TRADE, not from the poll. The poller refreshes
+        every held symbol every few seconds whether or not anything traded,
+        so a thin name could stop printing at $2.00 while the market slid to
+        $1.80 and still read as fresh on every cycle - a stop that could not
+        see. Held symbols also leave the snapshot set candidate_ttl_minutes
+        after leaving the screener lists; a runner that outlives that goes
+        stale too. Either way it is closed: upside given up, never unguarded.
+
+        Replay and demo feeds carry no trade time and fall back to when the
+        price last arrived. A live row that carries the field but no value
+        is stale: there is no print to vouch for the price.
+        """
+        latest = (getattr(state, "latest", {}) or {}).get(symbol) or {}
+        if "trade_ts" in latest:
+            printed = latest["trade_ts"]
+            return bool(printed) and (now.timestamp() - printed
+                                      <= self.cfg.bot_stale_quote_seconds)
+        history = getattr(state, "histories", {}).get(symbol)
+        last = history.latest if history is not None else None
+        if not last:
+            return False
+        age = (now - last[0]).total_seconds()
+        return age <= self.cfg.bot_stale_quote_seconds
+
+    def _trail_runner(self, trade, price):
+        """Ratchet the runner's stop up behind the high. Never down."""
+        trade["high"] = max(trade.get("high") or price, price)
+        pct = trade.get("trail_pct")
+        if pct:
+            trailed = round(trade["high"] * (1 - pct / 100), 2)
+            trade["stop"] = max(trade["stop"], trailed)
+
+    def _bid(self, state, symbol):
+        return (getattr(state, "latest", {}).get(symbol) or {}).get("bid")
+
+    async def _premarket_exit(self, symbol, trade, state, ts, pos, price,
+                              reason):
+        """Send the exit as an extended-hours limit, and do NOT record it.
+
+        _flatten_trade records the close straight away because a market
+        order fills; a limit may not. The close is written by _manage_open
+        once the position is really gone, and _chase_exit re-prices this
+        order if it sits unfilled. If a cancel has not settled, nothing is
+        sent and no exit is recorded as working: the next cycle checks the
+        stop again and tries again.
+        """
+        qty = await self._clear_then_count(symbol, trade)
+        if qty < 1:
+            return
+        px = premarket_exit_limit(price, self._bid(state, symbol), self.cfg)
+        order = await self.broker.submit_limit_sell(symbol, qty, px,
+                                                    extended_hours=True)
+        trade["exit"] = {"reason": reason, "order_id": (order or {}).get("id"),
+                         "ts": ts, "px": px}
+        print(f"[bot] EXIT {symbol} ({reason}): limit sell {qty} "
+              f"floor {px:.2f}, extended hours")
+
+    async def _chase_exit(self, symbol, trade, state, ts, pos, price):
+        """An exit limit that has not filled is re-priced one offset lower.
+
+        Each attempt is at least one offset under the one before and never
+        above the current bid less the offset, so a stop keeps walking down
+        a thin book until something takes it rather than sitting unfilled
+        while the price falls away.
+        """
+        pending = trade["exit"]
+        if ts - pending["ts"] < self.cfg.bot_premarket_chase_seconds:
+            return
+        # The cancel can race a fill of the very order being cancelled. The
+        # re-read after it settles is what stops a re-priced sell going out
+        # for shares that were just sold - on a margin account, a short.
+        qty = await self._clear_then_count(symbol, trade)
+        if qty < 1:
+            return
+        fresh = premarket_exit_limit(price, self._bid(state, symbol), self.cfg)
+        px = max(0.01, round(min(pending["px"], fresh)
+                             - self.cfg.bot_premarket_offset_cents, 2))
+        order = await self.broker.submit_limit_sell(symbol, qty, px,
+                                                    extended_hours=True)
+        pending.update(order_id=(order or {}).get("id"), ts=ts, px=px)
+        print(f"[bot] CHASE {symbol}: exit unfilled, re-priced to floor "
+              f"{px:.2f}")
+
+    async def _premarket_scale_out(self, symbol, trade, state, ts, pos, price):
+        """Bank most of it at the target; the runner's stop goes to entry.
+
+        Split on what is actually held: the bank and runner sizes were fixed
+        on the size ordered, and a partly filled limit holds less.
+        """
+        held = await self._clear_then_count(symbol, trade)
+        if held < 1:
+            return
+        self._resplit(trade, held)
+        if trade["runner_qty"] < 1:
+            await self._premarket_exit(symbol, trade, state, ts, pos, price,
+                                       "target")
+            return
+        px = premarket_exit_limit(price, self._bid(state, symbol), self.cfg)
+        await self.broker.submit_limit_sell(symbol, trade["bank_qty"], px,
+                                            extended_hours=True)
+        trade["banked"] = True
+        self._arm_runner(trade, price)
+        print(f"[bot] SCALE-OUT {symbol}: banked {trade['bank_qty']} limit "
+              f"floor {px:.2f}, runner {trade['runner_qty']} on a bot-run "
+              f"trail from {trade['stop']:.2f}")
+
+    async def _hand_off_at_bell(self, symbol, trade, ts, pos, price):
+        """At 09:30 give the stop back to the broker.
+
+        From the bell Alpaca takes stop and trailing orders again, and a
+        broker-held stop survives this process dying where a bot-run one
+        does not. An exit still working is finished at market.
+
+        The stop is checked BEFORE the handoff, every cycle until one
+        succeeds. A price already through it would make the broker refuse a
+        sell stop above the market, and while the handoff kept failing the
+        position had no stop from either side - the bot had stopped watching
+        at 09:30 and the broker never started.
+
+        The handoff never lowers protection: a runner goes to a native
+        trailing stop only if its trail would start at or above the stop the
+        bot was holding, and otherwise to a fixed stop at that level.
+        """
+        if trade.get("exit"):
+            await self._flatten_trade(symbol, trade, ts, pos,
+                                      trade["exit"]["reason"])
+            return
+        if price <= trade["stop"]:
+            await self._flatten_trade(symbol, trade, ts, pos,
+                                      "trailing" if trade["banked"] else "stop")
+            return
+        # A resting pre-market limit (an unfilled bank) still reserves its
+        # shares; a stop sent over it would be refused.
+        qty = await self._clear_then_count(symbol, trade)
+        if qty < 1:
+            return
+        pct = trade.get("trail_pct") if trade["banked"] else None
+        if pct and round(price * (1 - pct / 100), 2) >= trade["stop"]:
+            order = await self.broker.submit_trailing_stop(symbol, qty, pct)
+            trade["trailing_order_id"] = (order or {}).get("id")
+            how = f"trailing {pct:g}%"
+        else:
+            await self.broker.submit_stop(symbol, qty, trade["stop"])
+            how = f"stop {trade['stop']:.2f}"
+        trade["managed_stop"] = False
+        print(f"[bot] BELL {symbol}: stop handed to the broker ({how})")
+
     async def _flatten_trade(self, symbol, trade, ts, pos, reason):
         # Clear protective orders first: an open sell blocks the close as a
         # wash trade, and a leftover one blocks tomorrow's entry.
@@ -621,9 +987,10 @@ class TradingBot:
         """
         legs = await self.broker.closed_sell_legs(symbol, trade["opened_ts"])
         avg = weighted_exit(legs)
-        if avg is not None:
-            return avg
-        return fallback if fallback is not None else trade["entry"]
+        # None when nothing was sold and the caller gave no fallback. "No
+        # sell fills" and "sold at the entry price" must not look the same:
+        # conflating them is how a live position got journalled as a 0R close.
+        return avg if avg is not None else fallback
 
     # ------------------------------------------------------------ status
 
@@ -667,7 +1034,19 @@ async def bot_loop(app, cfg: Config):
     ctx = app["ctx"]
     async with aiohttp.ClientSession() as session:
         broker = Broker(session, cfg)   # PaperOnlyError if misconfigured
-        account = await broker.account()
+        # A dead bot now ends the whole session (see session.run_for), so a
+        # network blip at 07:30 must not cost the day. A real fault - bad
+        # keys, say - still surfaces after the retries.
+        for attempt in range(1, STARTUP_ATTEMPTS + 1):
+            try:
+                account = await broker.account()
+                break
+            except Exception as exc:
+                if attempt == STARTUP_ATTEMPTS:
+                    raise
+                print(f"[bot] account read failed ({exc}); retry "
+                      f"{attempt}/{STARTUP_ATTEMPTS - 1} in 30s")
+                await asyncio.sleep(30)
         equity = float(account["equity"])
         print(f"[bot] paper account ok — equity ${equity:,.2f}, "
               f"{position_slots(equity, cfg)} position(s) of "

@@ -267,20 +267,27 @@ class Journal:
             return 2
         return self.DECISION_RANK.get(decision, 1)
 
-    def record_decision(self, ts, symbol, decision):
+    def record_decision(self, ts, symbol, decision, override=False):
         """What the bot did about today's alert for `symbol`.
 
-        "taken", "no_setup", or the reason it passed - should_enter's own
-        vocabulary ("score", "daily_cap", "concurrency", "loss_cap",
-        "already_traded", "window", "kill_switch"), joined with "+" when
-        more than one applied.
+        "taken", "no_setup", "unfilled", or the reason it passed -
+        should_enter's own vocabulary ("score", "daily_cap", "concurrency",
+        "loss_cap", "already_traded", "window", "kill_switch"), joined with
+        "+" when more than one applied.
+
+        `override` skips the only-upgrade ladder. It exists for one case:
+        "taken" is written when the broker ACCEPTS an order, and an order
+        that then never fills was not taken at all. Without it an unfilled
+        entry stayed "taken" after its trade row was deleted, so the
+        journal could not say how often entries fail to fill.
         """
         row = self._execute(
             "SELECT id, decision FROM alerts WHERE day=? AND symbol=?",
             (_day(ts), symbol)).fetchone()
         if row is None:
             return False
-        if self._decision_rank(decision) < self._decision_rank(row["decision"]):
+        if (not override and self._decision_rank(decision)
+                < self._decision_rank(row["decision"])):
             return False
         if row["decision"] == decision:
             return False
@@ -548,6 +555,15 @@ class Journal:
         measured against what the fill really cost.
         """
         self._execute("UPDATE trades SET entry=? WHERE id=?", (entry, trade_id))
+        self._commit()
+
+    def update_trade_qty(self, trade_id, qty):
+        """Correct the quantity to what was actually bought.
+
+        record_trade_open stores the ordered size. A limit that only partly
+        fills holds fewer shares, and P&L multiplies by this column.
+        """
+        self._execute("UPDATE trades SET qty=? WHERE id=?", (qty, trade_id))
         self._commit()
 
     def delete_trade(self, trade_id):

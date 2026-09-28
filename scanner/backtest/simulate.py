@@ -246,6 +246,10 @@ class Simulator:
             score_threshold=self.score_bar,
             losses_today=self.losses,
             open_positions=len(self.open),
+            # The live bot caps open positions at the account's slots via
+            # its bankroll (strategy.max_positions); without it the replay
+            # would fall back to the ceiling and hold more than the bot can.
+            bankroll=self.cfg.bot_bankroll,
             budget=max(0.0, self.cfg.bot_bankroll - deployed))
         for pick in picks:
             levels = (scalp_levels(pick["price"], self.cfg)

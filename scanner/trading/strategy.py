@@ -8,10 +8,12 @@ pullback, bank most of the position a fixed number of cents up, and let the
 rest ride a trail that can never come back under what was paid. The R-based
 2R/3R path is still here and still reachable by configuration.
 """
+import datetime as dt
 import math
 from zoneinfo import ZoneInfo
 
 from ..config import Config
+from ..history import SESSION_OPEN as MARKET_OPEN
 
 ET = ZoneInfo("America/New_York")
 
@@ -93,7 +95,7 @@ def should_enter(symbol="", *, price, score, trades_today, traded_symbols,
         reasons.append("daily_cap")
     if losses_today >= cfg.bot_max_losses_per_day:
         reasons.append("loss_cap")
-    if open_positions >= cfg.bot_max_concurrent_positions:
+    if open_positions >= max_positions(bankroll, cfg):
         reasons.append("concurrency")
     if symbol in traded_symbols:
         reasons.append("already_traded")
@@ -170,6 +172,57 @@ def position_slots(bankroll, cfg: Config):
     if bankroll - whole * unit >= cfg.bot_min_position_dollars:
         whole += 1
     return max(0, min(whole, cfg.bot_max_concurrent_positions))
+
+
+def is_premarket(now):
+    """Before the 09:30 bell, when Alpaca takes only extended-hours limits.
+
+    The one definition. Row qualification (hod skips open_drive before the
+    bell) and order routing both ask this, and they must never disagree.
+    """
+    return now.astimezone(ET).time() < MARKET_OPEN
+
+
+def premarket_entry_limit(price, ask, cfg: Config):
+    """Ross's pre-market entry: the ask plus a fixed offset.
+
+    The ask, not the last trade: pre-market the spread is wide, and a limit
+    pinned to the last print sits below what any seller is asking. But only
+    an ask within bot_premarket_quote_band_pct of the last trade - the free
+    feed's quote is IEX's own book, and a stale or one-sided one either
+    oversizes the limit or, sitting under the stop, zeroes the position.
+    Falls back to the last trade, which is what the replay sizes on.
+    """
+    band = price * cfg.bot_premarket_quote_band_pct / 100
+    base = ask if ask and abs(ask - price) <= band else price
+    return round(base + cfg.bot_premarket_offset_cents, 2)
+
+
+def premarket_exit_limit(price, bid, cfg: Config):
+    """The floor for a pre-market sell: the bid less the offset.
+
+    A sell limit is a floor, not a price - it fills at the best bid above
+    it - so this is how far the bot will let a thin book walk it down on
+    one attempt. Falls back to the last trade with no quote. Never below a
+    cent.
+    """
+    base = bid if bid else price
+    return max(0.01, round(base - cfg.bot_premarket_offset_cents, 2))
+
+
+def max_positions(bankroll, cfg: Config):
+    """How many positions may be open at once: the account's slots.
+
+    The budget used to do this job implicitly - every position cost about a
+    $1,000 unit, so $2,473 ran out after three. Pre-market positions are
+    sized on their entry limit and come out smaller, and without an explicit
+    cap the same budget would fit more of them: more total risk, not less.
+    Capping at the slot count keeps the account's TOTAL risk where it was.
+    Unknown bankroll falls back to the configured ceiling.
+    """
+    if not bankroll:
+        return cfg.bot_max_concurrent_positions
+    return min(cfg.bot_max_concurrent_positions, position_slots(bankroll, cfg))
 
 
 def size_position(price, cfg: Config, stop_price=None, unit=None, budget=None):

@@ -10,9 +10,8 @@ from dataclasses import replace
 from . import catalyst, hod, setups
 from .config import Config
 from .gainers import top_gainers
-from .history import ET, SymbolHistory, rvol
-
-MARKET_OPEN = dt.time(9, 30)
+from .history import ET, SESSION_OPEN as MARKET_OPEN, SymbolHistory, rvol
+from .trading.strategy import is_premarket
 
 
 def _bar_et(ts):
@@ -142,6 +141,11 @@ class MarketState:
 
     def build_states(self, now):
         states = []
+        # Before the bell some criteria are undefined rather than failed -
+        # open_drive measures from an open that has not happened yet. The
+        # row says which side of 09:30 it is on so hod.scan can tell the
+        # difference between "no open yet" and "open unknown".
+        premarket = is_premarket(now)
         for sym, data in self.latest.items():
             history = self.histories[sym]
             price, prev_close = data["price"], data.get("prev_close")
@@ -169,12 +173,15 @@ class MarketState:
                                and price >= symbol_vwap),
                 "gap_pct": gap_pct,
                 "open_pct": open_pct,
+                "premarket": premarket,
                 "opening_range": opening_range,
                 "setup": setup,
                 "symbol": sym,
                 "price": price,
                 "day_pct": day_pct,
                 "day_volume": data["cum_volume"],
+                "bid": data.get("bid"),
+                "ask": data.get("ask"),
                 "day_high": data.get("day_high"),
                 "rvol": rvol(data["cum_volume"], data.get("avg_volume"), now, self.cfg),
                 "avg_volume": data.get("avg_volume"),

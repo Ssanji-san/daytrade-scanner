@@ -73,6 +73,18 @@ class Broker:
         return payload
 
     @staticmethod
+    def limit_payload(symbol, qty, side, limit_price, extended_hours=False):
+        """A plain limit order - the ONLY type Alpaca accepts outside
+        regular hours, and only with extended_hours set. Market, stop,
+        trailing, OTO and bracket orders are all rejected then."""
+        payload = {"symbol": symbol, "qty": str(qty), "side": side,
+                   "type": "limit", "time_in_force": "day",
+                   "limit_price": f"{limit_price:.2f}"}
+        if extended_hours:
+            payload["extended_hours"] = True
+        return payload
+
+    @staticmethod
     def trailing_stop_payload(symbol, qty, trail_percent, side="sell"):
         return {"symbol": symbol, "qty": str(qty), "side": side,
                 "type": "trailing_stop", "time_in_force": "day",
@@ -139,20 +151,48 @@ class Broker:
         return await self._request("POST", "/v2/orders",
                                    json=self.market_payload(symbol, qty, "sell"))
 
+    async def submit_limit_buy(self, symbol, qty, limit_price,
+                               extended_hours=False):
+        return await self._request("POST", "/v2/orders", json=self.limit_payload(
+            symbol, qty, "buy", limit_price, extended_hours))
+
+    async def submit_limit_sell(self, symbol, qty, limit_price,
+                                extended_hours=False):
+        return await self._request("POST", "/v2/orders", json=self.limit_payload(
+            symbol, qty, "sell", limit_price, extended_hours))
+
     async def submit_oto_stop(self, symbol, qty, stop_price, limit_price=None):
         return await self._request(
             "POST", "/v2/orders",
             json=self.oto_stop_payload(symbol, qty, stop_price, limit_price))
 
-    async def cancel_orders_for(self, symbol):
-        """Cancel every open order on a symbol, attached stop legs included."""
-        orders = await self._request(
-            "GET", "/v2/orders", params={"status": "open", "symbols": symbol})
-        for order in orders or []:
+    async def _open_orders_for(self, symbol):
+        return await self._request(
+            "GET", "/v2/orders",
+            params={"status": "open", "symbols": symbol}) or []
+
+    async def cancel_orders_for(self, symbol, settle_seconds=0.0):
+        """Cancel every open order on a symbol, attached stop legs included.
+
+        A cancel is a request: until it completes Alpaca keeps the order's
+        shares reserved, and a sell sent in the meantime can be refused for
+        quantity. With `settle_seconds`, wait that long for the symbol to
+        show no open orders. Returns True once it is clear (always True
+        without waiting, which is the old fire-and-forget behaviour).
+        """
+        for order in await self._open_orders_for(symbol):
             try:
                 await self.cancel_order(order["id"])
             except aiohttp.ClientResponseError:
                 pass   # already filled or cancelled
+        if not settle_seconds:
+            return True
+        deadline = asyncio.get_running_loop().time() + settle_seconds
+        while await self._open_orders_for(symbol):
+            if asyncio.get_running_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(0.25)
+        return True
 
     async def submit_stop(self, symbol, qty, stop_price):
         return await self._request("POST", "/v2/orders",
