@@ -261,6 +261,18 @@ class TestTheProtectRun:
         assert [o for o in broker.orders if o["type"] == "stop"]  # then guarded
 
 
+def test_a_dry_run_reports_the_plan_and_sends_nothing(tmp_path, capsys):
+    """Checked against a real account before it is trusted to act on one."""
+    from scanner.flatten import protect
+    bot, broker, journal = open_premarket(tmp_path)
+    broker._positions = [_pos()]
+    sent = len(broker.orders)
+    asyncio.run(protect(broker, journal, CFG, now=_at(9, 31), dry_run=True))
+    assert len(broker.orders) == sent
+    assert broker.cancelled == []
+    assert "would place stop" in capsys.readouterr().out
+
+
 def test_a_dead_bot_ends_the_session_early(monkeypatch):
     """The protect step runs when the session step ends. A session that
     kept the scanner alive for hours after the bot died would hold that

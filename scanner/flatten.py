@@ -141,7 +141,18 @@ async def _exit_before_the_bell(broker, cfg):
               f"sell {held} floor {limit:.2f}, extended hours")
 
 
-async def protect(broker, journal, cfg, now=None):
+def _describe(step):
+    action = step["action"]
+    if action == "stop":
+        extra = (f", after cancelling {len(step['cancel'])} resting sell(s)"
+                 if step["cancel"] else "")
+        return (f"would place stop {step['qty']} @ {step['stop']:.2f}{extra}")
+    return {"ok": "already has a broker stop - nothing to do",
+            "close": "already through its stop - would close at market",
+            "short": f"SHORT {step.get('qty')} - would not touch"}[action]
+
+
+async def protect(broker, journal, cfg, now=None, dry_run=False):
     """Make sure no position is left without a stop by a session that ended.
 
     A regular-hours position's stop is an order at the broker and outlives
@@ -149,11 +160,26 @@ async def protect(broker, journal, cfg, now=None):
     dies holding it, nothing guards it until the 15:50 flatten, and the
     flatten only acts inside its own window. This runs when the session
     step ends, however it ended.
+
+    `dry_run` reads the account and prints the plan without sending,
+    cancelling or waiting for anything.
     """
     now = now or dt.datetime.now(ET)
     et = now.astimezone(ET)
     if (et.hour, et.minute) >= MARKET_CLOSE:
         print("[protect] market closed - nothing can be placed")
+        return
+    if dry_run:
+        stops = {r["symbol"]: r["stop"] for r in journal.open_trade_rows()}
+        positions = await broker.positions() or []
+        if is_premarket(now):
+            print("[protect] (dry run) before the bell: would first try to "
+                  "sell unguarded positions with an extended-hours limit")
+        plan = plan_protection(positions, await broker.open_orders() or [],
+                               stops, cfg)
+        for step in plan:
+            print(f"[protect] (dry run) {step['symbol']}: {_describe(step)}")
+        print(f"[protect] (dry run) {len(positions)} position(s) checked")
         return
     if is_premarket(now):
         await _exit_before_the_bell(broker, cfg)
@@ -237,14 +263,14 @@ async def run(force=False):
         await reconcile(broker, journal, set(), now_ts)
 
 
-async def run_protect():
+async def run_protect(dry_run=False):
     cfg = DEFAULT
     async with aiohttp.ClientSession() as session:
         broker = Broker(session, cfg)
         journal = Journal(cfg.bot_journal_path, cfg.bot_alert_window_minutes,
                           win_target_cents=(cfg.bot_scalp_target_cents
                                             if cfg.bot_scalp_mode else None))
-        await protect(broker, journal, cfg)
+        await protect(broker, journal, cfg, dry_run=dry_run)
 
 
 if __name__ == "__main__":
@@ -254,5 +280,8 @@ if __name__ == "__main__":
     parser.add_argument("--protect", action="store_true",
                         help="guard positions a finished session left behind "
                              "instead of flattening")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="with --protect: print the plan, send nothing")
     args = parser.parse_args()
-    asyncio.run(run_protect() if args.protect else run(force=args.force))
+    asyncio.run(run_protect(dry_run=args.dry_run) if args.protect
+                else run(force=args.force))
