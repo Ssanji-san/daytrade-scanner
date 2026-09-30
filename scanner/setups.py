@@ -8,11 +8,17 @@ pull back one to three candles off a swing high, then buy the break of the
 prior candle's high with the stop at the pullback low. That gives a
 defined, tight risk instead of an arbitrary percentage.
 
+Before buying, it also helps to know how much room there is overhead:
+`resistance_room` measures the distance to the ceilings Ross watches.
+
 A gapper at the open has no pullback to trade yet - there are no session
 bars behind it - so it gets its own trigger: let the first few minutes
 carve out a range, then buy the break of that range's high with the stop
 at its low.
 """
+
+
+import math
 
 
 def vwap(bars):
@@ -88,4 +94,30 @@ def detect_pullback(bars, price, cfg):
         "swing_high": swing_high,
         "pullback_low": pullback_low,
         "trigger": trigger,
+    }
+
+
+def _room(price, level):
+    """Distance up to a ceiling, or None if there is none above price."""
+    if not level or level <= price:
+        return None                      # unknown, or already broken
+    return round(level - price, 4)
+
+
+def resistance_room(price, prev_high=None, premarket_high=None):
+    """How far price can run before each ceiling Ross watches.
+
+    Yesterday's high, the pre-market high, and the next half dollar -
+    round numbers where sellers stack their orders. A level at or below
+    price is already broken and is not resistance. Measured and journalled
+    only: whether a ceiling inside the +20c target costs money is a
+    question for the backtest, not an assumption.
+    """
+    # Strictly above: a stock sitting on $2.00 looks to $2.50. The epsilon
+    # keeps 2.00 * 2 from flooring to 3.999... and skipping a level.
+    half_dollar = (math.floor(price * 2 + 1e-9) + 1) / 2
+    return {
+        "room_prev_high": _room(price, prev_high),
+        "room_premarket_high": _room(price, premarket_high),
+        "room_half_dollar": round(half_dollar - price, 4),
     }

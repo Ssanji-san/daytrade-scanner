@@ -84,6 +84,11 @@ def features_from_row(row, now):
         "catalyst_score": (row.get("catalyst") or {}).get("score") or 0.0,
         "catalyst_age": min((row.get("catalyst") or {}).get("age_minutes")
                             or 999.0, 999.0),
+        # Room to each overhead ceiling, in dollars; None means no ceiling,
+        # which is not the same as zero. Analysis only, like day_volume.
+        **{key: (row.get("resistance") or {}).get(key)
+           for key in ("room_prev_high", "room_premarket_high",
+                       "room_half_dollar")},
     }
 
 

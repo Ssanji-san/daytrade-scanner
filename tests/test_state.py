@@ -315,3 +315,27 @@ class TestRowsKnowWhichSideOfTheBellTheyAreOn:
         state.ingest(now, {"PRE": snap(3.00, bar_t="2026-07-14T12:15:00Z")})
         qualified = state.payload(now)["hod"]["qualified"]
         assert [r["symbol"] for r in qualified] == ["PRE"]
+
+
+class TestResistanceLevels:
+    """The row carries how far each ceiling is above the price."""
+
+    def test_premarket_high_is_frozen_from_bars_before_the_bell(self):
+        state = MarketState(CFG)
+        for when, price in ((t(8, 0), 2.40), (t(9, 0), 2.10)):
+            state.ingest(when, {"LVL": _gapper_snap(price, when, 1.50)})
+        later = t(9, 45)                     # after the bell, above 2.40
+        state.ingest(later, {"LVL": _gapper_snap(2.55, later, 1.50)})
+        state.ingest(later, {"LVL": _gapper_snap(2.05, later, 1.50)})
+        row = {s["symbol"]: s for s in state.build_states(later)}["LVL"]
+        assert row["premarket_high"] == pytest.approx(2.40)   # not 2.55
+        assert row["resistance"]["room_premarket_high"] == pytest.approx(0.35)
+
+    def test_yesterdays_high_comes_from_the_snapshot(self):
+        state = MarketState(CFG)
+        when = t(10, 0)
+        data = dict(_gapper_snap(2.05, when, 1.50), prev_high=2.15)
+        state.ingest(when, {"LVL": data})
+        row = {s["symbol"]: s for s in state.build_states(when)}["LVL"]
+        assert row["resistance"]["room_prev_high"] == pytest.approx(0.10)
+        assert row["resistance"]["room_half_dollar"] == pytest.approx(0.45)

@@ -39,18 +39,19 @@ def _context_for(day, daily, floats, cfg):
     close and the volume baseline are exactly the values a peeking backtest
     gets wrong.
     """
-    prev_close, avg_volume, float_shares = {}, {}, {}
+    prev_close, prev_high, avg_volume, float_shares = {}, {}, {}, {}
     for symbol, rows in daily.items():
         earlier = sorted((r for r in rows if r.get("t") and r["t"][:10] < day),
                          key=lambda r: r["t"])
         if not earlier:
             continue
         prev_close[symbol] = earlier[-1].get("c")
+        prev_high[symbol] = earlier[-1].get("h")
         avg_volume[symbol] = fetch.prior_avg_volume(
             rows, day, cfg.rvol_baseline_days)
         float_shares[symbol] = floats.get(symbol)
-    return {"prev_close": prev_close, "avg_volume": avg_volume,
-            "float_shares": float_shares}
+    return {"prev_close": prev_close, "prev_high": prev_high,
+            "avg_volume": avg_volume, "float_shares": float_shares}
 
 
 # rvol is measured against a 30-SESSION baseline, and prev_close needs the

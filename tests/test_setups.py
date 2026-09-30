@@ -9,7 +9,7 @@ import pytest
 
 from scanner.config import Config
 from scanner.setups import (detect_opening_range_break, detect_pullback,
-                            vwap)
+                            resistance_room, vwap)
 from scanner.trading.strategy import technical_stop
 
 CFG = Config()
@@ -144,3 +144,32 @@ class TestOpeningRangeBreak:
         wide = detect_opening_range_break({"high": 15.0, "low": 13.2},
                                           price=15.1, gap_pct=180.0, cfg=CFG)
         assert technical_stop(15.1, wide["stop"], BAND) is None
+
+
+class TestResistanceRoom:
+    """How far price can run before the next ceiling: yesterday's high, the
+    pre-market high, the next half dollar. Recorded, not yet acted on."""
+
+    def test_distance_to_each_ceiling_above(self):
+        room = resistance_room(2.05, prev_high=2.15, premarket_high=2.40)
+        assert room["room_prev_high"] == pytest.approx(0.10)
+        assert room["room_premarket_high"] == pytest.approx(0.35)
+        assert room["room_half_dollar"] == pytest.approx(0.45)   # 2.50
+
+    def test_a_ceiling_already_broken_is_not_resistance(self):
+        room = resistance_room(2.60, prev_high=2.15, premarket_high=2.60)
+        assert room["room_prev_high"] is None
+        assert room["room_premarket_high"] is None   # at it = broken
+
+    def test_unknown_levels_are_none(self):
+        room = resistance_room(2.05)
+        assert room["room_prev_high"] is None
+        assert room["room_premarket_high"] is None
+
+    def test_half_dollar_just_above(self):
+        assert resistance_room(1.95)["room_half_dollar"] == pytest.approx(0.05)
+        assert resistance_room(3.49)["room_half_dollar"] == pytest.approx(0.01)
+
+    def test_sitting_on_a_half_dollar_looks_to_the_next_one(self):
+        assert resistance_room(2.00)["room_half_dollar"] == pytest.approx(0.50)
+        assert resistance_room(2.50)["room_half_dollar"] == pytest.approx(0.50)

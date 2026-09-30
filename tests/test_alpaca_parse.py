@@ -35,6 +35,7 @@ def test_parse_snapshots_maps_fields():
                           "bid": None, "ask": None,   # no latestQuote here
                           # 2026-07-14T15:59:00Z, when the tape printed
                           "trade_ts": 1784044740.0,
+                          "prev_high": None,    # prevDailyBar has no h
                           "minute_bar": None}   # no t/h on this bar
 
 
@@ -183,6 +184,17 @@ class TestYesterdaysBarIsNotToday:
         out = parse_snapshots(self.SNAP, today=dt.date(2026, 9, 29))["KNRX"]
         assert out["cum_volume"] == 0               # yesterday's 40M is not rvol
         assert out["day_high"] == 1.03              # nor is yesterday's high
+
+    def test_yesterdays_high_is_the_daily_bar_before_today(self):
+        out = parse_snapshots(self.SNAP, today=dt.date(2026, 9, 29))["KNRX"]
+        assert out["prev_high"] == 1.40
+
+    def test_yesterdays_high_is_the_prev_bar_once_today_trades(self):
+        snap = {"KNRX": dict(self.SNAP["KNRX"],
+                             prevDailyBar={"t": "2026-09-25T04:00:00Z",
+                                           "c": 0.312, "h": 0.35})}
+        out = parse_snapshots(snap, today=dt.date(2026, 9, 28))["KNRX"]
+        assert out["prev_high"] == 0.35
 
     def test_a_bar_from_today_is_used_as_is(self):
         out = parse_snapshots(self.SNAP, today=dt.date(2026, 9, 28))["KNRX"]

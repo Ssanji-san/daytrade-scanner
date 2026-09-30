@@ -41,6 +41,7 @@ class MarketState:
         self._gap_pct = {}       # symbol -> % gap vs prev close at 9:30
         self._opening_range = {}    # symbol -> {"high", "low"} of first N min
         self._open_price = {}    # symbol -> price at the 9:30 bell
+        self._premarket_high = {}   # symbol -> highest bar before the bell
 
     def ingest(self, now, symbol_data):
         """symbol_data: {sym: {price, cum_volume, day_high, prev_close,
@@ -68,6 +69,14 @@ class MarketState:
         et = now.astimezone(ET)
         bell = et.replace(hour=MARKET_OPEN.hour, minute=MARKET_OPEN.minute,
                           second=0, microsecond=0)
+
+        # Judged by the bar's own stamp, like the opening range: a bar from
+        # before 09:30 is pre-market whenever it happens to arrive.
+        bar = data.get("minute_bar") or {}
+        stamp = _bar_et(bar.get("t"))
+        if bar.get("h") and stamp is not None and stamp < bell:
+            self._premarket_high[sym] = max(self._premarket_high.get(sym, 0),
+                                            bar["h"])
 
         # Premarket keeps re-marking the gap; after the bell the last value
         # stands. A session that starts late still gets one reading.
@@ -165,6 +174,7 @@ class MarketState:
             if setup is None:
                 setup = setups.detect_opening_range_break(
                     opening_range, price, gap_pct, self.cfg)
+            premarket_high = self._premarket_high.get(sym)
             states.append({
                 "catalyst": catalyst.score_news(
                     self._news_by_symbol.get(sym), now.timestamp(), self.cfg),
@@ -176,6 +186,9 @@ class MarketState:
                 "premarket": premarket,
                 "opening_range": opening_range,
                 "setup": setup,
+                "premarket_high": premarket_high,
+                "resistance": setups.resistance_room(
+                    price, data.get("prev_high"), premarket_high),
                 "symbol": sym,
                 "price": price,
                 "day_pct": day_pct,

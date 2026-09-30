@@ -92,6 +92,25 @@ class TestSessionCursor:
         assert snap["minute_bar"]["h"] == 5.5
 
 
+class TestPrevHigh:
+    """Yesterday's high reaches the replay the way the live snapshot has it."""
+
+    def test_cursor_carries_it(self):
+        snap = replay.SessionCursor().snapshot(
+            "AAA", bar("t1", 5, 5.5, 4.9, 5.2), 4.0, 10_000, 8e6,
+            prev_high=5.8)
+        assert snap["prev_high"] == 5.8
+
+    def test_context_takes_it_from_the_day_before(self):
+        from scripts.backtest import _context_for
+        daily = {"AAA": [bar("2026-08-10T04:00:00Z", 1, 1.5, 1, 1.2),
+                         bar("2026-08-11T04:00:00Z", 1, 1.9, 1, 1.4),
+                         bar("2026-08-12T04:00:00Z", 1, 9.9, 1, 9.0)]}
+        context = _context_for("2026-08-12", daily, {}, CFG)
+        assert context["prev_high"]["AAA"] == 1.9     # not today's 9.9
+        assert context["prev_close"]["AAA"] == 1.4
+
+
 class TestTimeline:
     def test_minutes_come_out_in_order(self):
         rows = {"AAA": [bar("2026-08-12T13:31:00Z", 1, 1, 1, 1),
@@ -162,6 +181,31 @@ def test_replay_journals_graded_alerts_without_touching_live(tmp_path):
     alerts = journal.recent_alerts(20)
     assert any(a["symbol"] == "MOVR" for a in alerts)
     assert str(tmp_path) in journal.path          # never the live journal
+
+
+def test_replay_hands_yesterdays_high_to_the_alert(tmp_path):
+    """The live snapshot carries prev_high; the replay has to as well, or
+    the backtest measures resistance the bot never sees - or none at all."""
+    import json
+    import sqlite3
+    journal = Journal(str(tmp_path / "backtest.db"))
+    day = "2026-08-12"
+    minute_rows = []
+    for i in range(12):
+        stamp = f"{day}T13:{30 + i:02d}:00Z"
+        price = 5.00 + i * 0.10
+        minute_rows.append(bar(stamp, price, price + 0.02,
+                               round(price * 0.995, 4), price, v=40_000))
+    context = {"prev_close": {"MOVR": 4.00}, "prev_high": {"MOVR": 9.00},
+               "avg_volume": {"MOVR": 400_000},
+               "float_shares": {"MOVR": 8_000_000}}
+    replay.replay_day(day, {"MOVR": minute_rows}, [], context, journal, CFG)
+
+    rows = sqlite3.connect(journal.path).execute(
+        "SELECT features FROM alerts WHERE symbol='MOVR'").fetchall()
+    assert rows
+    for (features,) in rows:
+        assert json.loads(features)["room_prev_high"] > 0
 
 
 def test_a_symbol_without_a_previous_close_is_skipped(tmp_path):

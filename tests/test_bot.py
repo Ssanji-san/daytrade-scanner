@@ -37,6 +37,18 @@ class TestFeatures:
         assert f["change_5"] == 3.0
         assert f["minutes_since_open"] == pytest.approx(45.0)
 
+    def test_records_the_room_to_each_ceiling(self):
+        room = {"room_prev_high": 0.10, "room_premarket_high": None,
+                "room_half_dollar": 0.45}
+        f = features_from_row(row(resistance=room), now=et(10, 15))
+        assert f["room_prev_high"] == 0.10
+        assert f["room_premarket_high"] is None     # no ceiling, not zero
+        assert f["room_half_dollar"] == 0.45
+
+    def test_room_is_none_when_the_row_has_none(self):
+        f = features_from_row(row(), now=et(10, 15))
+        assert f["room_half_dollar"] is None
+
 
 class TestChooseEntries:
     def test_takes_best_scored_within_remaining_cap(self):
