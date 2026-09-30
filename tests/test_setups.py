@@ -8,8 +8,8 @@ from dataclasses import replace
 import pytest
 
 from scanner.config import Config
-from scanner.setups import (detect_dip_green, detect_opening_range_break,
-                            detect_pullback, resistance_room, vwap)
+from scanner.setups import (detect_opening_range_break, detect_pullback,
+                            vwap)
 from scanner.trading.strategy import technical_stop
 
 CFG = Config()
@@ -144,96 +144,3 @@ class TestOpeningRangeBreak:
         wide = detect_opening_range_break({"high": 15.0, "low": 13.2},
                                           price=15.1, gap_pct=180.0, cfg=CFG)
         assert technical_stop(15.1, wide["stop"], BAND) is None
-
-
-class TestResistanceRoom:
-    """How far price can run before the next ceiling: yesterday's high, the
-    pre-market high, the next half dollar. Recorded, not yet acted on."""
-
-    def test_distance_to_each_ceiling_above(self):
-        room = resistance_room(2.05, prev_high=2.15, premarket_high=2.40)
-        assert room["room_prev_high"] == pytest.approx(0.10)
-        assert room["room_premarket_high"] == pytest.approx(0.35)
-        assert room["room_half_dollar"] == pytest.approx(0.45)   # 2.50
-
-    def test_a_ceiling_already_broken_is_not_resistance(self):
-        room = resistance_room(2.60, prev_high=2.15, premarket_high=2.60)
-        assert room["room_prev_high"] is None
-        assert room["room_premarket_high"] is None   # at it = broken
-
-    def test_unknown_levels_are_none(self):
-        room = resistance_room(2.05)
-        assert room["room_prev_high"] is None
-        assert room["room_premarket_high"] is None
-
-    def test_half_dollar_just_above(self):
-        assert resistance_room(1.95)["room_half_dollar"] == pytest.approx(0.05)
-        assert resistance_room(3.49)["room_half_dollar"] == pytest.approx(0.01)
-
-    def test_sitting_on_a_half_dollar_looks_to_the_next_one(self):
-        assert resistance_room(2.00)["room_half_dollar"] == pytest.approx(0.50)
-        assert resistance_room(2.50)["room_half_dollar"] == pytest.approx(0.50)
-
-
-def red_pullback():
-    """Runs to 5.50, then two red candles down to 5.33."""
-    return [
-        bar(5.00, 5.10, 4.98, 5.08),
-        bar(5.08, 5.30, 5.05, 5.28),
-        bar(5.28, 5.50, 5.25, 5.48),   # swing high 5.50
-        bar(5.48, 5.49, 5.35, 5.38),   # red
-        bar(5.38, 5.40, 5.33, 5.36),   # red, pullback low 5.33
-    ]
-
-
-GREEN = bar(5.36, 5.40, 5.35, 5.39)    # the first candle to turn up
-
-
-class TestDipGreen:
-    """Buy the dip: the first green candle after red pullback candles.
-
-    Earlier than the break entry, which waits for price to clear the prior
-    candle's high."""
-
-    def test_fires_on_the_first_green_candle(self):
-        setup = detect_dip_green(red_pullback(), GREEN, price=5.39, cfg=CFG)
-        assert setup is not None
-        assert setup["setup"] == "dip_green"
-        assert setup["stop"] == pytest.approx(5.33)    # the dip's low
-        assert setup["swing_high"] == pytest.approx(5.50)
-
-    def test_earlier_than_the_break_entry(self):
-        # 5.39 has not cleared the last candle's 5.40 high yet.
-        assert detect_pullback(red_pullback(), price=5.39, cfg=CFG) is None
-        assert detect_dip_green(red_pullback(), GREEN, 5.39, CFG) is not None
-
-    def test_silent_while_the_candle_is_still_red(self):
-        falling = bar(5.36, 5.37, 5.34, 5.35)
-        assert detect_dip_green(red_pullback(), falling, 5.35, CFG) is None
-
-    def test_silent_when_price_is_back_under_the_open(self):
-        assert detect_dip_green(red_pullback(), GREEN, 5.35, CFG) is None
-
-    def test_not_the_first_green_if_the_dip_already_turned(self):
-        bars = red_pullback()
-        bars[-1] = bar(5.34, 5.40, 5.33, 5.38)   # already green
-        assert detect_dip_green(bars, GREEN, 5.39, CFG) is None
-
-    def test_a_deeper_low_in_the_green_candle_is_the_stop(self):
-        wick = bar(5.36, 5.40, 5.31, 5.39)
-        setup = detect_dip_green(red_pullback(), wick, 5.39, CFG)
-        assert setup["stop"] == pytest.approx(5.31)
-
-    def test_rejects_a_dip_that_broke_down(self):
-        bars = red_pullback()
-        bars[-1] = bar(5.38, 5.40, 4.60, 4.70)   # -16% off the high
-        assert detect_dip_green(bars, bar(4.70, 4.80, 4.65, 4.78),
-                                4.78, CFG) is None
-
-    def test_needs_a_swing_high_behind_it(self):
-        rising = [bar(5.0, 5.1, 5.0, 5.1), bar(5.1, 5.3, 5.1, 5.3)]
-        assert detect_dip_green(rising, bar(5.3, 5.5, 5.3, 5.5),
-                                5.5, CFG) is None
-
-    def test_needs_a_candle(self):
-        assert detect_dip_green(red_pullback(), None, 5.39, CFG) is None

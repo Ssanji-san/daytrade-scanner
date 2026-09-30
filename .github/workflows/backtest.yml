@@ -37,18 +37,6 @@ on:
         description: "Drop Ross's catalyst requirement, to see how many more setups exist (true/false)"
         required: false
         default: "false"
-      mode:
-        description: "backtest, or density: read-only check of whether IEX can fill a 10-second chart"
-        required: false
-        default: "backtest"
-        type: choice
-        options: ["backtest", "density"]
-      entry:
-        description: "Entry: break (prior candle high) or green (first green candle after the dip)"
-        required: false
-        default: "break"
-        type: choice
-        options: ["break", "green"]
       settings:
         description: "Config changes for this run, space separated KEY=VALUE (e.g. hod_min_price=2 bot_scalp_scale_out_pct=100)"
         required: false
@@ -99,21 +87,7 @@ jobs:
         if: ${{ inputs.fresh == 'true' }}
         run: rm -f cache/backtest.db
 
-      # scripts/trade_density.py: samples candidates from the cached history
-      # and measures 10-second window fill on IEX and SIP. Commits nothing.
-      - name: Measure 10-second density
-        if: ${{ inputs.mode == 'density' }}
-        env:
-          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
-          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
-          SEC_CONTACT: ${{ vars.SEC_CONTACT }}
-        run: |
-          python -u scripts/trade_density.py \
-            --start "${{ inputs.start }}" \
-            --end "${{ inputs.end }}"
-
       - name: Replay history
-        if: ${{ inputs.mode != 'density' }}
         env:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
@@ -130,11 +104,10 @@ jobs:
             --feed "${{ inputs.feed }}" \
             ${{ inputs.trades == 'true' && '--trades' || '' }} \
             ${{ inputs.no_news == 'true' && '--no-news' || '' }} \
-            --entry "${{ inputs.entry }}" \
             "${overrides[@]}"
 
       - name: Commit the backtest journal
-        if: ${{ inputs.commit == 'true' && inputs.mode != 'density' }}
+        if: ${{ inputs.commit == 'true' }}
         run: |
           git config user.name "trade-bot"
           git config user.email "actions@github.com"

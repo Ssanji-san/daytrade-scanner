@@ -974,24 +974,3 @@ def test_the_runner_trail_never_drops_below_break_even(tmp_path):
     assert trade["stop"] == pytest.approx(2.00)
     bot._trail_runner(trade, 2.40)                 # high enough to lift it
     assert trade["stop"] == pytest.approx(2.28)
-
-
-class TestReentryLive:
-    """The live bot applies the same per-symbol cap as the replay."""
-
-    def test_closed_trades_count_open_ones_block(self, tmp_path):
-        bot, _, _ = make_bot(tmp_path, bot_max_entries_per_symbol=2)
-        trades = [{"symbol": "AAA", "exit_ts": 1}, {"symbol": "BBB",
-                                                    "exit_ts": None}]
-        assert bot._blocked_symbols(trades) == {"BBB"}
-        trades.append({"symbol": "AAA", "exit_ts": 2})
-        assert bot._blocked_symbols(trades) == {"AAA", "BBB"}
-
-    def test_a_broker_refusal_still_blocks_all_day(self, tmp_path):
-        bot, _, _ = make_bot(tmp_path, bot_max_entries_per_symbol=3)
-        bot.rejected = {"CCC"}
-        assert bot._blocked_symbols([]) == {"CCC"}
-
-    def test_default_is_once_a_day(self, tmp_path):
-        bot, _, _ = make_bot(tmp_path)
-        assert bot._blocked_symbols([{"symbol": "AAA", "exit_ts": 1}]) == {"AAA"}

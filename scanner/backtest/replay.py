@@ -83,7 +83,7 @@ class SessionCursor:
         self.day_high = {}
 
     def snapshot(self, symbol, bar, prev_close, avg_volume, float_shares,
-                 prev_high=None, country=None):
+                 country=None):
         self.cum_volume[symbol] = self.cum_volume.get(symbol, 0) + (bar.get("v") or 0)
         self.day_high[symbol] = max(self.day_high.get(symbol, 0), bar.get("h") or 0)
         return {
@@ -91,7 +91,6 @@ class SessionCursor:
             "cum_volume": self.cum_volume[symbol],
             "day_high": self.day_high[symbol],
             "prev_close": prev_close,
-            "prev_high": prev_high,
             "avg_volume": avg_volume,
             "float_shares": float_shares,
             "country": country,
@@ -162,9 +161,9 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
     and the 500K floor fails every row, as it would live.
 
     `context` supplies the per-symbol facts a live session would already
-    know: {"prev_close": {}, "prev_high": {}, "avg_volume": {},
-    "float_shares": {}, "country": {}}. Those must be computed from data strictly before
-    `day` - see `fetch.prior_avg_volume`.
+    know: {"prev_close": {}, "avg_volume": {}, "float_shares": {},
+    "country": {}}. Those must be computed from data strictly before `day` -
+    see `fetch.prior_avg_volume`.
     """
     # Capture wider than the live near-list so a sweep has something to
     # explore; the live gate itself is untouched.
@@ -192,7 +191,6 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
                 symbol, bar, prev_close,
                 context.get("avg_volume", {}).get(symbol),
                 context.get("float_shares", {}).get(symbol),
-                prev_high=context.get("prev_high", {}).get(symbol),
                 country=context.get("country", {}).get(symbol))
         if not symbol_data:
             continue

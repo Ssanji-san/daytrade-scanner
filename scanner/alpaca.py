@@ -102,11 +102,9 @@ def parse_snapshots(raw, today=None):
         bar_day = _bar_date(daily)
         if today is not None and bar_day is not None and bar_day < today:
             prev_close, cum_volume, day_high = daily.get("c"), 0, price
-            prev_high = daily.get("h")
         else:
             prev_close = prev["c"]
             cum_volume, day_high = daily.get("v", 0), daily["h"]
-            prev_high = prev.get("h")
         minute_day = _bar_date(minute)
         if today is not None and minute_day is not None and minute_day < today:
             minute = {}
@@ -126,8 +124,6 @@ def parse_snapshots(raw, today=None):
             # this - a symbol is re-polled every cycle whether or not it
             # traded - and a stop the bot runs itself is only as live as it.
             "trade_ts": _epoch(trade.get("t")),
-            # Yesterday's high: overhead resistance for a stock below it.
-            "prev_high": prev_high,
             # Real 1-minute OHLC: the setup detector and the honest alert
             # labels both need true highs/lows, not polled last prices.
             "minute_bar": ({"t": minute["t"], "o": minute.get("o"),
@@ -239,34 +235,6 @@ class AlpacaClient:
                 if not token:
                     break
         return out
-
-    async def trades(self, symbols, start, end, feed=None):
-        """Every trade print in [start, end]: {symbol: [trade, ...]}.
-
-        Used to measure whether a feed prints often enough to build
-        10-second bars - see scripts/trade_density.py.
-        """
-        out, token = {}, None
-        while True:
-            params = {"symbols": ",".join(sorted(symbols)), "start": start,
-                      "end": end, "limit": 10000,
-                      "feed": feed or self.cfg.feed}
-            if token:
-                params["page_token"] = token
-            raw = await self._get("/v2/stocks/trades", params)
-            for sym, rows in (raw.get("trades") or {}).items():
-                out.setdefault(sym, []).extend(rows)
-            token = raw.get("next_page_token")
-            if not token:
-                return out
-
-    async def avg_volumes(self, symbols, days=None):
-        """30-day average daily volume per symbol (rvol baseline)."""
-        days = days or self.cfg.rvol_baseline_days
-        start = (dt.date.today() - dt.timedelta(days=days * 2)).isoformat()
-        volumes = await self.bars(symbols, "1Day", start)
-        return {sym: compute_avg_volume(rows[-days:])
-                for sym, rows in volumes.items()}
 
     async def market_news(self, since, limit=50):
         """Every headline since `since` (ISO), across the whole market.

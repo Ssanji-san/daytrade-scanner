@@ -72,8 +72,6 @@ most of it, let the rest ride.
   swing high, then a break of the prior candle's high — or, for a gapper
   with no flag yet, a break of the first five minutes' range. No setup, no
   trade; buying at the high is the chasing this exists to avoid.
-  `setup_entry = "green"` buys earlier: the first green candle after red
-  pullback candles, instead of waiting for the prior candle's high to break.
 - Positions are **$1,000 units**, each risking 5% against the flat 5% stop —
   $50, at any share price. The live account balance decides how *many* fit,
   up to 5 at once: $2,473.74 opens $1,000 + $1,000 + $473, and a leftover

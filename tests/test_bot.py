@@ -37,18 +37,6 @@ class TestFeatures:
         assert f["change_5"] == 3.0
         assert f["minutes_since_open"] == pytest.approx(45.0)
 
-    def test_records_the_room_to_each_ceiling(self):
-        room = {"room_prev_high": 0.10, "room_premarket_high": None,
-                "room_half_dollar": 0.45}
-        f = features_from_row(row(resistance=room), now=et(10, 15))
-        assert f["room_prev_high"] == 0.10
-        assert f["room_premarket_high"] is None     # no ceiling, not zero
-        assert f["room_half_dollar"] == 0.45
-
-    def test_room_is_none_when_the_row_has_none(self):
-        f = features_from_row(row(), now=et(10, 15))
-        assert f["room_half_dollar"] is None
-
 
 class TestChooseEntries:
     def test_takes_best_scored_within_remaining_cap(self):
@@ -163,30 +151,3 @@ class TestSkipsAreExplained:
         """The backtest and every existing caller pass no list at all."""
         assert choose_entries([row("GOOD")], HeuristicScorer(), 0, set(),
                               0.0, et(10, 0), CFG)
-
-
-class TestTopGainerOnly:
-    """Ross: focus on the number one leading gainer."""
-
-    def test_off_by_default(self):
-        assert CFG.bot_top_gainer_only is False
-
-    def test_only_the_biggest_gainer_is_considered(self):
-        from dataclasses import replace
-        cfg = replace(CFG, bot_top_gainer_only=True)
-        rows = [row("AAA", day_pct=40.0, rvol=20.0),
-                row("BBB", day_pct=90.0, rvol=6.0),
-                row("CCC", day_pct=15.0, rvol=30.0)]
-        picks = choose_entries(rows, HeuristicScorer(), trades_today=0,
-                               traded_symbols=set(), day_pnl=0.0,
-                               now=et(9, 45), cfg=cfg)
-        assert [p["symbol"] for p in picks] == ["BBB"]
-
-    def test_the_leader_blocked_means_no_trade_not_the_runner_up(self):
-        from dataclasses import replace
-        cfg = replace(CFG, bot_top_gainer_only=True)
-        rows = [row("AAA", day_pct=40.0), row("BBB", day_pct=90.0)]
-        picks = choose_entries(rows, HeuristicScorer(), trades_today=0,
-                               traded_symbols={"BBB"}, day_pnl=0.0,
-                               now=et(9, 45), cfg=cfg)
-        assert picks == []

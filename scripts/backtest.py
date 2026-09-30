@@ -40,24 +40,21 @@ def _context_for(day, daily, floats, cfg, countries=None):
     close and the volume baseline are exactly the values a peeking backtest
     gets wrong.
     """
-    prev_close, prev_high, avg_volume, float_shares = {}, {}, {}, {}
-    country = {}
+    prev_close, avg_volume, float_shares, country = {}, {}, {}, {}
     for symbol, rows in daily.items():
         earlier = sorted((r for r in rows if r.get("t") and r["t"][:10] < day),
                          key=lambda r: r["t"])
         if not earlier:
             continue
         prev_close[symbol] = earlier[-1].get("c")
-        prev_high[symbol] = earlier[-1].get("h")
         avg_volume[symbol] = fetch.prior_avg_volume(
             rows, day, cfg.rvol_baseline_days)
         float_shares[symbol] = floats.get(symbol)
         # Where the company operates does not change with the date, so the
         # current SEC record is point-in-time enough.
         country[symbol] = (countries or {}).get(symbol)
-    return {"prev_close": prev_close, "prev_high": prev_high,
-            "avg_volume": avg_volume, "float_shares": float_shares,
-            "country": country}
+    return {"prev_close": prev_close, "avg_volume": avg_volume,
+            "float_shares": float_shares, "country": country}
 
 
 # rvol is measured against a 30-SESSION baseline, and prev_close needs the
@@ -110,15 +107,11 @@ def _lookback_start(start, days=BASELINE_LOOKBACK_DAYS):
 
 
 async def run(start, end, feed, fetch_only, trades=False, require_news=True,
-              score_bar=0.0, scale_out=None, entry=None, overrides=None):
+              score_bar=0.0, overrides=None):
     cfg = replace(DEFAULT, backtest_require_news=require_news)
-    if entry:
-        cfg = replace(cfg, setup_entry=entry)
     if overrides:
         cfg = replace(cfg, **overrides)
         print(f"[backtest] settings changed for this run: {overrides}")
-    if scale_out is not None:
-        cfg = replace(cfg, bot_scalp_scale_out_pct=scale_out)
     cache = fetch.Cache(cfg)
     journal = Journal(cfg.backtest_journal_path, cfg.bot_alert_window_minutes,
                       win_target_cents=(cfg.bot_scalp_target_cents
@@ -448,10 +441,13 @@ def trade_report(journal, cfg):
     var = (sum((x - mean) ** 2 for x in rs) / (len(rs) - 1)) if len(rs) > 1 else 0
     se = math.sqrt(var / len(rs)) if len(rs) > 1 else 0.0
     wins = sum(1 for x in rs if x > 0)
-    scale = (f", scale-out {cfg.bot_scalp_scale_out_pct:.0f}% at "
-             f"+{cfg.bot_scalp_target_cents * 100:.0f}c"
-             if cfg.bot_scalp_mode else "")
-    print(f"[trades] entry: {cfg.setup_entry}")
+    if cfg.bot_exit_mode == "candle":
+        scale = ", exits on the stop or a candle indicator (no target)"
+    elif cfg.bot_scalp_mode:
+        scale = (f", scale-out {cfg.bot_scalp_scale_out_pct:.0f}% at "
+                 f"+{cfg.bot_scalp_target_cents * 100:.0f}c")
+    else:
+        scale = ""
     print(f"[trades] {len(rows)} trades over {days} sessions "
           f"({len(rows) / days:.1f}/day), news gate "
           f"{'ON' if cfg.backtest_require_news else 'OFF'}{scale}")
@@ -507,16 +503,11 @@ def main():
                         help="model score gate; 0 tests the setups alone")
     parser.add_argument("--set", action="append", metavar="KEY=VALUE",
                         help="change one Config setting for this run; repeat")
-    parser.add_argument("--entry", choices=("break", "green"), default=None,
-                        help="break of the prior candle high, or the first "
-                             "green candle after the dip")
-    parser.add_argument("--scale-out", type=float, default=None,
-                        help="%% sold at the scalp target; 100 takes it all")
     args = parser.parse_args()
     asyncio.run(run(args.start, args.end, args.feed, args.fetch_only,
                     trades=args.trades, require_news=not args.no_news,
-                    score_bar=args.score_bar, scale_out=args.scale_out,
-                    entry=args.entry, overrides=parse_overrides(args.set)))
+                    score_bar=args.score_bar,
+                    overrides=parse_overrides(args.set)))
 
 
 if __name__ == "__main__":

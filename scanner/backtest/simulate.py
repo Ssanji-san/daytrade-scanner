@@ -18,15 +18,12 @@ how backtests come to promise what they cannot pay.
 Spread and slippage are NOT modelled. On these prices they are the same size
 as the edge, so treat every number here as an upper bound.
 """
-from collections import Counter
-
 from ..config import Config
 from ..history import ET
 from ..trading.bot import choose_entries
 from ..trading.strategy import (candle_exit, exit_levels, is_doji,
-                                runner_trail_pct,
-                                scalp_levels, scalp_split, split_qty,
-                                symbols_at_cap, weighted_exit)
+                                runner_trail_pct, scalp_levels, scalp_split,
+                                split_qty, weighted_exit)
 
 
 def _hhmm(text):
@@ -95,7 +92,7 @@ class Simulator:
         self.scorer = scorer
         self.score_bar = score_bar
         self.open = {}            # symbol -> Position
-        self.traded = Counter()   # symbol -> entries this session
+        self.traded = set()       # one entry per symbol per session
         self.closed = 0
         self.losses = 0
         self._vwap = {}           # symbol -> [price x volume, volume]
@@ -280,7 +277,7 @@ class Simulator:
         picks = choose_entries(
             qualified_rows, self.scorer,
             trades_today=self.closed + len(self.open),
-            traded_symbols=symbols_at_cap(self.traded, self.open, self.cfg),
+            traded_symbols=set(self.traded),
             day_pnl=0.0, now=now, cfg=self.cfg,
             score_threshold=self.score_bar,
             losses_today=self.losses,
@@ -304,7 +301,7 @@ class Simulator:
                 features=pick["features"], setup=pick.get("setup"))
             self.open[pick["symbol"]] = Position(trade_id, pick, levels, ts,
                                                  self.cfg)
-            self.traded[pick["symbol"]] += 1
+            self.traded.add(pick["symbol"])
 
     def close_out(self, ts, last_bars):
         """Anything still open at the end of the data closes on its last print."""

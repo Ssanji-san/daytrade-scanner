@@ -19,8 +19,7 @@ from .strategy import (ET, MARKET_OPEN, bankroll_from, buying_power,
                        scalp_levels, scalp_split, should_enter, size_position,
                        is_premarket, premarket_entry_limit,
                        premarket_exit_limit,
-                       split_qty, symbols_at_cap, technical_stop,
-                       weighted_exit,
+                       split_qty, technical_stop, weighted_exit,
                        _parse_hhmm)
 
 STARTUP_ATTEMPTS = 10
@@ -85,11 +84,6 @@ def features_from_row(row, now):
         "catalyst_score": (row.get("catalyst") or {}).get("score") or 0.0,
         "catalyst_age": min((row.get("catalyst") or {}).get("age_minutes")
                             or 999.0, 999.0),
-        # Room to each overhead ceiling, in dollars; None means no ceiling,
-        # which is not the same as zero. Analysis only, like day_volume.
-        **{key: (row.get("resistance") or {}).get(key)
-           for key in ("room_prev_high", "room_premarket_high",
-                       "room_half_dollar")},
     }
 
 
@@ -161,15 +155,6 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
     def note(symbol, reason, score=None):
         if skips is not None:
             skips.append({"symbol": symbol, "reason": reason, "score": score})
-
-    if cfg.bot_top_gainer_only and qualified_rows:
-        # The most obvious stock of the moment, or nothing: falling back to
-        # the runner-up would be trading a different idea.
-        leader = max(qualified_rows, key=lambda r: r.get("day_pct") or 0)
-        for row in qualified_rows:
-            if row is not leader:
-                note(row["symbol"], "not_top_gainer")
-        qualified_rows = [leader]
 
     scored = []
     for row in qualified_rows:
@@ -286,14 +271,6 @@ class TradingBot:
 
     # ------------------------------------------------------------ cycle
 
-    def _blocked_symbols(self, trades):
-        """Today's trades -> symbols that may not be entered now: at the
-        per-symbol cap, still held, or refused by the broker today."""
-        return symbols_at_cap(
-            [t["symbol"] for t in trades],
-            [t["symbol"] for t in trades if t.get("exit_ts") is None],
-            self.cfg) | self.rejected
-
     async def cycle(self, state, now):
         day = now.astimezone(ET).strftime("%Y-%m-%d")
         ts = int(now.timestamp())
@@ -335,7 +312,7 @@ class TradingBot:
         picks = choose_entries(
             qualified, self.scorer,
             trades_today=len(trades),
-            traded_symbols=self._blocked_symbols(trades),
+            traded_symbols={t["symbol"] for t in trades} | self.rejected,
             day_pnl=self.journal.day_pnl(day),
             now=now, cfg=self.cfg,
             score_threshold=self.score_threshold,

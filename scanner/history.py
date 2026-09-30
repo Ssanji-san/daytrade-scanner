@@ -46,11 +46,6 @@ class SymbolHistory:
         return list(self._bars)
 
     @property
-    def current_bar(self):
-        """The newest bar, still being replaced until its minute rolls over."""
-        return dict(self._current_bar) if self._current_bar else None
-
-    @property
     def all_bars(self):
         bars = list(self._bars)
         if self._current_bar:
