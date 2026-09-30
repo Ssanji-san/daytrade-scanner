@@ -8,8 +8,12 @@ calendar — no paid subscriptions.
 ## Panels
 
 1. **Top Gainers** — biggest % movers over a rolling 5 / 10 / 15-minute
-   window (toggle in the header). Candidates come from Alpaca's SIP-based
-   screener (top 50 gainers + top 100 most active), tracked in memory.
+   window (toggle in the header). Candidates come from three places:
+   Alpaca's SIP-based screener (top 50 gainers + top 100 most active), a
+   sweep of every common stock once a minute that picks up anything in the
+   price band up 10% or more, and breaking news. The screener lists reset
+   at the bell and show only the top 50; the sweep sees the rest, and sees
+   pre-market movers from IEX's 08:00 open.
 2. **HOD Momentum** — $1–$5 stocks at/near their high of day, filtered on
    Ross Cameron's stock-selection criteria (defaults in `scanner/config.py`;
    the panel header states the gates actually in force):

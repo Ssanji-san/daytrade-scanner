@@ -18,6 +18,7 @@ import aiohttp
 from aiohttp import web
 
 from .alpaca import AlpacaClient
+from .backtest.fetch import tradable_symbols
 from .calendar_feed import filter_events
 from .config import DEFAULT, Config
 from .countries import CountryCache, fetch_country
@@ -75,25 +76,51 @@ async def discover_news(client, state, news_seen, ticker_map, since, now):
     return since
 
 
-def news_candidates(news_seen, now, cfg: Config, prices=None):
-    """Symbols whose newest headline is young enough to still be tracked.
+def _ceiling(cfg: Config):
+    """The top of the band the scan shows: observed, if wider than traded."""
+    return max(cfg.hod_observe_max_price or 0, cfg.hod_max_price)
 
-    News finds every megacap with a headline, and each one costs snapshot
-    and news calls against a 200-a-minute limit. A stock last seen at under
-    half the band floor or over twice its ceiling is dropped; one never
-    priced yet is kept until its first snapshot says otherwise.
+
+def _could_reach_band(price, cfg: Config):
+    """Worth watching at this price? Unknown is yes, until a snapshot says.
+
+    Every symbol watched costs requests against a 200-a-minute limit. A
+    stock under half the band floor or over twice its ceiling will not be a
+    candidate this morning.
     """
+    return (price is None
+            or cfg.hod_min_price / 2 <= price <= _ceiling(cfg) * 2)
+
+
+def news_candidates(news_seen, now, cfg: Config, prices=None):
+    """Symbols whose newest headline is young enough to still be tracked,
+    less those priced far outside the band - news finds every megacap."""
     horizon = now.timestamp() - cfg.news_candidate_minutes * 60
-    ceiling = max(cfg.hod_observe_max_price or 0, cfg.hod_max_price)
-    low, high = cfg.hod_min_price / 2, ceiling * 2
     prices = prices or {}
-
-    def plausible(sym):
-        price = prices.get(sym)
-        return price is None or low <= price <= high
-
     return sorted(s for s, ts in news_seen.items()
-                  if ts >= horizon and plausible(s))
+                  if ts >= horizon and _could_reach_band(prices.get(s), cfg))
+
+
+def sweep_universe(symbols, prices, cfg: Config):
+    """What the market sweep asks for: everything the first time, then only
+    symbols that could still reach the band. A symbol that returned no
+    snapshot is priced 0 by the caller and drops out."""
+    return [s for s in symbols if _could_reach_band(prices.get(s), cfg)]
+
+
+def sweep_candidates(snaps, cfg: Config):
+    """Swept symbols in the band and up at least hod_min_pct_up - found the
+    way a scanner finds them, not only if Alpaca's top 50 lists them."""
+    found = []
+    for sym, data in snaps.items():
+        price, prev_close = data.get("price"), data.get("prev_close")
+        if not price or not prev_close:
+            continue
+        if not cfg.hod_min_price <= price <= _ceiling(cfg):
+            continue
+        if 100.0 * (price - prev_close) / prev_close >= cfg.hod_min_pct_up:
+            found.append(sym)
+    return sorted(found)
 
 
 def watchlist(candidates, now, cfg: Config, held=()):
@@ -144,10 +171,14 @@ async def live_loop(app, cfg: Config):
         news_since = int(utcnow().timestamp() - cfg.news_candidate_minutes * 60)
         sip_until = {}    # symbol -> how far its real tape has been read
         last_price = {}   # symbol -> last snapshot price, to prune news
-        ceiling = max(cfg.hod_observe_max_price or 0, cfg.hod_max_price)
+        ceiling = _ceiling(cfg)
+        universe = []     # every common stock, for the market sweep
+        swept_price = {}  # symbol -> price at the last sweep
+        last_sweep = 0.0
 
         try:
             ticker_map = await fetch_ticker_map(session, cfg)
+            universe = tradable_symbols(ticker_map)
         except Exception as exc:
             print(f"[warn] SEC ticker map unavailable, floats disabled: {exc}")
 
@@ -169,6 +200,23 @@ async def live_loop(app, cfg: Config):
                     last_discovery = now.timestamp()
                 for sym in news_candidates(news_seen, now, cfg, last_price):
                     candidates[sym] = now
+                if universe and now.timestamp() - last_sweep >= cfg.sweep_seconds:
+                    try:
+                        ask = sweep_universe(universe, swept_price, cfg)
+                        swept = await client.snapshots(ask)
+                        swept_price.update({s: 0.0 for s in ask})
+                        swept_price.update({s: d.get("price")
+                                            for s, d in swept.items()})
+                        found = sweep_candidates(swept, cfg)
+                        new = [s for s in found if s not in candidates]
+                        for sym in found:
+                            candidates[sym] = now
+                        print(f"[sweep] {len(ask)} symbols, {len(found)} up "
+                              f"{cfg.hod_min_pct_up:g}%+ in the band; new: "
+                              f"{', '.join(new[:10]) or '-'}")
+                    except Exception as exc:     # never cost the scan a cycle
+                        print(f"[warn] market sweep failed: {exc}")
+                    last_sweep = now.timestamp()
                 candidates = watchlist(candidates, now, cfg,
                                        app["ctx"].get("held", ()))
 
