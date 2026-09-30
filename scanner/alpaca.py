@@ -74,13 +74,18 @@ def _bar_date(bar):
 def parse_snapshots(raw, today=None):
     """Snapshot rows keyed by symbol.
 
-    `today` (an ET date) guards against yesterday's bar. Until a symbol's
-    first IEX print of the day, dailyBar is yesterday's and prevDailyBar
-    the day before - read naively, a stock that ran yesterday looks like it
-    is gapping today, with yesterday's volume as its "relative volume". So a
-    daily bar from before `today` means "not traded today yet": measured
-    from yesterday's close, no volume, no high above the last price. Replay
-    and backtest callers pass no date and get the bars as they are.
+    `today` (an ET date) guards against yesterday's bars. Before a symbol
+    has a bar for today - seen live at 07:30, before IEX's pre-market opens
+    - dailyBar is yesterday's and prevDailyBar the day before. Read naively,
+    a stock that ran yesterday looks like it is gapping today, with
+    yesterday's volume as its "relative volume". So a daily bar from before
+    `today` means "no bar for today yet": measured from yesterday's close,
+    no volume, no high above the last price.
+
+    minuteBar is judged on its own date. Yesterday's last minute would
+    otherwise enter the history as a completed bar - into today's VWAP for
+    hours, and into the pullback detector as a swing high. Replay and
+    backtest callers pass no date and get the bars as they are.
     """
     out = {}
     for sym, snap in raw.items():
@@ -100,6 +105,9 @@ def parse_snapshots(raw, today=None):
         else:
             prev_close = prev["c"]
             cum_volume, day_high = daily.get("v", 0), daily["h"]
+        minute_day = _bar_date(minute)
+        if today is not None and minute_day is not None and minute_day < today:
+            minute = {}
         out[sym] = {
             "price": price,
             "cum_volume": cum_volume,

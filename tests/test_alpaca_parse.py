@@ -194,3 +194,35 @@ class TestYesterdaysBarIsNotToday:
         """Replay and backtest callers pass no date."""
         out = parse_snapshots(self.SNAP)["KNRX"]
         assert out["prev_close"] == 0.312
+
+
+class TestYesterdaysMinuteBarIsDropped:
+    """Before a symbol's first print today, minuteBar is yesterday's last
+    minute. History never checks dates, so it became a completed bar in
+    today's VWAP for hours and a candidate swing high for the pullback
+    detector. It is judged on its own date: a real pre-market bar from
+    today is kept."""
+
+    def snap(self, minute_t):
+        return {"KNRX": {
+            "latestTrade": {"p": 1.03, "t": "2026-09-29T11:25:00Z"},
+            "dailyBar": {"t": "2026-09-28T04:00:00Z", "o": 0.32, "h": 1.40,
+                         "l": 0.31, "c": 1.175, "v": 40_000_000},
+            "prevDailyBar": {"t": "2026-09-25T04:00:00Z", "c": 0.312},
+            "minuteBar": {"t": minute_t, "o": 1.17, "h": 1.18, "l": 1.16,
+                          "c": 1.175, "v": 900_000},
+        }}
+
+    def test_yesterdays_minute_bar_is_not_passed_on(self):
+        raw = self.snap("2026-09-28T23:59:00Z")          # 19:59 ET, 09-28
+        out = parse_snapshots(raw, today=dt.date(2026, 9, 29))["KNRX"]
+        assert out["minute_bar"] is None
+
+    def test_a_minute_bar_from_today_is_kept(self):
+        raw = self.snap("2026-09-29T12:05:00Z")          # 08:05 ET, 09-29
+        out = parse_snapshots(raw, today=dt.date(2026, 9, 29))["KNRX"]
+        assert out["minute_bar"]["t"] == "2026-09-29T12:05:00Z"
+
+    def test_without_a_date_the_bar_is_kept(self):
+        raw = self.snap("2026-09-28T23:59:00Z")
+        assert parse_snapshots(raw)["KNRX"]["minute_bar"] is not None

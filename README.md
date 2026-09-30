@@ -141,10 +141,11 @@ turned out not to support it:
 - **It can't see the day's movers.** Alpaca's free movers list resets at
   the bell, so before 09:30 the candidates were ETFs, megacaps and
   yesterday's runners. The day's real gappers only appeared after the open.
-- **A stock that hasn't traded yet today shows yesterday's numbers.** Until
-  its first print, the snapshot's "today" bar is yesterday's. Fixed: such a
-  stock now reads as flat, measured from yesterday's close. Before the fix
-  the bot read yesterday's +230% runner as gapping when it was down 12%.
+- **A stock with no bar for today yet showed yesterday's numbers.** Early
+  in the morning the snapshot's "today" bar is still yesterday's. Fixed:
+  such a stock is now measured from yesterday's close, with no volume
+  carried over and yesterday's last minute bar left out. Before the fix the
+  bot read yesterday's +230% runner as gapping when it was down 12%.
 
 The pre-market execution path below is still in the code and tested;
 setting `bot_window_open = "08:00"` turns it back on. Do that only with a
