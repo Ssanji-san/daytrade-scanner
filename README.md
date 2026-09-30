@@ -20,15 +20,23 @@ calendar — no paid subscriptions.
    | % up today | ≥ 10% |
    | % up since the 9:30 bell | ≥ 5% |
    | Relative volume | ≥ 5× |
+   | Volume today | ≥ 500K shares, on the real tape (see below) |
    | 30-day average volume | ≥ 10k shares |
    | VWAP | price must be above it |
    | News | a scored catalyst, with dilution vetoed |
+   | Chinese companies | only on **breaking** news (under 60 min old) |
 
-   The absolute daily-volume floor is **disabled** on purpose: the free feed
-   is IEX only, a slice of the consolidated tape, so a raw share count means
-   something different for every stock. Relative volume carries the
-   liquidity test instead — it compares IEX to IEX, so the feed's share
-   cancels out of the ratio.
+   The free live feed is IEX only, a few percent of the tape, so the 500K
+   floor is not counted on it. The real consolidated (SIP) tape is free on
+   Alpaca once it is 15 minutes old: volume today is SIP up to 16 minutes
+   ago plus IEX since, which can only under-count (`scanner/volume.py`).
+   Right after news breaks, that lag can hold an entry back a few minutes.
+
+   A company's country comes from its SEC record (the business address,
+   since most are Cayman holding companies operating in China or Hong
+   Kong). The bot needs a catalyst for every stock, but for everything else
+   a day-old one still counts; a Chinese stock's has to be breaking. A
+   country not yet known is treated as Chinese.
 
    Dimmed rows failed one or two criteria (the chip says which) — they're
    what's about to qualify, and they are graded for learning but never
@@ -54,13 +62,18 @@ anything else. Rules (all tunable in `scanner/config.py`):
 It trades Ross Cameron's cents-on-the-dollar scalp: take the 20c, bank
 most of it, let the rest ride.
 
-- $1–$5 symbols only, entries **09:30–10:00 ET** (the first half hour;
-  pre-market is watched, not traded), max 10 trades/day, never the same
-  symbol twice in a day
+- $1–$5 symbols only, entries **08:00–10:00 ET** (pre-market from IEX's
+  08:00 open through the first half hour), max 10 trades/day, never the
+  same symbol twice in a day
+- **Breaking news finds the stocks**: every 10 seconds the bot reads the
+  whole market's headlines, and any stock with fresh news is watched for
+  four hours. Before the bell this is the only way to see the day's movers
 - Entry is the **pullback, not the high**: one to three red candles off a
   swing high, then a break of the prior candle's high — or, for a gapper
   with no flag yet, a break of the first five minutes' range. No setup, no
   trade; buying at the high is the chasing this exists to avoid.
+  `setup_entry = "green"` buys earlier: the first green candle after red
+  pullback candles, instead of waiting for the prior candle's high to break.
 - Positions are **$1,000 units**, each risking 5% against the flat 5% stop —
   $50, at any share price. The live account balance decides how *many* fit,
   up to 5 at once: $2,473.74 opens $1,000 + $1,000 + $473, and a leftover
@@ -131,25 +144,21 @@ One-time setup:
 4. Actions tab → enable workflows. Test with "Run workflow" on
    `trading-session` during market hours.
 
-### Pre-market: watched, not traded
+### Pre-market: found through breaking news
 
-cron-job.org starts the session at 07:30 ET, and from then on the bot scans
-and journals, but it does not buy before **09:30**. It traded pre-market
-from 08:00 on 2026-09-29 and 09-30 (no trades either day), and the free data
-turned out not to support it:
+cron-job.org starts the session at 07:30 ET; entries open at **08:00**, when
+IEX's pre-market begins. Pre-market was switched off on 2026-09-30 because
+the free data could not see the day's movers:
 
-- **It can't see the day's movers.** Alpaca's free movers list resets at
-  the bell, so before 09:30 the candidates were ETFs, megacaps and
-  yesterday's runners. The day's real gappers only appeared after the open.
-- **A stock with no bar for today yet showed yesterday's numbers.** Early
-  in the morning the snapshot's "today" bar is still yesterday's. Fixed:
-  such a stock is now measured from yesterday's close, with no volume
-  carried over and yesterday's last minute bar left out. Before the fix the
-  bot read yesterday's +230% runner as gapping when it was down 12%.
+- **Alpaca's free movers list resets at the bell**, so before 09:30 it
+  offered ETFs, megacaps and yesterday's runners. The bot now reads the
+  whole market's news feed instead: a stock with a fresh headline is
+  watched and scanned like any other.
+- **A stock with no bar for today yet showed yesterday's numbers.** Fixed:
+  such a stock is measured from yesterday's close, with no volume carried
+  over and yesterday's last minute bar left out.
 
-The pre-market execution path below is still in the code and tested;
-setting `bot_window_open = "08:00"` turns it back on. Do that only with a
-pre-market scan that can see today's movers.
+Setting `bot_window_open = "09:30"` switches pre-market trading off again.
 
 Before 09:30 Alpaca accepts only extended-hours **limit** orders — no stop,
 no OTO, no market order — so pre-market positions run differently:
@@ -166,8 +175,9 @@ no OTO, no market order — so pre-market positions run differently:
 
 Measured honestly: the Jan–Aug 2026 replay of an 08:00–10:00 window lost
 about −0.26R a trade, and the replay assumes stops fill at the stop price,
-which a thin pre-market book won't. The replay also rebuilds each day from
-the whole market's bars, so it saw pre-market gappers the live bot cannot.
+which a thin pre-market book won't. The replay rebuilds each day from the
+whole market's bars, so it sees every gapper; the live bot now finds them
+only when they have news.
 
 Note the two different news sources: the red/orange **economic calendar**
 (ForexFactory) is macro - CPI, FOMC - and moves the whole market. Per-stock
@@ -194,8 +204,8 @@ trades, or the journals will fight.
   Relative volume compares IEX to IEX, so the ratio stays meaningful.
 - **Float ≈ shares outstanding** (SEC EDGAR, cached weekly). True float
   needs paid data; treat the ≈ column as an upper bound.
-- **Premarket** coverage is best-effort: Alpaca's movers list resets at
-  the open.
+- **Premarket** coverage depends on news: Alpaca's movers list resets at
+  the open, so a pre-market mover without a headline stays invisible.
 - **Backtested scalp results are an upper bound.** The simulator fills the
   +20c target off the bar HIGH; a live session can only compare the last
   polled price, and cannot see the high of a minute still in progress. A
