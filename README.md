@@ -54,8 +54,9 @@ anything else. Rules (all tunable in `scanner/config.py`):
 It trades Ross Cameron's cents-on-the-dollar scalp: take the 20c, bank
 most of it, let the rest ride.
 
-- $1–$5 symbols only, entries **08:00–10:00 ET** (pre-market plus the first
-  half hour), max 10 trades/day, never the same symbol twice in a day
+- $1–$5 symbols only, entries **09:30–10:00 ET** (the first half hour;
+  pre-market is watched, not traded), max 10 trades/day, never the same
+  symbol twice in a day
 - Entry is the **pullback, not the high**: one to three red candles off a
   swing high, then a break of the prior candle's high — or, for a gapper
   with no flag yet, a break of the first five minutes' range. No setup, no
@@ -130,13 +131,27 @@ One-time setup:
 4. Actions tab → enable workflows. Test with "Run workflow" on
    `trading-session` during market hours.
 
-### Pre-market trading
+### Pre-market: watched, not traded
 
-cron-job.org starts the session at 07:30 ET; entries open at **08:00**,
-when IEX's pre-market session starts (a free-feed session gets no prints
-before then). Before 09:30 Alpaca accepts only extended-hours **limit**
-orders — no stop, no OTO, no market order — so pre-market positions run
-differently:
+cron-job.org starts the session at 07:30 ET, and from then on the bot scans
+and journals, but it does not buy before **09:30**. It traded pre-market
+from 08:00 on 2026-09-29 and 09-30 (no trades either day), and the free data
+turned out not to support it:
+
+- **It can't see the day's movers.** Alpaca's free movers list resets at
+  the bell, so before 09:30 the candidates were ETFs, megacaps and
+  yesterday's runners. The day's real gappers only appeared after the open.
+- **A stock that hasn't traded yet today shows yesterday's numbers.** Until
+  its first print, the snapshot's "today" bar is yesterday's. Fixed: such a
+  stock now reads as flat, measured from yesterday's close. Before the fix
+  the bot read yesterday's +230% runner as gapping when it was down 12%.
+
+The pre-market execution path below is still in the code and tested;
+setting `bot_window_open = "08:00"` turns it back on. Do that only with a
+pre-market scan that can see today's movers.
+
+Before 09:30 Alpaca accepts only extended-hours **limit** orders — no stop,
+no OTO, no market order — so pre-market positions run differently:
 
 - Entry is a limit at the ask **+10c** (Ross's offset), using the ask only
   when it sits within 3% of the last trade; sized so a fill at the top of
@@ -148,9 +163,10 @@ differently:
 - At **09:30** the stop is handed to Alpaca as a real stop order, unless
   the price is already through it, in which case the position is closed.
 
-Measured honestly: the Jan–Aug 2026 replay of this 08:00–10:00 window lost
+Measured honestly: the Jan–Aug 2026 replay of an 08:00–10:00 window lost
 about −0.26R a trade, and the replay assumes stops fill at the stop price,
-which a thin pre-market book won't. It runs on paper to be observed live.
+which a thin pre-market book won't. The replay also rebuilds each day from
+the whole market's bars, so it saw pre-market gappers the live bot cannot.
 
 Note the two different news sources: the red/orange **economic calendar**
 (ForexFactory) is macro - CPI, FOMC - and moves the whole market. Per-stock

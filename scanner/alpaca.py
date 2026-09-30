@@ -9,6 +9,7 @@ import datetime as dt
 import os
 
 from .config import Config
+from .history import ET
 
 MAX_SYMBOLS_PER_REQUEST = 500
 BARS_SYMBOLS_PER_REQUEST = 100
@@ -62,7 +63,25 @@ def _epoch(stamp):
         return None
 
 
-def parse_snapshots(raw):
+def _bar_date(bar):
+    """The ET trading date of a daily bar, or None."""
+    stamp = _epoch(bar.get("t"))
+    if stamp is None:
+        return None
+    return dt.datetime.fromtimestamp(stamp, ET).date()
+
+
+def parse_snapshots(raw, today=None):
+    """Snapshot rows keyed by symbol.
+
+    `today` (an ET date) guards against yesterday's bar. Until a symbol's
+    first IEX print of the day, dailyBar is yesterday's and prevDailyBar
+    the day before - read naively, a stock that ran yesterday looks like it
+    is gapping today, with yesterday's volume as its "relative volume". So a
+    daily bar from before `today` means "not traded today yet": measured
+    from yesterday's close, no volume, no high above the last price. Replay
+    and backtest callers pass no date and get the bars as they are.
+    """
     out = {}
     for sym, snap in raw.items():
         if not snap:
@@ -75,11 +94,17 @@ def parse_snapshots(raw):
         price = trade.get("p") or minute.get("c") or daily.get("c")
         if not price or not daily.get("h") or not prev.get("c"):
             continue
+        bar_day = _bar_date(daily)
+        if today is not None and bar_day is not None and bar_day < today:
+            prev_close, cum_volume, day_high = daily.get("c"), 0, price
+        else:
+            prev_close = prev["c"]
+            cum_volume, day_high = daily.get("v", 0), daily["h"]
         out[sym] = {
             "price": price,
-            "cum_volume": daily.get("v", 0),
-            "day_high": daily["h"],
-            "prev_close": prev["c"],
+            "cum_volume": cum_volume,
+            "day_high": day_high,
+            "prev_close": prev_close,
             "avg_volume": None,
             "float_shares": None,
             # Ross enters 10c above the ASK and sells at the BID pre-market,
@@ -162,12 +187,13 @@ class AlpacaClient:
     async def snapshots(self, symbols):
         out = {}
         symbols = sorted(symbols)
+        today = dt.datetime.now(ET).date()   # see parse_snapshots
         for i in range(0, len(symbols), MAX_SYMBOLS_PER_REQUEST):
             chunk = symbols[i:i + MAX_SYMBOLS_PER_REQUEST]
             raw = await self._get("/v2/stocks/snapshots",
                                   {"symbols": ",".join(chunk),
                                    "feed": self.cfg.feed})
-            out.update(parse_snapshots(raw))
+            out.update(parse_snapshots(raw, today=today))
         return out
 
     async def bars(self, symbols, timeframe, start, end=None, feed=None):

@@ -676,7 +676,11 @@ class TestPremarketEntry:
 
     Outside regular hours Alpaca takes only extended-hours limit orders.
     The entry is a plain limit at the ask plus the offset - no OTO, so no
-    stop rides along; the bot runs it (TestPremarketStop)."""
+    stop rides along; the bot runs it (TestPremarketStop).
+
+    Pre-market entries are switched off by default (bot_window_open 09:30)
+    but the path is kept, so these open the window to 08:00 to exercise it.
+    """
 
     def _rows(self, price=2.00, ask=2.03):
         return [{"symbol": "PRE", "price": price, "ask": ask, "bid": price - 0.02,
@@ -698,7 +702,7 @@ class TestPremarketEntry:
         return State()
 
     def _cycle(self, tmp_path, at, **rows):
-        bot, broker, journal = make_bot(tmp_path)
+        bot, broker, journal = make_bot(tmp_path, bot_window_open="08:00")
         broker.equity = "2473.74"
         asyncio.run(bot.cycle(self._state(self._rows(**rows)), at))
         return bot, broker

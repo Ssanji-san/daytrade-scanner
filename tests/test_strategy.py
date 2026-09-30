@@ -27,15 +27,15 @@ def ok_kwargs(**overrides):
 
 class TestWindow:
     def test_window_edges(self):
-        # Pre-market from 08:00 (IEX's pre-market open) through the first
-        # half hour after the bell. Both edges are inclusive.
-        assert not in_window(et(7, 59), CFG)
-        assert in_window(et(8, 0), CFG)
-        assert in_window(et(9, 29), CFG)     # pre-market
-        assert in_window(et(9, 30), CFG)     # the bell
+        # The bell through the first half hour. Pre-market is observed, not
+        # traded: before the open the screener cannot see the day's movers,
+        # and a symbol that has not printed yet reads yesterday's numbers.
+        # Both edges are inclusive.
+        assert not in_window(et(8, 0), CFG)
+        assert not in_window(et(9, 29), CFG)    # pre-market
+        assert in_window(et(9, 30), CFG)        # the bell
         assert in_window(et(10, 0), CFG)
         assert not in_window(et(10, 1), CFG)
-        assert not in_window(et(12, 30), CFG)   # the old close
 
     def test_handles_other_timezones(self):
         utc_10et = et(10, 0).astimezone(dt.timezone.utc)

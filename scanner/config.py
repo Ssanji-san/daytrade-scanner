@@ -223,21 +223,20 @@ class Config:
     # The grading horizon must match the holding horizon, or the journal
     # labels a trade a loss while the bot is still holding it.
     bot_alert_window_minutes: int = 10
-    # 08:00: pre-market, per Ross ("The REAL Reason Pre-Market Trading Is
-    # Better") - small caps put news out before the bell, and by 09:30 the
-    # move has often already run. 08:00 rather than his 07:00 because the
-    # live feed is IEX, whose pre-market session opens at 8:00 a.m.; a
-    # replay opened at 07:00 made zero IEX trades before 08:00 in eight
-    # months. Pre-market entries go through their own execution path
-    # (extended-hours limits, a stop the bot runs itself) because Alpaca
-    # refuses every other order type outside regular hours.
-    bot_window_open: str = "08:00"       # ET; no entries before/after the window
-    # 10:00: pre-market plus the first half hour, Ross's window. Stated
-    # plainly because it is a choice made against the replay: on Jan-Aug
-    # 2026 (IEX) the 08:00-10:00 slots came to about -0.25R a trade, the
-    # weakest configuration measured, and 10:00-12:30 was the least bad.
-    # The session still runs to 12:45, so positions opened near 10:00 are
-    # managed to their exit and every alert is still journalled.
+    # 09:30: pre-market is OBSERVED, not traded. It ran live from 08:00 on
+    # 2026-09-29/30 (zero trades) and the free data could not support it:
+    # the screener's movers list resets at the bell, so before 09:30 the
+    # candidates were ETFs, megacaps and yesterday's runners - the day's
+    # gappers only appeared after the open. The pre-market execution path
+    # (extended-hours limits, a stop the bot runs itself, the 09:30 handoff)
+    # is still in place and tested; setting 08:00 here turns it back on.
+    # Do that only with a pre-market universe that can see today's movers.
+    bot_window_open: str = "09:30"       # ET; no entries before/after the window
+    # 10:00: the first half hour, the user's window. Stated plainly because
+    # it is a choice made against the replay: on Jan-Aug 2026 (IEX) the
+    # 09:30-10:00 half hour was the most consistent loser, and 10:00-12:30
+    # the least bad. The session still runs to 12:45, so positions opened
+    # near 10:00 are managed to their exit and every alert is journalled.
     bot_window_close: str = "10:00"
     bot_flatten_time: str = "15:50"      # ET; close everything before the bell
     # 0 = disabled. The day now ends on a loss COUNT

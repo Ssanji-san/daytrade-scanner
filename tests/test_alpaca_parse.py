@@ -1,4 +1,5 @@
 import asyncio
+import datetime as dt
 
 from scanner.alpaca import (NEWS_MAX_PAGES, NEWS_SYMBOLS_PER_REQUEST,
                             AlpacaClient, compute_avg_volume, parse_movers,
@@ -158,3 +159,38 @@ class TestQuotes:
         """Bid above ask is not a price anyone can trade at."""
         out = parse_snapshots(self._snap({"bp": 2.05, "ap": 2.01}))["AAA"]
         assert (out["bid"], out["ask"]) == (None, None)
+
+
+class TestYesterdaysBarIsNotToday:
+    """Before a symbol's first IEX print of the day, the snapshot's dailyBar
+    is YESTERDAY and prevDailyBar the day before. Measured against that, a
+    stock that ran yesterday read as gapping today: live on 2026-09-29 ABLV
+    showed +30% and KNRX +230% at 07:30, when they were flat and -12%."""
+
+    SNAP = {"KNRX": {
+        "latestTrade": {"p": 1.03, "t": "2026-09-29T11:25:00Z"},
+        # yesterday (09-28): 0.32 -> 1.175 on 40M shares
+        "dailyBar": {"t": "2026-09-28T04:00:00Z", "o": 0.32, "h": 1.40,
+                     "l": 0.31, "c": 1.175, "v": 40_000_000},
+        "prevDailyBar": {"t": "2026-09-25T04:00:00Z", "c": 0.312},
+    }}
+
+    def test_measured_against_yesterdays_close(self):
+        out = parse_snapshots(self.SNAP, today=dt.date(2026, 9, 29))["KNRX"]
+        assert out["prev_close"] == 1.175           # down 12%, not up 230%
+
+    def test_no_volume_and_no_high_carried_over(self):
+        out = parse_snapshots(self.SNAP, today=dt.date(2026, 9, 29))["KNRX"]
+        assert out["cum_volume"] == 0               # yesterday's 40M is not rvol
+        assert out["day_high"] == 1.03              # nor is yesterday's high
+
+    def test_a_bar_from_today_is_used_as_is(self):
+        out = parse_snapshots(self.SNAP, today=dt.date(2026, 9, 28))["KNRX"]
+        assert out["prev_close"] == 0.312
+        assert out["cum_volume"] == 40_000_000
+        assert out["day_high"] == 1.40
+
+    def test_without_a_date_nothing_changes(self):
+        """Replay and backtest callers pass no date."""
+        out = parse_snapshots(self.SNAP)["KNRX"]
+        assert out["prev_close"] == 0.312
