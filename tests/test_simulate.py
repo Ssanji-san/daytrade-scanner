@@ -15,7 +15,9 @@ from scanner.trading.journal import Journal
 from scanner.trading.model import HeuristicScorer
 
 ET = ZoneInfo("America/New_York")
-CFG = Config()
+# The +20c scalp path, pinned: the default exits on candles now, and this
+# path stays reachable by configuration. Candle exits have their own tests.
+CFG = Config(bot_exit_mode="scalp")
 # The live config scalps. These exercise the swing exits - scale at +2R,
 # trail the runner - which stay reachable by configuration.
 SWING = replace(CFG, bot_scalp_mode=False, bot_time_stop_minutes=20)

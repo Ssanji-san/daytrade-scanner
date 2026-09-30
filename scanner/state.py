@@ -36,8 +36,8 @@ class MarketState:
         self.calendar = []
         self.last_ingest = None
         # Frozen at the open and left alone: deriving these later from
-        # SymbolHistory._bars would fail on a long session, because that
-        # deque is maxlen=180 and the opening bars roll off it.
+        # SymbolHistory._bars would fail on a session longer than that
+        # deque, where the opening bars roll off it.
         self._gap_pct = {}       # symbol -> % gap vs prev close at 9:30
         self._opening_range = {}    # symbol -> {"high", "low"} of first N min
         self._open_price = {}    # symbol -> price at the 9:30 bell

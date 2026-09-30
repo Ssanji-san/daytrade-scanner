@@ -59,8 +59,8 @@ Trades HOD-momentum alerts on your **Alpaca paper account** — it is
 hard-locked to `paper-api.alpaca.markets` and refuses to start against
 anything else. Rules (all tunable in `scanner/config.py`):
 
-It trades Ross Cameron's cents-on-the-dollar scalp: take the 20c, bank
-most of it, let the rest ride.
+It trades Ross Cameron's first pullback, and sells the way he does: "I
+will not sell just because I'm up 20 cents."
 
 - $1–$5 symbols only, entries **08:00–10:00 ET** (pre-market from IEX's
   08:00 open through the first half hour), max 10 trades/day, never the
@@ -78,11 +78,15 @@ most of it, let the rest ride.
   slice under $150 is skipped as not worth the spread. Growth buys more
   slots rather than fatter trades, so one bad name never costs more than it
   did yesterday.
-- Exits: **+20c target with 65% banked there**; the remaining 35% rides a
-  trailing stop capped so it can never come back below what was paid; out
-  on two doji bars (the move has stalled); a 10-minute time stop on a
-  position that hasn't paid yet; everything flattened 15:50 ET; the day
-  ends after 4 losing trades
+- Exits: **no target and no clock**. The 5% stop, or the first of Ross's
+  chart exit indicators on a completed candle: a red candle closing under
+  the prior candle's low, a topping tail (upper wick at least twice the
+  body and half the candle), or a close under VWAP. Everything flattened
+  15:50 ET; the day ends after 4 losing trades. On Jan–Aug 2026 the same
+  55 entries lost −0.22R each with the old +20c scalp and −0.04R with these
+  exits - better, and still not a proven edge. `bot_exit_mode = "scalp"`
+  brings back the +20c target, 65% banked, trailing runner, stall and time
+  stops.
 - Entry and stop go out as **one atomic OTO order** — submitted separately
   they trip Alpaca's wash-trade guard and every entry is refused
 - **Learning**: every qualified alert (taken or not) is journaled to
@@ -94,10 +98,8 @@ most of it, let the rest ride.
   shows win rate, expectancy (in R), model accuracy, and the paper equity
   curve so you can see whether it's actually improving.
 
-  Worth knowing what a fixed-cent target implies: against a 5% stop, 20c is
-  a 4:1 reward on a $1 stock and 0.8:1 on a $5 one, because the same money
-  buys five times as many shares down there. That is why the price band is
-  narrow, and why `scripts/backtest.py --trades` reports by price bucket.
+  Alerts are still graded against +20c: that label is what the model
+  learns from, and it asks whether the move had legs, not how the bot sold.
 
 Live mode needs your Alpaca keys as environment variables:
 
@@ -204,11 +206,9 @@ trades, or the journals will fight.
   needs paid data; treat the ≈ column as an upper bound.
 - **Premarket** coverage depends on news: Alpaca's movers list resets at
   the open, so a pre-market mover without a headline stays invisible.
-- **Backtested scalp results are an upper bound.** The simulator fills the
-  +20c target off the bar HIGH; a live session can only compare the last
-  polled price, and cannot see the high of a minute still in progress. A
-  wick that tags the target and retreats inside the same minute pays in the
-  backtest and does not pay live. Both functions carry a comment saying so.
+- **Candle exits sell at the candle's close in the backtest.** Live, the
+  bot sees a candle as completed only once the next one starts, then sells
+  at market - a little later, at whatever price that is.
 - **Spread and slippage are not modelled at all.** On $1-5 low-float names
   the round trip can be a full percent or more, and the measured edge has
   been the same order of magnitude - so a backtest that clears break-even

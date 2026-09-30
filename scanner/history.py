@@ -18,7 +18,9 @@ SESSION_MINUTES = 390  # 9:30 -> 16:00
 class SymbolHistory:
     def __init__(self, maxlen=2400):
         self._samples = deque(maxlen=maxlen)  # (ts, price, cum_volume), ts ascending
-        self._bars = deque(maxlen=180)        # completed 1-minute bars
+        # A whole session, 04:00-17:00: VWAP and the candle exit read these,
+        # and the replay's VWAP covers everything since the session opened.
+        self._bars = deque(maxlen=780)        # completed 1-minute bars
         self._current_bar = None
 
     def add(self, ts, price, cum_volume):

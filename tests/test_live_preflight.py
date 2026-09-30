@@ -23,7 +23,9 @@ from scanner.trading.journal import Journal
 
 from .test_bot_trading import FakeBroker
 
-CFG = Config()
+# The +20c scalp path, pinned: the default exits on candles now, and this
+# path stays reachable by configuration. Candle exits have their own tests.
+CFG = Config(bot_exit_mode="scalp")
 ET = __import__("zoneinfo").ZoneInfo("America/New_York")
 
 
@@ -149,6 +151,46 @@ def test_a_full_session_enters_scales_and_stalls_out(rig):
     closed = journal.recent_trades(1)[0]
     assert closed["exit_reason"] == "stall"
     assert closed["r_multiple"] > 0, "a scaled winner must not book a loss"
+
+
+def test_a_full_session_rides_past_20c_and_exits_on_a_red_candle(tmp_path):
+    """The live default: no target, out on the first candle exit."""
+    from dataclasses import replace
+    cfg = replace(CFG, bot_exit_mode="candle")
+    journal = Journal(str(tmp_path / "live.db"), cfg.bot_alert_window_minutes)
+    broker = FakeBroker()
+    bot, state = TradingBot(cfg, journal, broker), MarketState(cfg)
+    now, cum = a_session(state, int(et(9, 20).timestamp()))
+    asyncio.run(bot.cycle(state, now))
+    assert "HODX" in bot.open_trades, "the bot did not take the trade"
+    entry = bot.open_trades["HODX"]["entry"]
+
+    def bar_at(minute, o, h, l, c):
+        nonlocal cum
+        cum += 60_000
+        feed(state, et(9, minute), round(entry + c, 2), cum,
+             o=round(entry + o, 2), h=round(entry + h, 2),
+             l=round(entry + l, 2))
+
+    # +22c on a strong green candle: the scalp would have banked here.
+    bar_at(45, 0.10, 0.24, 0.08, 0.22)
+    bar_at(46, 0.22, 0.30, 0.20, 0.28)
+    broker._positions = [{"symbol": "HODX", "current_price": entry + 0.28}]
+    asyncio.run(bot.cycle(state, et(9, 46)))
+    assert not [o for o in broker.orders if o["side"] == "sell"], (
+        "sold into strength - the candle exit must not cap the winner")
+
+    # A red candle closing under the prior candle's low, then the next bar
+    # completes it.
+    bar_at(47, 0.27, 0.28, 0.12, 0.14)
+    bar_at(48, 0.14, 0.16, 0.12, 0.15)
+    broker._positions = [{"symbol": "HODX", "current_price": entry + 0.15}]
+    asyncio.run(bot.cycle(state, et(9, 48)))
+
+    assert "HODX" not in bot.open_trades, "the candle exit never fired"
+    closed = journal.recent_trades(1)[0]
+    assert closed["exit_reason"] == "red_candle"
+    assert closed["r_multiple"] > 0
 
 
 def test_nothing_is_entered_outside_the_window(rig):

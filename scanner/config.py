@@ -165,11 +165,13 @@ class Config:
     # narrow for that reason, and results are reported by price bucket.
     bot_scalp_mode: bool = True
     bot_scalp_target_cents: float = 0.20
-    # "scalp": +20c target, 65% banked, trailing runner, stall and time stops.
     # "candle": Ross's "I will not sell just because I'm up 20 cents" - no
     # target and no clock; out on the stop or the first chart exit
-    # indicator (strategy.candle_exit). Replay-only until it earns live use.
-    bot_exit_mode: str = "scalp"
+    # indicator on a completed candle (strategy.candle_exit). Jan-Aug 2026,
+    # same 55 entries: -0.044R against the scalp's -0.220R (paired +0.176R,
+    # t=2.15) - near break-even before spread, which is not modelled.
+    # "scalp": +20c target, 65% banked, trailing runner, stall and time stops.
+    bot_exit_mode: str = "candle"
     bot_topping_tail_ratio: float = 2.0   # upper wick vs body for a topping tail
     # Sell this share of the position at the target and let the rest run,
     # governed by the stall exit below. 0 takes the whole thing off.

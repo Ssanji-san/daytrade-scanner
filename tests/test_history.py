@@ -76,3 +76,13 @@ class TestRvol:
     def test_no_baseline_returns_none(self):
         assert rvol(100_000, 0, t(12, 0), CFG) is None
         assert rvol(100_000, None, t(12, 0), CFG) is None
+
+
+def test_a_whole_session_of_bars_is_kept():
+    """07:30 to 16:00 is 510 minutes. VWAP and the candle exit read these
+    bars, and the replay's VWAP covers the whole session - a history that
+    dropped the morning would give the live bot a different VWAP."""
+    h = SymbolHistory()
+    for i in range(511):
+        h.add_bar({"t": f"m{i:03d}", "o": 1, "h": 1, "l": 1, "c": 1, "v": 1})
+    assert len(h.completed_bars) == 510
