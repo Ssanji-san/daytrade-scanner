@@ -169,8 +169,13 @@ class MarketState:
                         if open_price else None)
             # Pullback first; a gapper at the open has no flag to trade yet,
             # so the opening-range break covers exactly that slot.
-            setup = setups.detect_pullback(history.completed_bars, price,
-                                           self.cfg)
+            if self.cfg.setup_entry == "green":
+                setup = setups.detect_dip_green(
+                    history.completed_bars, history.current_bar, price,
+                    self.cfg)
+            else:
+                setup = setups.detect_pullback(history.completed_bars, price,
+                                               self.cfg)
             if setup is None:
                 setup = setups.detect_opening_range_break(
                     opening_range, price, gap_pct, self.cfg)

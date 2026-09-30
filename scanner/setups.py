@@ -65,18 +65,12 @@ def detect_pullback(bars, price, cfg):
     """
     if len(bars) < 3 or not price:
         return None
-    window = list(bars)[-cfg.setup_lookback_bars:]
-    highs = [b["h"] for b in window]
-    swing_idx = max(range(len(window)), key=lambda i: highs[i])
-    swing_high = highs[swing_idx]
-    if not swing_high:
-        return None
-
-    after = window[swing_idx + 1:]
-    if not 1 <= len(after) <= cfg.setup_max_pullback_bars:
+    shape = _swing_and_pullback(bars, cfg)
+    if shape is None:
         return None                      # no pullback yet, or too deep in time
-
-    pullback_low = min(b["l"] for b in after)
+    window, swing_idx, after, pullback_low = shape
+    highs = [b["h"] for b in window]
+    swing_high = highs[swing_idx]
     depth = 100.0 * (swing_high - pullback_low) / swing_high
     if not cfg.setup_min_pullback_pct <= depth <= cfg.setup_max_pullback_pct:
         return None                      # noise, or the move already broke down
@@ -94,6 +88,65 @@ def detect_pullback(bars, price, cfg):
         "swing_high": swing_high,
         "pullback_low": pullback_low,
         "trigger": trigger,
+    }
+
+
+def _swing_and_pullback(bars, cfg):
+    """(window, swing_idx, pullback bars, pullback low), or None.
+
+    The shared shape of both pullback entries: a swing high inside the
+    lookback, then 1-3 candles pulling back a sane distance off it.
+    """
+    window = list(bars)[-cfg.setup_lookback_bars:]
+    highs = [b["h"] for b in window]
+    swing_idx = max(range(len(window)), key=lambda i: highs[i])
+    swing_high = highs[swing_idx]
+    if not swing_high:
+        return None
+    after = window[swing_idx + 1:]
+    if not 1 <= len(after) <= cfg.setup_max_pullback_bars:
+        return None
+    return window, swing_idx, after, min(b["l"] for b in after)
+
+
+def detect_dip_green(bars, current_bar, price, cfg):
+    """Buy the dip: the first green candle after a red pullback.
+
+    Earlier than `detect_pullback`, which waits for price to clear the prior
+    candle's high. Here the pullback's last candle closed red and the
+    current one has turned green - price above its open and above the red
+    candle's close. The stop is the lowest point of the dip, including a
+    wick in the green candle itself.
+
+    Live, `current_bar` is the newest minute bar the snapshot carries; in the
+    replay it is the whole minute, so the entry lands at that minute's close
+    - later and usually worse than live, never better.
+    """
+    if len(bars) < 3 or not price or not current_bar:
+        return None
+    shape = _swing_and_pullback(bars, cfg)
+    if shape is None:
+        return None
+    window, swing_idx, after, pullback_low = shape
+    swing_high = window[swing_idx]["h"]
+
+    last = after[-1]
+    if not last.get("c") or not last.get("o") or last["c"] >= last["o"]:
+        return None                      # the dip had already turned
+    opened = current_bar.get("o")
+    if not opened or price <= opened or price <= last["c"]:
+        return None                      # not green yet
+
+    low = min(pullback_low, current_bar.get("l") or pullback_low)
+    depth = 100.0 * (swing_high - low) / swing_high
+    if not cfg.setup_min_pullback_pct <= depth <= cfg.setup_max_pullback_pct:
+        return None                      # noise, or the move broke down
+    return {
+        "setup": "dip_green",
+        "stop": low,
+        "swing_high": swing_high,
+        "pullback_low": low,
+        "trigger": opened,
     }
 
 

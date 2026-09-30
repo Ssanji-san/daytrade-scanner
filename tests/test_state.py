@@ -339,3 +339,36 @@ class TestResistanceLevels:
         row = {s["symbol"]: s for s in state.build_states(when)}["LVL"]
         assert row["resistance"]["room_prev_high"] == pytest.approx(0.10)
         assert row["resistance"]["room_half_dollar"] == pytest.approx(0.45)
+
+
+def _bar_snap(when, o, h, l, c, prev_close=4.00):
+    return {"price": c, "cum_volume": 2_000_000, "day_high": 5.50,
+            "prev_close": prev_close, "avg_volume": 400_000,
+            "float_shares": 8_000_000,
+            "minute_bar": {"t": when.astimezone(dt.timezone.utc).isoformat(),
+                           "o": o, "h": h, "l": l, "c": c, "v": 20_000}}
+
+
+class TestEntryStyle:
+    """setup_entry picks the trigger: "break" (default) or "green"."""
+
+    BARS = [(5.00, 5.10, 4.98, 5.08), (5.08, 5.30, 5.05, 5.28),
+            (5.28, 5.50, 5.25, 5.48), (5.48, 5.49, 5.35, 5.38),
+            (5.38, 5.40, 5.33, 5.36), (5.36, 5.40, 5.35, 5.39)]
+
+    def _row(self, cfg):
+        from dataclasses import replace as _r
+        state = MarketState(cfg)
+        for i, ohlc in enumerate(self.BARS):
+            when = t(10, i)
+            state.ingest(when, {"DIP": _bar_snap(when, *ohlc)})
+        return {s["symbol"]: s for s in state.build_states(t(10, 5))}["DIP"]
+
+    def test_break_is_the_default_and_waits(self):
+        assert CFG.setup_entry == "break"
+        assert self._row(CFG)["setup"] is None      # 5.39 < 5.40 high
+
+    def test_green_buys_the_first_green_candle(self):
+        from dataclasses import replace as _r
+        row = self._row(_r(CFG, setup_entry="green"))
+        assert row["setup"]["setup"] == "dip_green"

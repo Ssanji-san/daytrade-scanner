@@ -92,6 +92,10 @@ class Config:
     setup_min_pullback_pct: float = 0.4  # below this it's noise, not a pullback
     setup_max_pullback_pct: float = 8.0  # above this the move has broken down
     setup_flat_top_tolerance_pct: float = 0.3   # highs within this = flat top
+    # "break": buy when price clears the prior candle's high after the dip.
+    # "green": buy the first green candle after red dip candles - earlier,
+    # cheaper, and more often wrong. See setups.detect_dip_green.
+    setup_entry: str = "break"
     require_vwap: bool = True            # never long below VWAP
 
     # --- relative volume ---
