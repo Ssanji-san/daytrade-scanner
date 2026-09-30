@@ -53,7 +53,7 @@ class MarketState:
             history.add_bar(data.get("minute_bar"))
             prev = self.latest.get(sym, {})
             merged = dict(data)
-            for sticky in ("avg_volume", "float_shares"):
+            for sticky in ("avg_volume", "float_shares", "country"):
                 if merged.get(sticky) is None:
                     merged[sticky] = prev.get(sticky)
             if prev.get("day_high"):
@@ -204,6 +204,7 @@ class MarketState:
                 "rvol": rvol(data["cum_volume"], data.get("avg_volume"), now, self.cfg),
                 "avg_volume": data.get("avg_volume"),
                 "float_shares": data.get("float_shares"),
+                "country": data.get("country"),
                 "has_news": self._has_news(sym, now),
                 "changes": {str(w): history.n_minute_change(now, w)
                             for w in self.cfg.gainer_windows},

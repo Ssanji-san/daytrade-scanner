@@ -67,6 +67,10 @@ class Config:
     # than one that gapped overnight and has drifted since.
     hod_min_open_pct: float = 5.0
     hod_require_news: bool = False      # UI toggle; badge always shown
+    # Chinese companies (and any whose country is not known yet) trade only
+    # on BREAKING news: a real catalyst at most catalyst_fresh_minutes old.
+    # Everything else needs a catalyst too, but a day-old one still counts.
+    china_requires_news: bool = True
     # "Near the high", not "at the high". The entry is the pullback, and a
     # healthy flag pulls back 2-5% - a 1% gate rejected most of them and
     # only let the trade through after price had already run past the
@@ -293,6 +297,7 @@ class Config:
     # timeout as "no float" silently removes the stock from the strategy.
     float_retry_minutes: int = 60
     float_cache_path: str = "cache/floats.json"
+    country_cache_path: str = "cache/countries.json"   # see countries.py
 
 
 DEFAULT = Config()

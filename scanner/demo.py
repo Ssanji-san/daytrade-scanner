@@ -86,6 +86,7 @@ def build_demo_session(cfg: Config, now=None):
                 "prev_close": f["prev_close"],
                 "avg_volume": f["avg_volume"],
                 "float_shares": f["float_shares"],
+                "country": "DE",     # synthetic US listings
                 "minute_bar": {"t": bar_ts, "o": price, "h": price,
                                "l": round(price * 0.995, 4), "c": price,
                                "v": max(1, int(f["final_vol"] / 100))},

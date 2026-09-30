@@ -13,6 +13,7 @@ def make_state(**overrides):
         "rvol": 8.0,
         "avg_volume": 400_000,
         "float_shares": 8_000_000,
+        "country": "DE",          # SEC business address: a US company
         "has_news": True,
         "changes": {5: 3.0, 10: 6.0, 15: 9.0},
         "catalyst": {"category": "fda", "weight": 1.0, "score": 1.0,

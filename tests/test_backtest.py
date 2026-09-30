@@ -110,6 +110,42 @@ class TestPrevHigh:
         assert context["prev_high"]["AAA"] == 1.9     # not today's 9.9
         assert context["prev_close"]["AAA"] == 1.4
 
+    def test_context_carries_the_country(self):
+        from scripts.backtest import _context_for
+        daily = {"AAA": [bar("2026-08-11T04:00:00Z", 1, 1.9, 1, 1.4)]}
+        context = _context_for("2026-08-12", daily, {}, CFG,
+                               countries={"AAA": "China"})
+        assert context["country"]["AAA"] == "China"
+
+
+def _replay_country(tmp_path, country):
+    import sqlite3
+    journal = Journal(str(tmp_path / "backtest.db"))
+    day = "2026-08-12"
+    minute_rows = []
+    for i in range(12):
+        stamp = f"{day}T13:{30 + i:02d}:00Z"
+        price = 3.00 + i * 0.06
+        minute_rows.append(bar(stamp, price, price + 0.02,
+                               round(price * 0.995, 4), price, v=40_000))
+    context = {"prev_close": {"SOS": 2.40}, "country": {"SOS": country},
+               "avg_volume": {"SOS": 400_000},
+               "float_shares": {"SOS": 8_000_000}}
+    replay.replay_day(day, {"SOS": minute_rows}, [], context, journal, CFG)
+    return [r[0] or "" for r in sqlite3.connect(journal.path).execute(
+        "SELECT failed FROM alerts WHERE symbol='SOS'")]
+
+
+def test_replay_knows_a_chinese_company(tmp_path):
+    """The replay has to apply the same news rule as the live scan."""
+    failed = _replay_country(tmp_path, "China")
+    assert failed and all("china_news" in f for f in failed)
+
+
+def test_replay_knows_a_us_company(tmp_path):
+    failed = _replay_country(tmp_path, "DE")
+    assert failed and not any("china_news" in f for f in failed)
+
 
 class TestTimeline:
     def test_minutes_come_out_in_order(self):

@@ -21,6 +21,7 @@ from .alpaca import AlpacaClient
 from .calendar_feed import filter_events
 from .config import DEFAULT, Config
 from .demo import build_demo_bot_status, build_demo_session
+from .countries import CountryCache, fetch_country
 from .floats import FloatCache, fetch_shares, fetch_ticker_map
 from .state import MarketState
 from .trading.bot import bot_loop
@@ -59,6 +60,7 @@ async def live_loop(app, cfg: Config):
     async with aiohttp.ClientSession() as session:
         client = AlpacaClient(session, cfg)
         float_cache = FloatCache(cfg)
+        country_cache = CountryCache(cfg)
         ticker_map = {}
         candidates = {}   # symbol -> last time it appeared on a screener list
         avg_volumes = {}
@@ -94,9 +96,20 @@ async def live_loop(app, cfg: Config):
                     float_cache.put(sym, shares, answered=answered)
                     await asyncio.sleep(0.15)   # stay polite with SEC
 
+                # Where each company operates: Chinese stocks need breaking
+                # news (hod.py). Same budget and pacing as the floats.
+                to_locate = [s for s in snaps if country_cache.is_stale(s)
+                             and s in ticker_map][:FLOAT_FETCHES_PER_CYCLE]
+                for sym in to_locate:
+                    country, answered = await fetch_country(
+                        session, ticker_map[sym])
+                    country_cache.put(sym, country, answered=answered)
+                    await asyncio.sleep(0.15)
+
                 for sym, data in snaps.items():
                     data["avg_volume"] = avg_volumes.get(sym)
                     data["float_shares"] = float_cache.get(sym)
+                    data["country"] = country_cache.get(sym)
                 state.ingest(now, snaps)
 
                 if now.timestamp() - last_news > cfg.news_poll_seconds:

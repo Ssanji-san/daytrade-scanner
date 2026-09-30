@@ -69,6 +69,15 @@ jobs:
           key: bt-${{ inputs.feed }}-${{ github.run_id }}
           restore-keys: bt-${{ inputs.feed }}-
 
+      # Its own cache entry: adding a path to the one above would change that
+      # cache's version and throw away months of fetched bars.
+      - name: Cache SEC country lookups
+        uses: actions/cache@v4
+        with:
+          path: cache/countries.json
+          key: countries-${{ github.run_id }}
+          restore-keys: countries-
+
       # alerts is UNIQUE(day, symbol), so replaying a day already in the
       # journal silently keeps its old rows. Any change to how alerts are
       # graded - stop width, horizon, the R they are measured against -
