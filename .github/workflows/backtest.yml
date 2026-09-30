@@ -49,8 +49,8 @@ on:
         default: "break"
         type: choice
         options: ["break", "green"]
-      scale_out:
-        description: "% of the scalp sold at the target; 100 takes it all off, 65 leaves a runner"
+      settings:
+        description: "Config changes for this run, space separated KEY=VALUE (e.g. hod_min_price=2 bot_scalp_scale_out_pct=100)"
         required: false
         default: ""
 
@@ -118,7 +118,12 @@ jobs:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
           SEC_CONTACT: ${{ vars.SEC_CONTACT }}
+          # Through the environment, not pasted into the script: the words
+          # are split by the shell below and never evaluated.
+          SETTINGS: ${{ inputs.settings }}
         run: |
+          overrides=()
+          for kv in $SETTINGS; do overrides+=(--set "$kv"); done
           python -u scripts/backtest.py \
             --start "${{ inputs.start }}" \
             --end "${{ inputs.end }}" \
@@ -126,7 +131,7 @@ jobs:
             ${{ inputs.trades == 'true' && '--trades' || '' }} \
             ${{ inputs.no_news == 'true' && '--no-news' || '' }} \
             --entry "${{ inputs.entry }}" \
-            ${{ inputs.scale_out != '' && format('--scale-out {0}', inputs.scale_out) || '' }}
+            "${overrides[@]}"
 
       - name: Commit the backtest journal
         if: ${{ inputs.commit == 'true' && inputs.mode != 'density' }}

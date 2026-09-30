@@ -54,7 +54,7 @@ def _open(sim, price=5.00, ts=None):
                                         features={}, setup="micro_pullback")
     pos = Position(tid, pick, levels, ts)
     sim.open["HODX"] = pos
-    sim.traded.add("HODX")
+    sim.traded["HODX"] += 1
     return pos
 
 
@@ -152,6 +152,22 @@ class TestCaps:
         assert sim.open == {}
 
 
+    def test_re_entry_up_to_the_cap(self, tmp_path):
+        cfg = replace(CFG, bot_max_entries_per_symbol=2)
+        j = Journal(str(tmp_path / "re.db"), cfg.bot_alert_window_minutes)
+        sim = Simulator(cfg, j, "2026-08-12", HeuristicScorer(), 0.0)
+        rows = self._rows(1)                   # all inside the 10:00 cutoff
+        sim.enter(et(9, 40), int(et(9, 40).timestamp()), rows)
+        sim.enter(et(9, 41), int(et(9, 41).timestamp()), rows)
+        assert sim.traded["S0"] == 1          # held: not bought again
+        sim.open.clear()                       # pretend it closed
+        sim.enter(et(9, 42), int(et(9, 42).timestamp()), rows)
+        assert sim.traded["S0"] == 2 and "S0" in sim.open
+        sim.open.clear()
+        sim.enter(et(9, 43), int(et(9, 43).timestamp()), rows)
+        assert sim.open == {}                  # cap reached
+
+
 class TestTradeReport:
     """The report is the only place trade results are ever seen.
 
@@ -195,7 +211,7 @@ def _scalp_open(sim, price=3.00, ts=None, cfg=None):
                                         features={}, setup="micro_pullback")
     pos = Position(tid, pick, levels, ts, cfg)
     sim.open["HODX"] = pos
-    sim.traded.add("HODX")
+    sim.traded["HODX"] += 1
     return pos
 
 

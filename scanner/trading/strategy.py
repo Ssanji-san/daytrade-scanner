@@ -10,6 +10,7 @@ rest ride a trail that can never come back under what was paid. The R-based
 """
 import datetime as dt
 import math
+from collections import Counter
 from zoneinfo import ZoneInfo
 
 from ..config import Config
@@ -73,6 +74,18 @@ def buying_power(account):
     except (TypeError, ValueError):
         return None
     return power
+
+
+def symbols_at_cap(entered, held, cfg: Config):
+    """Symbols that may not be bought again this session.
+
+    `entered` lists one symbol per entry made today; `held` the symbols
+    still open. Held is always blocked - a second entry on top of a live
+    position doubles it rather than re-trading the runner.
+    """
+    counts = Counter(entered)
+    return ({s for s, n in counts.items()
+             if n >= cfg.bot_max_entries_per_symbol} | set(held))
 
 
 def should_enter(symbol="", *, price, score, trades_today, traded_symbols,
@@ -274,10 +287,14 @@ def is_doji(bar, cfg: Config):
 
 
 def scalp_levels(entry_price, cfg: Config):
-    """Stop a fixed % below, target a fixed number of cents above."""
+    """Stop a fixed % below, target a fixed number of cents above - or a %
+    above, when bot_scalp_target_pct is set for a wider price band."""
     stop = entry_price * (1 - cfg.bot_stop_pct / 100)
-    return {"stop": round(stop, 2),
-            "target": round(entry_price + cfg.bot_scalp_target_cents, 2)}
+    if cfg.bot_scalp_target_pct:
+        target = entry_price * (1 + cfg.bot_scalp_target_pct / 100)
+    else:
+        target = entry_price + cfg.bot_scalp_target_cents
+    return {"stop": round(stop, 2), "target": round(target, 2)}
 
 
 def runner_trail_pct(entry, price, cfg: Config):

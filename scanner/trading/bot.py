@@ -19,7 +19,8 @@ from .strategy import (ET, MARKET_OPEN, bankroll_from, buying_power,
                        scalp_levels, scalp_split, should_enter, size_position,
                        is_premarket, premarket_entry_limit,
                        premarket_exit_limit,
-                       split_qty, technical_stop, weighted_exit,
+                       split_qty, symbols_at_cap, technical_stop,
+                       weighted_exit,
                        _parse_hhmm)
 
 STARTUP_ATTEMPTS = 10
@@ -276,6 +277,14 @@ class TradingBot:
 
     # ------------------------------------------------------------ cycle
 
+    def _blocked_symbols(self, trades):
+        """Today's trades -> symbols that may not be entered now: at the
+        per-symbol cap, still held, or refused by the broker today."""
+        return symbols_at_cap(
+            [t["symbol"] for t in trades],
+            [t["symbol"] for t in trades if t.get("exit_ts") is None],
+            self.cfg) | self.rejected
+
     async def cycle(self, state, now):
         day = now.astimezone(ET).strftime("%Y-%m-%d")
         ts = int(now.timestamp())
@@ -317,7 +326,7 @@ class TradingBot:
         picks = choose_entries(
             qualified, self.scorer,
             trades_today=len(trades),
-            traded_symbols={t["symbol"] for t in trades} | self.rejected,
+            traded_symbols=self._blocked_symbols(trades),
             day_pnl=self.journal.day_pnl(day),
             now=now, cfg=self.cfg,
             score_threshold=self.score_threshold,

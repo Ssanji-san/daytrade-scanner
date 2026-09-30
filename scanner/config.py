@@ -169,6 +169,14 @@ class Config:
     # narrow for that reason, and results are reported by price bucket.
     bot_scalp_mode: bool = True
     bot_scalp_target_cents: float = 0.20
+    # 0 = the fixed cents above. A % target instead (4% = 20c at $5) for a
+    # band reaching $20, where 20c would be 1% against a 5% stop. Alert
+    # grading keeps the cents either way; only the trades use this.
+    bot_scalp_target_pct: float = 0.0
+    # Entries a symbol may get in one session. Ross re-trades a runner; 1
+    # keeps the original once-a-day rule. A symbol still held is never
+    # bought again whatever this says (strategy.symbols_at_cap).
+    bot_max_entries_per_symbol: int = 1
     # Sell this share of the position at the target and let the rest run,
     # governed by the stall exit below. 0 takes the whole thing off.
     bot_scalp_scale_out_pct: float = 65.0

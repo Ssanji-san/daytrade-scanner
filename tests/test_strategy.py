@@ -5,10 +5,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from scanner.config import Config
+from scanner.trading.strategy import scalp_levels
 from scanner.trading.strategy import (bankroll_from, exit_levels, in_window,
                                       position_slots, runner_trail_pct,
                                       should_enter, size_position, split_qty,
-                                      weighted_exit)
+                                      symbols_at_cap, weighted_exit)
 
 ET = ZoneInfo("America/New_York")
 CFG = Config()
@@ -335,3 +336,36 @@ class TestMaxPositions:
         take, reasons = should_enter("X", **ok_kwargs(open_positions=3,
                                                       bankroll=2473.74))
         assert not take and "concurrency" in reasons
+
+
+class TestReentry:
+    """Ross trades the same runner more than once a day; the cap says how
+    many entries a symbol gets. A symbol still held is never bought again."""
+
+    def test_one_entry_by_default(self):
+        assert CFG.bot_max_entries_per_symbol == 1
+        assert symbols_at_cap(["AAA"], [], CFG) == {"AAA"}
+
+    def test_a_closed_symbol_can_be_bought_again_under_the_cap(self):
+        cfg = replace(CFG, bot_max_entries_per_symbol=3)
+        assert symbols_at_cap(["AAA", "AAA", "BBB"], [], cfg) == set()
+        assert symbols_at_cap(["AAA"] * 3, [], cfg) == {"AAA"}
+
+    def test_an_open_position_blocks_its_symbol(self):
+        cfg = replace(CFG, bot_max_entries_per_symbol=3)
+        assert symbols_at_cap(["AAA"], ["AAA"], cfg) == {"AAA"}
+
+
+class TestScaledTarget:
+    """+20c is 4% of a $5 stock and 1% of a $20 one. Ross's $2-$20 band
+    needs a target that scales with price; the fixed cents stay default."""
+
+    def test_fixed_cents_by_default(self):
+        assert CFG.bot_scalp_target_pct == 0
+        assert scalp_levels(10.00, CFG)["target"] == pytest.approx(10.20)
+
+    def test_percent_when_set(self):
+        cfg = replace(CFG, bot_scalp_target_pct=4.0)
+        assert scalp_levels(10.00, cfg)["target"] == pytest.approx(10.40)
+        assert scalp_levels(5.00, cfg)["target"] == pytest.approx(5.20)
+        assert scalp_levels(10.00, cfg)["stop"] == pytest.approx(9.50)

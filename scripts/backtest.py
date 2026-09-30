@@ -86,15 +86,37 @@ async def _countries_for(session, cfg, tickers, symbols):
     return {s: cache.get(s) for s in symbols}
 
 
+def parse_overrides(pairs):
+    """["key=value", ...] -> {key: value}, each cast to its Config field's
+    type. An unknown key stops the run: a typo would otherwise be silently
+    ignored and the "changed" run would test the unchanged strategy."""
+    out = {}
+    for pair in pairs or ():
+        key, _, raw = pair.partition("=")
+        key = key.strip()
+        if not hasattr(DEFAULT, key):
+            raise SystemExit(f"unknown setting: {key}")
+        kind = type(getattr(DEFAULT, key))
+        if kind is bool:
+            value = raw.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            value = kind(raw.strip())
+        out[key] = value
+    return out
+
+
 def _lookback_start(start, days=BASELINE_LOOKBACK_DAYS):
     return (dt.date.fromisoformat(start) - dt.timedelta(days=days)).isoformat()
 
 
 async def run(start, end, feed, fetch_only, trades=False, require_news=True,
-              score_bar=0.0, scale_out=None, entry=None):
+              score_bar=0.0, scale_out=None, entry=None, overrides=None):
     cfg = replace(DEFAULT, backtest_require_news=require_news)
     if entry:
         cfg = replace(cfg, setup_entry=entry)
+    if overrides:
+        cfg = replace(cfg, **overrides)
+        print(f"[backtest] settings changed for this run: {overrides}")
     if scale_out is not None:
         cfg = replace(cfg, bot_scalp_scale_out_pct=scale_out)
     cache = fetch.Cache(cfg)
@@ -483,6 +505,8 @@ def main():
                         help="drop Ross's catalyst requirement")
     parser.add_argument("--score-bar", type=float, default=0.0,
                         help="model score gate; 0 tests the setups alone")
+    parser.add_argument("--set", action="append", metavar="KEY=VALUE",
+                        help="change one Config setting for this run; repeat")
     parser.add_argument("--entry", choices=("break", "green"), default=None,
                         help="break of the prior candle high, or the first "
                              "green candle after the dip")
@@ -492,7 +516,7 @@ def main():
     asyncio.run(run(args.start, args.end, args.feed, args.fetch_only,
                     trades=args.trades, require_news=not args.no_news,
                     score_bar=args.score_bar, scale_out=args.scale_out,
-                    entry=args.entry))
+                    entry=args.entry, overrides=parse_overrides(args.set)))
 
 
 if __name__ == "__main__":

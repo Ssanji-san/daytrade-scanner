@@ -617,3 +617,25 @@ class TestHalfHourReport:
         pre = next(l for l in capsys.readouterr().out.splitlines()
                    if "before 09:30" in l)
         assert pre.rstrip().endswith("-")
+
+
+class TestOverrides:
+    """--set KEY=VALUE runs one backtest with a setting changed, typed like
+    the Config field it replaces."""
+
+    def test_typed_like_the_field(self):
+        from scripts.backtest import parse_overrides
+        out = parse_overrides(["hod_min_price=2", "bot_max_entries_per_symbol=3",
+                               "require_vwap=false", "setup_entry=green"])
+        assert out == {"hod_min_price": 2.0, "bot_max_entries_per_symbol": 3,
+                       "require_vwap": False, "setup_entry": "green"}
+        assert isinstance(out["hod_min_price"], float)
+
+    def test_an_unknown_setting_is_refused(self):
+        from scripts.backtest import parse_overrides
+        with pytest.raises(SystemExit):
+            parse_overrides(["hod_min_prise=2"])
+
+    def test_nothing_set_is_nothing(self):
+        from scripts.backtest import parse_overrides
+        assert parse_overrides(None) == {} and parse_overrides([]) == {}
