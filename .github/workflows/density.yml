@@ -1,0 +1,56 @@
+name: density
+
+# Manual only. Measures whether the free IEX feed prints often enough to
+# build a 10-second chart (scripts/trade_density.py). Read-only: it commits
+# nothing. Never run it alongside a backtest - they share one Alpaca key.
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "First session (YYYY-MM-DD) - use the backtest's, to reuse its cache"
+        required: true
+        default: "2026-01-01"
+      end:
+        description: "Last session (YYYY-MM-DD)"
+        required: true
+        default: "2026-08-31"
+      samples:
+        description: "Candidate symbol-days to sample"
+        required: false
+        default: "40"
+
+concurrency: backtest-data
+
+jobs:
+  density:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Restore only: the backtest's daily bars, so the universe is not
+      # downloaded again. Nothing is saved back.
+      - name: Restore fetched history
+        uses: actions/cache/restore@v4
+        with:
+          path: cache/backtest
+          key: bt-iex-none
+          restore-keys: bt-iex-
+
+      - name: Measure
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+          SEC_CONTACT: ${{ vars.SEC_CONTACT }}
+        run: |
+          python -u scripts/trade_density.py \
+            --start "${{ inputs.start }}" \
+            --end "${{ inputs.end }}" \
+            --samples "${{ inputs.samples }}"

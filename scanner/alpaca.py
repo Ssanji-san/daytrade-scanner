@@ -240,6 +240,26 @@ class AlpacaClient:
                     break
         return out
 
+    async def trades(self, symbols, start, end, feed=None):
+        """Every trade print in [start, end]: {symbol: [trade, ...]}.
+
+        Used to measure whether a feed prints often enough to build
+        10-second bars - see scripts/trade_density.py.
+        """
+        out, token = {}, None
+        while True:
+            params = {"symbols": ",".join(sorted(symbols)), "start": start,
+                      "end": end, "limit": 10000,
+                      "feed": feed or self.cfg.feed}
+            if token:
+                params["page_token"] = token
+            raw = await self._get("/v2/stocks/trades", params)
+            for sym, rows in (raw.get("trades") or {}).items():
+                out.setdefault(sym, []).extend(rows)
+            token = raw.get("next_page_token")
+            if not token:
+                return out
+
     async def avg_volumes(self, symbols, days=None):
         """30-day average daily volume per symbol (rvol baseline)."""
         days = days or self.cfg.rvol_baseline_days

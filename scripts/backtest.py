@@ -91,8 +91,10 @@ def _lookback_start(start, days=BASELINE_LOOKBACK_DAYS):
 
 
 async def run(start, end, feed, fetch_only, trades=False, require_news=True,
-              score_bar=0.0, scale_out=None):
+              score_bar=0.0, scale_out=None, entry=None):
     cfg = replace(DEFAULT, backtest_require_news=require_news)
+    if entry:
+        cfg = replace(cfg, setup_entry=entry)
     if scale_out is not None:
         cfg = replace(cfg, bot_scalp_scale_out_pct=scale_out)
     cache = fetch.Cache(cfg)
@@ -427,6 +429,7 @@ def trade_report(journal, cfg):
     scale = (f", scale-out {cfg.bot_scalp_scale_out_pct:.0f}% at "
              f"+{cfg.bot_scalp_target_cents * 100:.0f}c"
              if cfg.bot_scalp_mode else "")
+    print(f"[trades] entry: {cfg.setup_entry}")
     print(f"[trades] {len(rows)} trades over {days} sessions "
           f"({len(rows) / days:.1f}/day), news gate "
           f"{'ON' if cfg.backtest_require_news else 'OFF'}{scale}")
@@ -480,12 +483,16 @@ def main():
                         help="drop Ross's catalyst requirement")
     parser.add_argument("--score-bar", type=float, default=0.0,
                         help="model score gate; 0 tests the setups alone")
+    parser.add_argument("--entry", choices=("break", "green"), default=None,
+                        help="break of the prior candle high, or the first "
+                             "green candle after the dip")
     parser.add_argument("--scale-out", type=float, default=None,
                         help="%% sold at the scalp target; 100 takes it all")
     args = parser.parse_args()
     asyncio.run(run(args.start, args.end, args.feed, args.fetch_only,
                     trades=args.trades, require_news=not args.no_news,
-                    score_bar=args.score_bar, scale_out=args.scale_out))
+                    score_bar=args.score_bar, scale_out=args.scale_out,
+                    entry=args.entry))
 
 
 if __name__ == "__main__":

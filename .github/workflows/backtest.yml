@@ -37,6 +37,12 @@ on:
         description: "Drop Ross's catalyst requirement, to see how many more setups exist (true/false)"
         required: false
         default: "false"
+      entry:
+        description: "Entry: break (prior candle high) or green (first green candle after the dip)"
+        required: false
+        default: "break"
+        type: choice
+        options: ["break", "green"]
       scale_out:
         description: "% of the scalp sold at the target; 100 takes it all off, 65 leaves a runner"
         required: false
@@ -99,6 +105,7 @@ jobs:
             --feed "${{ inputs.feed }}" \
             ${{ inputs.trades == 'true' && '--trades' || '' }} \
             ${{ inputs.no_news == 'true' && '--no-news' || '' }} \
+            --entry "${{ inputs.entry }}" \
             ${{ inputs.scale_out != '' && format('--scale-out {0}', inputs.scale_out) || '' }}
 
       - name: Commit the backtest journal
