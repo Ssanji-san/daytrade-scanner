@@ -21,9 +21,9 @@ as the edge, so treat every number here as an upper bound.
 from ..config import Config
 from ..history import ET
 from ..trading.bot import choose_entries
-from ..trading.strategy import (exit_levels, is_doji, runner_trail_pct,
-                                scalp_levels, scalp_split, split_qty,
-                                weighted_exit)
+from ..trading.strategy import (candle_exit, exit_levels, is_doji,
+                                runner_trail_pct, scalp_levels, scalp_split,
+                                split_qty, weighted_exit)
 
 
 def _hhmm(text):
@@ -95,6 +95,8 @@ class Simulator:
         self.traded = set()       # one entry per symbol per session
         self.closed = 0
         self.losses = 0
+        self._vwap = {}           # symbol -> [price x volume, volume]
+        self._prev_bar = {}       # symbol -> last completed bar
 
     # ------------------------------------------------------------ exits
 
@@ -108,6 +110,8 @@ class Simulator:
 
     def manage(self, now, ts, symbol_bars):
         flatten = _at_or_past(now, self.cfg.bot_flatten_time)
+        prev_bars = dict(self._prev_bar)
+        self._track(symbol_bars)
         for symbol, pos in list(self.open.items()):
             bar = symbol_bars.get(symbol)
             if bar is None:
@@ -122,6 +126,10 @@ class Simulator:
             if flatten:
                 pos.close(pos.qty - sum(q for q, _ in pos.legs), close)
                 self._finish(pos, ts, "flatten")
+                continue
+
+            if self.cfg.bot_exit_mode == "candle":
+                self._candle(pos, ts, bar, low, close, prev_bars.get(symbol))
                 continue
 
             if self.cfg.bot_scalp_mode:
@@ -153,6 +161,34 @@ class Simulator:
             if low <= trail:
                 pos.close(pos.runner_qty, trail)
                 self._finish(pos, ts, "trailing")
+
+    def _track(self, symbol_bars):
+        """Session VWAP and the prior candle, kept for every symbol, the way
+        MarketState keeps them live."""
+        for symbol, bar in symbol_bars.items():
+            if bar.get("h") is None or bar.get("l") is None:
+                continue
+            typical = (bar["h"] + bar["l"] + bar["c"]) / 3.0
+            acc = self._vwap.setdefault(symbol, [0.0, 0.0])
+            acc[0] += typical * (bar.get("v") or 0)
+            acc[1] += bar.get("v") or 0
+        self._prev_bar.update(symbol_bars)
+
+    def vwap(self, symbol):
+        acc = self._vwap.get(symbol)
+        return acc[0] / acc[1] if acc and acc[1] else None
+
+    def _candle(self, pos, ts, bar, low, close, prev_bar):
+        """No target, no clock: the stop, or Ross's chart exit indicators."""
+        remaining = pos.qty - sum(q for q, _ in pos.legs)
+        if low <= pos.stop:
+            pos.close(remaining, pos.stop)
+            self._finish(pos, ts, "stop")
+            return
+        reason = candle_exit(bar, prev_bar, self.vwap(pos.symbol), self.cfg)
+        if reason:
+            pos.close(remaining, close)
+            self._finish(pos, ts, reason)
 
     def _scalp(self, pos, ts, bar, high, low, close):
         """Fixed-cent target, flat stop, then the runner rides a trail."""

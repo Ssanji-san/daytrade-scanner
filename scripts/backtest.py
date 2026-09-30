@@ -26,20 +26,21 @@ from scanner.alpaca import AlpacaClient                       # noqa: E402
 from scanner.backtest import fetch, replay                    # noqa: E402
 from scanner.backtest.simulate import Simulator               # noqa: E402
 from scanner.config import DEFAULT                            # noqa: E402
+from scanner.countries import CountryCache, fetch_country     # noqa: E402
 from scanner.floats import FloatCache                         # noqa: E402
 from scanner.history import ET                                # noqa: E402
 from scanner.trading.journal import WIN_R, Journal            # noqa: E402
 from scanner.trading.model import HeuristicScorer, train      # noqa: E402
 
 
-def _context_for(day, daily, floats, cfg):
+def _context_for(day, daily, floats, cfg, countries=None):
     """What a live session would already know at the open on `day`.
 
     Everything here must come from data strictly before `day`; the previous
     close and the volume baseline are exactly the values a peeking backtest
     gets wrong.
     """
-    prev_close, avg_volume, float_shares = {}, {}, {}
+    prev_close, avg_volume, float_shares, country = {}, {}, {}, {}
     for symbol, rows in daily.items():
         earlier = sorted((r for r in rows if r.get("t") and r["t"][:10] < day),
                          key=lambda r: r["t"])
@@ -49,8 +50,11 @@ def _context_for(day, daily, floats, cfg):
         avg_volume[symbol] = fetch.prior_avg_volume(
             rows, day, cfg.rvol_baseline_days)
         float_shares[symbol] = floats.get(symbol)
+        # Where the company operates does not change with the date, so the
+        # current SEC record is point-in-time enough.
+        country[symbol] = (countries or {}).get(symbol)
     return {"prev_close": prev_close, "avg_volume": avg_volume,
-            "float_shares": float_shares}
+            "float_shares": float_shares, "country": country}
 
 
 # rvol is measured against a 30-SESSION baseline, and prev_close needs the
@@ -61,15 +65,53 @@ def _context_for(day, daily, floats, cfg):
 BASELINE_LOOKBACK_DAYS = 60
 
 
+async def _countries_for(session, cfg, tickers, symbols):
+    """{symbol: country} for every candidate, filling the cache as needed.
+
+    SEC throttles at 10 requests a second; this stays well under it.
+    """
+    cache = CountryCache(cfg)
+    missing = sorted(s for s in symbols
+                     if s in tickers and cache.is_stale(s))
+    if missing:
+        print(f"[backtest] looking up {len(missing)} countries at SEC")
+    for sym in missing:
+        country, answered = await fetch_country(session, tickers[sym])
+        cache.put(sym, country, answered=answered, flush=False)
+        await asyncio.sleep(0.12)
+    cache.save()
+    return {s: cache.get(s) for s in symbols}
+
+
+def parse_overrides(pairs):
+    """["key=value", ...] -> {key: value}, each cast to its Config field's
+    type. An unknown key stops the run: a typo would otherwise be silently
+    ignored and the "changed" run would test the unchanged strategy."""
+    out = {}
+    for pair in pairs or ():
+        key, _, raw = pair.partition("=")
+        key = key.strip()
+        if not hasattr(DEFAULT, key):
+            raise SystemExit(f"unknown setting: {key}")
+        kind = type(getattr(DEFAULT, key))
+        if kind is bool:
+            value = raw.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            value = kind(raw.strip())
+        out[key] = value
+    return out
+
+
 def _lookback_start(start, days=BASELINE_LOOKBACK_DAYS):
     return (dt.date.fromisoformat(start) - dt.timedelta(days=days)).isoformat()
 
 
 async def run(start, end, feed, fetch_only, trades=False, require_news=True,
-              score_bar=0.0, scale_out=None):
+              score_bar=0.0, overrides=None):
     cfg = replace(DEFAULT, backtest_require_news=require_news)
-    if scale_out is not None:
-        cfg = replace(cfg, bot_scalp_scale_out_pct=scale_out)
+    if overrides:
+        cfg = replace(cfg, **overrides)
+        print(f"[backtest] settings changed for this run: {overrides}")
     cache = fetch.Cache(cfg)
     journal = Journal(cfg.backtest_journal_path, cfg.bot_alert_window_minutes,
                       win_target_cents=(cfg.bot_scalp_target_cents
@@ -101,19 +143,30 @@ async def run(start, end, feed, fetch_only, trades=False, require_news=True,
             print("[backtest] nothing qualified - widen the window")
             return
 
+        countries = await _countries_for(
+            session, cfg, tickers,
+            {sym for d in days for sym in candidates[d]})
+
         for day in days:
             todays = candidates[day]
             minute = await fetch.minute_bars(client, cache, todays, day, feed)
+            # The real tape, for the 500K volume floor. Free once 15 minutes
+            # old, so the live bot reads it too; the replay releases it on
+            # the same delay. A symbol SIP has no bars for traded nothing.
+            sip_raw = (minute if feed == "sip" else
+                       await fetch.minute_bars(client, cache, todays, day,
+                                               "sip"))
+            sip = {sym: sip_raw.get(sym, []) for sym in todays}
             news = await fetch.day_news(client, cache, todays, day)
             if fetch_only:
                 print(f"[backtest] {day}: cached {len(minute)} symbols, "
                       f"{len(news)} headlines")
                 continue
-            context = _context_for(day, daily, floats, cfg)
+            context = _context_for(day, daily, floats, cfg, countries)
             sim = (Simulator(cfg, journal, day, HeuristicScorer(), score_bar)
                    if trades else None)
             graded = replay.replay_day(day, minute, news, context, journal,
-                                       cfg, simulator=sim)
+                                       cfg, simulator=sim, sip_bars=sip)
             took = f", {sim.closed:>2} trades" if sim else ""
             print(f"[backtest] {day}: {len(todays):>3} candidates -> "
                   f"{graded:>4} alerts journalled{took}")
@@ -388,9 +441,13 @@ def trade_report(journal, cfg):
     var = (sum((x - mean) ** 2 for x in rs) / (len(rs) - 1)) if len(rs) > 1 else 0
     se = math.sqrt(var / len(rs)) if len(rs) > 1 else 0.0
     wins = sum(1 for x in rs if x > 0)
-    scale = (f", scale-out {cfg.bot_scalp_scale_out_pct:.0f}% at "
-             f"+{cfg.bot_scalp_target_cents * 100:.0f}c"
-             if cfg.bot_scalp_mode else "")
+    if cfg.bot_exit_mode == "candle":
+        scale = ", exits on the stop or a candle indicator (no target)"
+    elif cfg.bot_scalp_mode:
+        scale = (f", scale-out {cfg.bot_scalp_scale_out_pct:.0f}% at "
+                 f"+{cfg.bot_scalp_target_cents * 100:.0f}c")
+    else:
+        scale = ""
     print(f"[trades] {len(rows)} trades over {days} sessions "
           f"({len(rows) / days:.1f}/day), news gate "
           f"{'ON' if cfg.backtest_require_news else 'OFF'}{scale}")
@@ -444,12 +501,13 @@ def main():
                         help="drop Ross's catalyst requirement")
     parser.add_argument("--score-bar", type=float, default=0.0,
                         help="model score gate; 0 tests the setups alone")
-    parser.add_argument("--scale-out", type=float, default=None,
-                        help="%% sold at the scalp target; 100 takes it all")
+    parser.add_argument("--set", action="append", metavar="KEY=VALUE",
+                        help="change one Config setting for this run; repeat")
     args = parser.parse_args()
     asyncio.run(run(args.start, args.end, args.feed, args.fetch_only,
                     trades=args.trades, require_news=not args.no_news,
-                    score_bar=args.score_bar, scale_out=args.scale_out))
+                    score_bar=args.score_bar,
+                    overrides=parse_overrides(args.set)))
 
 
 if __name__ == "__main__":

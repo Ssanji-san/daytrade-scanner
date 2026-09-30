@@ -11,16 +11,16 @@ import traceback
 import aiohttp
 
 from ..config import Config
+from ..setups import vwap
 from .broker import Broker
 from .journal import Journal
 from .model import train
-from .strategy import (ET, MARKET_OPEN, bankroll_from, buying_power,
-                       exit_levels, is_doji, position_slots, runner_trail_pct,
-                       scalp_levels, scalp_split, should_enter, size_position,
-                       is_premarket, premarket_entry_limit,
-                       premarket_exit_limit,
-                       split_qty, technical_stop, weighted_exit,
-                       _parse_hhmm)
+from .strategy import (ET, MARKET_OPEN, _parse_hhmm, bankroll_from,
+                       buying_power, candle_exit, exit_levels, is_doji,
+                       is_premarket, position_slots, premarket_entry_limit,
+                       premarket_exit_limit, runner_trail_pct, scalp_levels,
+                       scalp_split, should_enter, size_position, split_qty,
+                       technical_stop, weighted_exit)
 
 STARTUP_ATTEMPTS = 10
 
@@ -442,9 +442,12 @@ class TradingBot:
             "banked": False}
         how = (f"pre-market limit {limit:.2f} (ext. hours), stop run by the bot"
                if premarket else f"limit {limit:.2f}")
+        exits = ("exit on a candle indicator"
+                 if self.cfg.bot_exit_mode == "candle"
+                 else f"scale-out {levels['scale_out']:.2f}")
         print(f"[bot] ENTER {pick['symbol']} x{total_qty} @~{entry:.2f} "
               f"[{pick.get('setup')}] {how} stop {levels['stop']:.2f} "
-              f"scale-out {levels['scale_out']:.2f}")
+              f"{exits}")
 
     async def _manage_open(self, state, now, ts):
         if not self.open_trades:
@@ -517,6 +520,12 @@ class TradingBot:
                                              ts, pos, price)
             else:
                 await self._hand_off_at_bell(symbol, trade, ts, pos, price)
+            return
+
+        if self.cfg.bot_exit_mode == "candle":
+            reason = self._candle_signal(state, symbol, trade)
+            if reason:
+                await self._flatten_trade(symbol, trade, ts, pos, reason)
             return
 
         if self.cfg.bot_scalp_mode:
@@ -702,6 +711,22 @@ class TradingBot:
                 if (_bar_ts(b) or 0) > opened_ts][-want:]
         return len(bars) == want and all(is_doji(b, self.cfg) for b in bars)
 
+    def _candle_signal(self, state, symbol, trade):
+        """Ross's chart exit indicator on the newest completed candle since
+        the entry, or None.
+
+        Completed bars only, as the replay judges them: the minute still in
+        progress is replaced on every poll and would flicker in and out of
+        being a red candle. The stop is not checked here - regular hours it
+        is a broker order, pre-market _manage_premarket checks it first.
+        """
+        history = getattr(state, "histories", {}).get(symbol)
+        bars = history.completed_bars if history is not None else []
+        if not bars or (_bar_ts(bars[-1]) or 0) <= trade["opened_ts"]:
+            return None
+        prev = bars[-2] if len(bars) > 1 else None
+        return candle_exit(bars[-1], prev, vwap(bars), self.cfg)
+
     def _arm_runner(self, trade, price):
         """The runner's rules once the bulk is banked. Returns the trail %.
 
@@ -802,6 +827,12 @@ class TradingBot:
         if price <= trade["stop"]:
             await self._premarket_exit(symbol, trade, state, ts, pos, price,
                                        "trailing" if trade["banked"] else "stop")
+            return
+        if self.cfg.bot_exit_mode == "candle":
+            reason = self._candle_signal(state, symbol, trade)
+            if reason:
+                await self._premarket_exit(symbol, trade, state, ts, pos,
+                                           price, reason)
             return
         if not trade["banked"] and price >= trade["scale_out"]:
             await self._premarket_scale_out(symbol, trade, state, ts, pos, price)
@@ -1062,6 +1093,8 @@ async def bot_loop(app, cfg: Config):
             now = dt.datetime.now(dt.timezone.utc)
             try:
                 await bot.cycle(ctx["state"], now)
+                # The scanner keeps these snapshotted (main.watchlist).
+                ctx["held"] = set(bot.open_trades)
                 if now.timestamp() - last_equity_pull > 300:
                     history = await broker.portfolio_history()
                     bot.equity_history = [

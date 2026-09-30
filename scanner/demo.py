@@ -44,7 +44,8 @@ def _actors():
                                       "avg_volume": 5_000_000, "float_shares": 45_000_000}),
         "HODX":  (hodx,            {"prev_close": 2.40, "final_vol": 3_000_000,
                                       "avg_volume": 400_000, "float_shares": 8_000_000}),
-        "NEARX": (ramp(3.30, 3.85),  {"prev_close": 3.30, "final_vol": 150_000,
+        # 600K clears the 500K real-volume floor, so its one miss stays rvol.
+        "NEARX": (ramp(3.30, 3.85),  {"prev_close": 3.30, "final_vol": 600_000,
                                       "avg_volume": 3_000_000, "float_shares": 5_000_000}),
         "RUNA":  (ramp(7.90, 8.30),  {"prev_close": 7.20, "final_vol": 900_000,
                                       "avg_volume": 350_000, "float_shares": 12_000_000}),
@@ -86,6 +87,7 @@ def build_demo_session(cfg: Config, now=None):
                 "prev_close": f["prev_close"],
                 "avg_volume": f["avg_volume"],
                 "float_shares": f["float_shares"],
+                "country": "DE",     # synthetic US listings
                 "minute_bar": {"t": bar_ts, "o": price, "h": price,
                                "l": round(price * 0.995, 4), "c": price,
                                "v": max(1, int(f["final_vol"] / 100))},

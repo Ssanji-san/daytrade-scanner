@@ -1,14 +1,13 @@
-"""Pure trading decisions: entry gate, position sizing, scalp exit levels.
+"""Pure trading decisions: entry gate, position sizing, exit rules.
 
 No I/O here - the bot loop feeds in current state, this answers what to do.
 Every threshold comes from config.
 
-The live strategy is Ross Cameron's cents-on-the-dollar scalp: buy the
-pullback, bank most of the position a fixed number of cents up, and let the
-rest ride a trail that can never come back under what was paid. The R-based
-2R/3R path is still here and still reachable by configuration.
+The live strategy buys Ross Cameron's first pullback and sells the way he
+does: no target, out on the stop or the first chart exit indicator
+(candle_exit). The cents-on-the-dollar scalp - bank most of it 20c up, trail
+the rest - and the R-based 2R/3R path are still reachable by configuration.
 """
-import datetime as dt
 import math
 from zoneinfo import ZoneInfo
 
@@ -278,6 +277,31 @@ def scalp_levels(entry_price, cfg: Config):
     stop = entry_price * (1 - cfg.bot_stop_pct / 100)
     return {"stop": round(stop, 2),
             "target": round(entry_price + cfg.bot_scalp_target_cents, 2)}
+
+
+def candle_exit(bar, prev_bar, vwap, cfg: Config):
+    """Ross's chart exit indicators on a completed candle, or None to hold.
+
+    The ones a chart can show: a red candle closing below the prior candle's
+    low (the pullback has become a reversal), a topping tail (sellers pushed
+    the high back down), and a close below VWAP. His Level 2 and tape exits
+    - big and hidden sellers, a burst of red - need data this bot lacks.
+    """
+    open_, close = bar.get("o"), bar.get("c")
+    high, low = bar.get("h"), bar.get("l")
+    if None in (open_, close, high, low):
+        return None
+    if (prev_bar and prev_bar.get("l") is not None
+            and close < open_ and close < prev_bar["l"]):
+        return "red_candle"
+    span, body = high - low, abs(close - open_)
+    upper = high - max(open_, close)
+    if (span > 0 and upper >= cfg.bot_topping_tail_ratio * body
+            and upper >= span / 2):
+        return "topping_tail"
+    if vwap is not None and close < vwap:
+        return "vwap"
+    return None
 
 
 def runner_trail_pct(entry, price, cfg: Config):

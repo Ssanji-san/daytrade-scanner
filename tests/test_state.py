@@ -7,7 +7,9 @@ from scanner.config import Config
 from scanner.state import MarketState
 
 ET = ZoneInfo("America/New_York")
-CFG = Config()
+# The 500K real-volume floor needs a SIP tape these tests do not model;
+# it has its own tests (test_volume, test_hod, and the SIP replay test).
+CFG = Config(hod_min_real_volume=0)
 
 
 def t(hour, minute, second=0):
@@ -25,7 +27,7 @@ def snap(price, cum_volume=2_000_000, day_high=None, prev_close=2.20,
     return {"price": price, "cum_volume": cum_volume,
             "day_high": day_high if day_high is not None else price,
             "prev_close": prev_close, "avg_volume": avg_volume,
-            "float_shares": float_shares,
+            "float_shares": float_shares, "country": "DE",
             "minute_bar": {"t": bar_t,
                            "o": bar_open if bar_open is not None
                                 else round(price / 1.12, 4),
@@ -160,7 +162,7 @@ class TestNewsIsMerged:
 def _gapper_snap(price, when, prev_close=5.0):
     return {"price": price, "cum_volume": 500_000, "day_high": price,
             "prev_close": prev_close, "avg_volume": 400_000,
-            "float_shares": 8_000_000,
+            "float_shares": 8_000_000, "country": "DE",
             "minute_bar": {"t": when.astimezone(dt.timezone.utc).isoformat(),
                            "o": price, "h": price, "l": round(price * 0.99, 4),
                            "c": price, "v": 20_000}}
@@ -315,3 +317,27 @@ class TestRowsKnowWhichSideOfTheBellTheyAreOn:
         state.ingest(now, {"PRE": snap(3.00, bar_t="2026-07-14T12:15:00Z")})
         qualified = state.payload(now)["hod"]["qualified"]
         assert [r["symbol"] for r in qualified] == ["PRE"]
+
+
+def test_country_sticks_and_reaches_the_row():
+    state = MarketState(CFG)
+    when = t(10, 0)
+    state.ingest(when, {"SOS": dict(_gapper_snap(2.0, when, 1.5),
+                                    country="China")})
+    state.ingest(t(10, 1), {"SOS": dict(_gapper_snap(2.1, t(10, 1), 1.5),
+                                        country=None)})
+    row = {s["symbol"]: s for s in state.build_states(t(10, 1))}["SOS"]
+    assert row["country"] == "China"
+
+
+def test_real_volume_is_sip_to_the_cutoff_plus_iex_since():
+    state = MarketState(CFG)
+    when = t(10, 0)
+    state.ingest(when, {"VOL": _gapper_snap(2.0, when, 1.5)})     # IEX 20K
+    row = {s["symbol"]: s for s in state.build_states(when)}["VOL"]
+    assert row["real_volume"] is None            # no SIP reading yet
+
+    sip = [{"t": "2026-07-14T13:30:00Z", "v": 600_000}]
+    state.add_sip("VOL", sip, until=t(9, 44))
+    row = {s["symbol"]: s for s in state.build_states(when)}["VOL"]
+    assert row["real_volume"] == 600_000 + 20_000

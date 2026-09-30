@@ -216,3 +216,62 @@ class TestOpenDriveBeforeTheBell:
         early = make_state(open_pct=None, premarket=True, float_shares=90_000_000)
         qualified, near = scan([early], CFG)
         assert qualified == [] and near[0]["failed"] == ["float"]
+
+
+class TestChineseStocksNeedNews:
+    """Ross's caution: a Chinese small cap moving without news is a pump."""
+
+    def test_without_news_it_fails(self):
+        row = make_state(country="China", has_news=False, catalyst=None)
+        qualified, near = scan([row], CFG)
+        assert qualified == [] and near[0]["failed"] == ["china_news"]
+
+    def test_with_a_fresh_catalyst_it_trades(self):
+        qualified, _ = scan([make_state(country="Hong Kong")], CFG)
+        assert len(qualified) == 1
+
+    def test_a_us_company_is_unaffected(self):
+        row = make_state(country="DE", has_news=False, catalyst=None)
+        assert len(scan([row], CFG)[0]) == 1
+
+    def test_unknown_country_needs_news_too(self):
+        row = make_state(country=None, has_news=False, catalyst=None)
+        assert scan([row], CFG)[1][0]["failed"] == ["china_news"]
+
+    def test_switchable(self):
+        off = Config(china_requires_news=False)
+        row = make_state(country="China", has_news=False, catalyst=None)
+        assert len(scan([row], off)[0]) == 1
+
+    def test_day_old_news_is_not_breaking(self):
+        """The bot requires news for every stock; a Chinese one needs it
+        fresh. A day-old FDA headline still scores for a US company."""
+        stale = {"category": "fda", "weight": 1.0, "score": 0.3,
+                 "age_minutes": 20 * 60.0, "veto": False, "headline": "h"}
+        strict = Config(hod_require_news=True)
+        china = make_state(country="China", catalyst=stale)
+        assert scan([china], strict)[1][0]["failed"] == ["china_news"]
+        us = make_state(country="DE", catalyst=stale)
+        assert len(scan([us], strict)[0]) == 1
+
+
+class TestRealVolume:
+    """At least 500K shares traded today, counted on the real tape."""
+
+    def test_default_floor_is_500k(self):
+        assert CFG.hod_min_real_volume == 500_000
+
+    def test_under_the_floor_fails(self):
+        row = make_state(real_volume=499_999)
+        assert scan([row], CFG)[1][0]["failed"] == ["real_volume"]
+
+    def test_at_the_floor_passes(self):
+        assert len(scan([make_state(real_volume=500_000)], CFG)[0]) == 1
+
+    def test_unknown_fails(self):
+        row = make_state(real_volume=None)
+        assert scan([row], CFG)[1][0]["failed"] == ["real_volume"]
+
+    def test_zero_switches_it_off(self):
+        off = Config(hod_min_real_volume=0)
+        assert len(scan([make_state(real_volume=None)], off)[0]) == 1

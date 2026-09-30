@@ -7,6 +7,7 @@ the dimmed "near" list so the user sees what's about to qualify.
 """
 from . import catalyst
 from .config import Config
+from .countries import is_chinese
 
 
 def _criteria(state, cfg: Config):
@@ -41,6 +42,9 @@ def _criteria(state, cfg: Config):
     if cfg.hod_min_volume:
         checks.insert(1, ("volume",
                           (state["day_volume"] or 0) >= cfg.hod_min_volume))
+    if cfg.hod_min_real_volume:
+        checks.append(("real_volume", (state.get("real_volume") or 0)
+                       >= cfg.hod_min_real_volume))
     if cfg.require_vwap:
         # Long only above VWAP - below it the move is a fade, not a trend.
         checks.append(("vwap", bool(state.get("above_vwap"))))
@@ -49,7 +53,19 @@ def _criteria(state, cfg: Config):
         # catalyst, still fresh, and no share offering behind the move.
         checks.append(("news", catalyst.is_tradable(state.get("catalyst"),
                                                     cfg)))
+    if cfg.china_requires_news and is_chinese(state.get("country")) is not False:
+        # Chinese small caps moving on nothing are pumps, so they need news
+        # that is BREAKING, not merely recent: the bot already requires a
+        # catalyst for everything, but a day-old headline still scores. An
+        # unknown country is treated the same, as an unknown float fails.
+        checks.append(("china_news", is_breaking(state.get("catalyst"), cfg)))
     return checks, dist
+
+
+def is_breaking(found, cfg: Config):
+    """A tradable catalyst no older than catalyst_fresh_minutes."""
+    return (catalyst.is_tradable(found, cfg)
+            and (found.get("age_minutes") or 0) <= cfg.catalyst_fresh_minutes)
 
 
 def scan(states, cfg: Config):

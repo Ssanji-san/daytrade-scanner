@@ -37,8 +37,8 @@ on:
         description: "Drop Ross's catalyst requirement, to see how many more setups exist (true/false)"
         required: false
         default: "false"
-      scale_out:
-        description: "% of the scalp sold at the target; 100 takes it all off, 65 leaves a runner"
+      settings:
+        description: "Config changes for this run, space separated KEY=VALUE (e.g. hod_min_price=2 bot_scalp_scale_out_pct=100)"
         required: false
         default: ""
 
@@ -69,6 +69,15 @@ jobs:
           key: bt-${{ inputs.feed }}-${{ github.run_id }}
           restore-keys: bt-${{ inputs.feed }}-
 
+      # Its own cache entry: adding a path to the one above would change that
+      # cache's version and throw away months of fetched bars.
+      - name: Cache SEC country lookups
+        uses: actions/cache@v4
+        with:
+          path: cache/countries.json
+          key: countries-${{ github.run_id }}
+          restore-keys: countries-
+
       # alerts is UNIQUE(day, symbol), so replaying a day already in the
       # journal silently keeps its old rows. Any change to how alerts are
       # graded - stop width, horizon, the R they are measured against -
@@ -83,14 +92,19 @@ jobs:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
           SEC_CONTACT: ${{ vars.SEC_CONTACT }}
+          # Through the environment, not pasted into the script: the words
+          # are split by the shell below and never evaluated.
+          SETTINGS: ${{ inputs.settings }}
         run: |
+          overrides=()
+          for kv in $SETTINGS; do overrides+=(--set "$kv"); done
           python -u scripts/backtest.py \
             --start "${{ inputs.start }}" \
             --end "${{ inputs.end }}" \
             --feed "${{ inputs.feed }}" \
             ${{ inputs.trades == 'true' && '--trades' || '' }} \
             ${{ inputs.no_news == 'true' && '--no-news' || '' }} \
-            ${{ inputs.scale_out != '' && format('--scale-out {0}', inputs.scale_out) || '' }}
+            "${overrides[@]}"
 
       - name: Commit the backtest journal
         if: ${{ inputs.commit == 'true' }}

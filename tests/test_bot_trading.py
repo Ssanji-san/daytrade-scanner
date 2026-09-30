@@ -12,7 +12,9 @@ from scanner.trading.broker import Broker
 from scanner.trading.journal import Journal
 
 ET = ZoneInfo("America/New_York")
-CFG = Config()
+# The +20c scalp path, pinned: the default exits on candles now, and this
+# path stays reachable by configuration. Candle exits have their own tests.
+CFG = Config(bot_exit_mode="scalp")
 
 
 def et(hour, minute):
@@ -407,7 +409,7 @@ def test_a_banked_runner_outlives_the_time_stop(tmp_path):
 
 def test_the_fixed_break_even_stop_is_still_reachable(tmp_path):
     bot, broker, _ = make_bot(tmp_path, bot_scalp_runner_trail=False)
-    trade = _open_a_trade(bot, ts=int(et(9, 40).timestamp()))
+    _open_a_trade(bot, ts=int(et(9, 40).timestamp()))
     broker._positions = [{"symbol": "HODX", "current_price": 5.22}]
 
     asyncio.run(bot._manage_open(FakeState({"HODX": {"price": 5.22}}),
@@ -678,8 +680,8 @@ class TestPremarketEntry:
     The entry is a plain limit at the ask plus the offset - no OTO, so no
     stop rides along; the bot runs it (TestPremarketStop).
 
-    Pre-market entries are switched off by default (bot_window_open 09:30)
-    but the path is kept, so these open the window to 08:00 to exercise it.
+    The window opens at 08:00 by default; these pin it there so the path
+    stays exercised if pre-market is ever switched off again.
     """
 
     def _rows(self, price=2.00, ask=2.03):
@@ -974,3 +976,91 @@ def test_the_runner_trail_never_drops_below_break_even(tmp_path):
     assert trade["stop"] == pytest.approx(2.00)
     bot._trail_runner(trade, 2.40)                 # high enough to lift it
     assert trade["stop"] == pytest.approx(2.28)
+
+
+# ----------------------------------------------------------- candle exits
+# Ross: "I will not sell just because I'm up 20 cents." No target, no
+# clock: the broker stop, or the first chart exit indicator on a completed
+# candle - the same strategy.candle_exit the replay measured.
+
+def _bar(t, o, h, l, c, v=1000):
+    return {"t": t, "o": o, "h": h, "l": l, "c": c, "v": v}
+
+
+class TestCandleExitsLive:
+    ENTRY = (9, 40)
+
+    def _open(self, tmp_path):
+        bot, broker, journal = make_bot(tmp_path, bot_exit_mode="candle")
+        trade = _open_a_trade(bot, ts=int(et(*self.ENTRY).timestamp()))
+        return bot, broker, journal, trade
+
+    def _manage(self, bot, broker, price, bars, at):
+        broker._positions = [{"symbol": "HODX", "current_price": price}]
+        asyncio.run(bot._manage_open(_BarState({"HODX": {"price": price}},
+                                               bars),
+                                     now=at, ts=int(at.timestamp())))
+
+    RUN = [_bar("2026-07-14T13:41:00Z", 5.00, 5.30, 4.99, 5.28),
+           _bar("2026-07-14T13:42:00Z", 5.28, 5.45, 5.25, 5.44)]
+
+    def test_rides_past_the_20c_target(self, tmp_path):
+        bot, broker, _, _ = self._open(tmp_path)
+        self._manage(bot, broker, 5.44, self.RUN, et(9, 43))
+        assert "HODX" in bot.open_trades
+        assert not [o for o in broker.orders if o["side"] == "sell"]
+
+    def test_a_red_candle_under_the_prior_low_sells(self, tmp_path):
+        bot, broker, journal, _ = self._open(tmp_path)
+        bars = self.RUN + [_bar("2026-07-14T13:43:00Z", 5.40, 5.41, 5.10,
+                                5.12)]
+        self._manage(bot, broker, 5.12, bars, et(9, 44))
+        assert "HODX" not in bot.open_trades
+        assert journal.recent_trades(1)[0]["exit_reason"] == "red_candle"
+
+    def test_a_close_under_vwap_sells(self, tmp_path):
+        bot, broker, journal, _ = self._open(tmp_path)
+        bars = self.RUN + [_bar("2026-07-14T13:43:00Z", 5.25, 5.28, 5.24,
+                                5.27)]                  # green, VWAP ~5.28
+        self._manage(bot, broker, 5.27, bars, et(9, 44))
+        assert journal.recent_trades(1)[0]["exit_reason"] == "vwap"
+
+    def test_bars_from_before_the_entry_are_not_judged(self, tmp_path):
+        bot, broker, _, _ = self._open(tmp_path)
+        before = [_bar("2026-07-14T13:38:00Z", 5.40, 5.41, 5.30, 5.35),
+                  _bar("2026-07-14T13:39:00Z", 5.30, 5.31, 4.90, 4.95)]
+        self._manage(bot, broker, 5.02, before, et(9, 41))
+        assert "HODX" in bot.open_trades
+
+    def test_no_time_stop(self, tmp_path):
+        bot, broker, _, _ = self._open(tmp_path)
+        late = et(9, 40) + dt.timedelta(minutes=CFG.bot_time_stop_minutes + 20)
+        self._manage(bot, broker, 5.44, self.RUN, late)
+        assert "HODX" in bot.open_trades
+        assert not [o for o in broker.orders if o["side"] == "sell"]
+
+    def test_candle_is_the_default(self):
+        assert Config().bot_exit_mode == "candle"
+
+
+class TestCandleExitsPremarket:
+    """Before the bell the same indicator exits through the bot-run limit."""
+
+    def test_a_topping_tail_sends_the_extended_hours_exit(self, tmp_path):
+        bot, broker, _ = make_bot(tmp_path, bot_exit_mode="candle")
+        pick = {"symbol": "PRE", "price": 2.00, "premarket": True,
+                "limit": 2.13, "qty": 200, "stop": 1.90, "score": 0.9,
+                "setup": "micro_pullback", "features": {"rvol": 9.0}}
+        asyncio.run(bot._enter(pick, ts=int(et(8, 40).timestamp())))
+        broker._positions = [{"symbol": "PRE", "qty": "200",
+                              "avg_entry_price": "2.00",
+                              "current_price": 2.05}]
+        at = _at(8, 43)
+        state = PremarketState(at, 2.05, bid=2.04)
+        state.histories["PRE"].completed_bars = [
+            _bar("2026-07-14T12:41:00Z", 2.00, 2.10, 1.99, 2.08),
+            _bar("2026-07-14T12:42:00Z", 2.08, 2.40, 2.05, 2.10)]  # tail
+        asyncio.run(bot._manage_open(state, now=at, ts=int(at.timestamp())))
+        sell = [o for o in broker.orders if o["side"] == "sell"][-1]
+        assert sell["type"] == "limit" and sell["extended_hours"] is True
+        assert bot.open_trades["PRE"]["exit"]["reason"] == "topping_tail"

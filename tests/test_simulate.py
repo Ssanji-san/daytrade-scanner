@@ -15,7 +15,9 @@ from scanner.trading.journal import Journal
 from scanner.trading.model import HeuristicScorer
 
 ET = ZoneInfo("America/New_York")
-CFG = Config()
+# The +20c scalp path, pinned: the default exits on candles now, and this
+# path stays reachable by configuration. Candle exits have their own tests.
+CFG = Config(bot_exit_mode="scalp")
 # The live config scalps. These exercise the swing exits - scale at +2R,
 # trail the runner - which stay reachable by configuration.
 SWING = replace(CFG, bot_scalp_mode=False, bot_time_stop_minutes=20)
@@ -325,3 +327,54 @@ class TestScalpExits:
         sim.manage(late, int(late.timestamp()),
                    {"HODX": candle(3.04, 3.05, h=3.06, l=3.03)})
         assert sim.journal.all_trades()[0]["exit_reason"] == "time_stop"
+
+
+class TestCandleExitMode:
+    """bot_exit_mode = "candle": no +20c target, no scale-out, no clock.
+    The stop and an exit indicator end the trade."""
+
+    @pytest.fixture
+    def csim(self, tmp_path):
+        cfg = replace(CFG, bot_exit_mode="candle")
+        j = Journal(str(tmp_path / "c.db"), cfg.bot_alert_window_minutes)
+        return Simulator(cfg, j, "2026-08-12", HeuristicScorer(), 0.0)
+
+    def _feed(self, sim, minute, o, h, l, c, v=10_000):
+        now = et(9, minute)
+        sim.manage(now, int(now.timestamp()),
+                   {"HODX": {"o": o, "h": h, "l": l, "c": c, "v": v}})
+
+    def test_rides_past_the_20c_target(self, csim):
+        pos = _scalp_open(csim, price=3.00)
+        self._feed(csim, 41, 3.00, 3.40, 2.99, 3.38)     # +40c, green
+        assert "HODX" in csim.open and pos.legs == []
+
+    def test_a_red_candle_under_the_prior_low_exits_at_its_close(self, csim):
+        pos = _scalp_open(csim, price=3.00)
+        self._feed(csim, 41, 3.00, 3.40, 2.99, 3.38)
+        self._feed(csim, 42, 3.36, 3.37, 2.96, 2.97)     # red, under 2.99
+        assert "HODX" not in csim.open
+        assert pos.legs == [(pos.qty, 2.97)]
+        reason = csim.journal._execute(
+            "SELECT exit_reason FROM trades").fetchone()[0]
+        assert reason == "red_candle"
+
+    def test_a_close_under_the_session_vwap_exits(self, csim):
+        """VWAP is volume-weighted over the session, computed here."""
+        pos = _scalp_open(csim, price=3.00)
+        self._feed(csim, 41, 3.00, 3.40, 2.99, 3.38, v=100_000)   # VWAP ~3.26
+        self._feed(csim, 42, 3.05, 3.12, 3.04, 3.10)              # green, 3.10
+        assert pos.legs == [(pos.qty, 3.10)]
+        assert csim.journal._execute(
+            "SELECT exit_reason FROM trades").fetchone()[0] == "vwap"
+
+    def test_the_stop_still_comes_first(self, csim):
+        pos = _scalp_open(csim, price=3.00)
+        self._feed(csim, 41, 3.00, 3.01, 2.80, 2.90)     # through 2.85
+        assert pos.legs == [(pos.qty, pos.stop)]
+
+    def test_no_time_stop(self, csim):
+        _scalp_open(csim, price=3.00)
+        for m in range(41, 59):                          # 18 quiet minutes
+            self._feed(csim, m, 3.01, 3.03, 3.00, 3.02)
+        assert "HODX" in csim.open

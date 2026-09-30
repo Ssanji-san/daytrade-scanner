@@ -82,9 +82,13 @@ def parse_shares(concept_payload):
 
 
 class FloatCache:
-    def __init__(self, cfg: Config):
+    """SEC lookups per symbol, on disk. Subclassed for other SEC facts."""
+
+    FIELD = "shares"
+
+    def __init__(self, cfg: Config, path=None):
         self.cfg = cfg
-        self.path = pathlib.Path(cfg.float_cache_path)
+        self.path = pathlib.Path(path or cfg.float_cache_path)
         self._data = {}
         if self.path.exists():
             try:
@@ -94,13 +98,13 @@ class FloatCache:
                 # it: this runs during live_loop's setup, outside its error
                 # handling, so the whole scanner died with it. Refetching is
                 # cheap; the file is rebuilt as symbols come back round.
-                print(f"[warn] unreadable float cache, starting empty: {exc}")
+                print(f"[warn] unreadable cache {self.path}, starting empty: {exc}")
 
     def get(self, symbol):
         entry = self._data.get(symbol)
-        return entry["shares"] if entry else None
+        return entry.get(self.FIELD) if entry else None
 
-    def put(self, symbol, shares, now=None, answered=True, flush=True):
+    def put(self, symbol, value, now=None, answered=True, flush=True):
         """Record a lookup. `flush=False` defers the write to save().
 
         The live loop fetches four symbols a cycle and wants each one on
@@ -108,7 +112,7 @@ class FloatCache:
         megabyte-sized file per symbol would be gigabytes of pointless IO.
         """
         now = now or dt.datetime.now(dt.timezone.utc)
-        self._data[symbol] = {"shares": shares, "fetched": now.isoformat(),
+        self._data[symbol] = {self.FIELD: value, "fetched": now.isoformat(),
                               "answered": bool(answered)}
         if flush:
             self.save()
@@ -127,7 +131,7 @@ class FloatCache:
             return True
         now = now or dt.datetime.now(dt.timezone.utc)
         age = now - dt.datetime.fromisoformat(entry["fetched"])
-        if entry.get("shares") is None and not entry.get("answered"):
+        if entry.get(self.FIELD) is None and not entry.get("answered"):
             # A miss we never got an answer for. Retry within the hour
             # instead of writing the stock off for a week. Entries from
             # before this distinction have no "answered" key and are retried

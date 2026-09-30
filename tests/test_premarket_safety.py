@@ -21,7 +21,9 @@ from scanner.trading.strategy import premarket_entry_limit
 
 from .test_bot_trading import FakeState, a_pick, et, make_bot
 
-CFG = Config()
+# The +20c scalp path, pinned: the default exits on candles now, and this
+# path stays reachable by configuration. Candle exits have their own tests.
+CFG = Config(bot_exit_mode="scalp")
 
 
 def _at(hour, minute, second=0):

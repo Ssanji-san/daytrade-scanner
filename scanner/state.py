@@ -7,7 +7,7 @@ badges) is computed here so the two modes exercise identical logic.
 import datetime as dt
 from dataclasses import replace
 
-from . import catalyst, hod, setups
+from . import catalyst, hod, setups, volume
 from .config import Config
 from .gainers import top_gainers
 from .history import ET, SESSION_OPEN as MARKET_OPEN, SymbolHistory, rvol
@@ -36,11 +36,12 @@ class MarketState:
         self.calendar = []
         self.last_ingest = None
         # Frozen at the open and left alone: deriving these later from
-        # SymbolHistory._bars would fail on a long session, because that
-        # deque is maxlen=180 and the opening bars roll off it.
+        # SymbolHistory._bars would fail on a session longer than that
+        # deque, where the opening bars roll off it.
         self._gap_pct = {}       # symbol -> % gap vs prev close at 9:30
         self._opening_range = {}    # symbol -> {"high", "low"} of first N min
         self._open_price = {}    # symbol -> price at the 9:30 bell
+        self._sip = {}           # symbol -> volume.SipTape
 
     def ingest(self, now, symbol_data):
         """symbol_data: {sym: {price, cum_volume, day_high, prev_close,
@@ -52,7 +53,7 @@ class MarketState:
             history.add_bar(data.get("minute_bar"))
             prev = self.latest.get(sym, {})
             merged = dict(data)
-            for sticky in ("avg_volume", "float_shares"):
+            for sticky in ("avg_volume", "float_shares", "country"):
                 if merged.get(sticky) is None:
                     merged[sticky] = prev.get(sticky)
             if prev.get("day_high"):
@@ -98,6 +99,13 @@ class MarketState:
                 "high": max(b["h"] for b in opening),
                 "low": min(b["l"] for b in opening),
             }
+
+    def add_sip(self, symbol, bars=(), until=None):
+        """Fold in SIP minute bars, and/or move how far they may be read."""
+        tape = self._sip.setdefault(symbol, volume.SipTape())
+        tape.add(bars)
+        if until is not None:
+            tape.until = until
 
     def set_news(self, now, items):
         """Merge a batch of headlines into what is already known.
@@ -180,12 +188,14 @@ class MarketState:
                 "price": price,
                 "day_pct": day_pct,
                 "day_volume": data["cum_volume"],
+                "real_volume": volume.real_volume(self._sip.get(sym), bars),
                 "bid": data.get("bid"),
                 "ask": data.get("ask"),
                 "day_high": data.get("day_high"),
                 "rvol": rvol(data["cum_volume"], data.get("avg_volume"), now, self.cfg),
                 "avg_volume": data.get("avg_volume"),
                 "float_shares": data.get("float_shares"),
+                "country": data.get("country"),
                 "has_news": self._has_news(sym, now),
                 "changes": {str(w): history.n_minute_change(now, w)
                             for w in self.cfg.gainer_windows},

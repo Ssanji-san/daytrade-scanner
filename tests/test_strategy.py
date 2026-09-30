@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from scanner.config import Config
+from scanner.trading.strategy import candle_exit
 from scanner.trading.strategy import (bankroll_from, exit_levels, in_window,
                                       position_slots, runner_trail_pct,
                                       should_enter, size_position, split_qty,
@@ -27,12 +28,12 @@ def ok_kwargs(**overrides):
 
 class TestWindow:
     def test_window_edges(self):
-        # The bell through the first half hour. Pre-market is observed, not
-        # traded: before the open the screener cannot see the day's movers,
-        # and a symbol that has not printed yet reads yesterday's numbers.
-        # Both edges are inclusive.
-        assert not in_window(et(8, 0), CFG)
-        assert not in_window(et(9, 29), CFG)    # pre-market
+        # IEX's pre-market from 08:00 through the first half hour after the
+        # bell. Breaking-news discovery is what finds pre-market movers; the
+        # free movers list cannot. Both edges are inclusive.
+        assert not in_window(et(7, 59), CFG)
+        assert in_window(et(8, 0), CFG)         # IEX pre-market opens
+        assert in_window(et(9, 29), CFG)        # pre-market
         assert in_window(et(9, 30), CFG)        # the bell
         assert in_window(et(10, 0), CFG)
         assert not in_window(et(10, 1), CFG)
@@ -335,3 +336,44 @@ class TestMaxPositions:
         take, reasons = should_enter("X", **ok_kwargs(open_positions=3,
                                                       bankroll=2473.74))
         assert not take and "concurrency" in reasons
+
+
+def ohlc(o, h, l, c):
+    return {"o": o, "h": h, "l": l, "c": c}
+
+
+class TestCandleExit:
+    """Ross holds until an exit indicator, rather than selling at +20c.
+    These are the chart ones; Level 2 and the tape are not available."""
+
+    PREV = ohlc(5.00, 5.30, 4.95, 5.25)
+
+    def test_a_healthy_green_candle_holds(self):
+        assert candle_exit(ohlc(5.25, 5.50, 5.20, 5.45), self.PREV, 5.00,
+                           CFG) is None
+
+    def test_red_close_below_the_prior_low(self):
+        assert candle_exit(ohlc(5.20, 5.22, 4.80, 4.90), self.PREV, 4.50,
+                           CFG) == "red_candle"
+
+    def test_a_red_candle_inside_the_prior_range_holds(self):
+        assert candle_exit(ohlc(5.25, 5.28, 5.10, 5.15), self.PREV, 4.50,
+                           CFG) is None
+
+    def test_topping_tail(self):
+        # Ran to 5.80, gave it back: wick 0.45 vs body 0.05.
+        assert candle_exit(ohlc(5.30, 5.80, 5.28, 5.35), self.PREV, 4.50,
+                           CFG) == "topping_tail"
+
+    def test_a_long_lower_wick_is_not_a_topping_tail(self):
+        # Upper wick 4x the body, but most of the range is BELOW: buyers.
+        assert candle_exit(ohlc(5.00, 5.10, 4.80, 5.02), ohlc(5, 5, 4.7, 5),
+                           4.50, CFG) is None
+
+    def test_close_below_vwap(self):
+        assert candle_exit(ohlc(5.25, 5.30, 5.10, 5.20), self.PREV, 5.22,
+                           CFG) == "vwap"
+
+    def test_no_prior_candle_or_vwap_yet(self):
+        assert candle_exit(ohlc(5.20, 5.22, 4.80, 4.90), None, None,
+                           CFG) is None

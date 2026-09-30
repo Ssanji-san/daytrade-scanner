@@ -12,6 +12,10 @@ class Config:
     # --- poll loop ---
     poll_seconds: float = 3.0          # movers/actives/snapshots cycle
     news_poll_seconds: float = 30.0
+    # Breaking-news discovery: the whole market's headlines, this often. A
+    # stock with news stays on the candidate list this long after it.
+    news_discovery_seconds: float = 10.0
+    news_candidate_minutes: float = 240.0
     calendar_poll_seconds: float = 600.0
     movers_top: int = 50
     actives_top: int = 100
@@ -50,6 +54,11 @@ class Config:
     # rows qualified in total. rvol carries the liquidity test instead - it
     # compares IEX to IEX, so the feed's share cancels out of the ratio.
     hod_min_volume: int = 0            # cumulative IEX shares today
+    # Shares traded today on the REAL tape: SIP to 16 minutes ago plus IEX
+    # since (volume.py) - a floor on the true figure. 0 disables. Right after
+    # news breaks the 16-minute lag can hold an entry back.
+    hod_min_real_volume: int = 500_000
+    sip_poll_seconds: float = 60.0      # how often the live loop reads SIP
     # Baseline liquidity: does this thing trade AT ALL on a normal day?
     # Dropping the daily floor let dead instruments through - WVVIP, a
     # preferred share, printed 0-1,295 shares a DAY yet showed a huge
@@ -67,6 +76,10 @@ class Config:
     # than one that gapped overnight and has drifted since.
     hod_min_open_pct: float = 5.0
     hod_require_news: bool = False      # UI toggle; badge always shown
+    # Chinese companies (and any whose country is not known yet) trade only
+    # on BREAKING news: a real catalyst at most catalyst_fresh_minutes old.
+    # Everything else needs a catalyst too, but a day-old one still counts.
+    china_requires_news: bool = True
     # "Near the high", not "at the high". The entry is the pullback, and a
     # healthy flag pulls back 2-5% - a 1% gate rejected most of them and
     # only let the trade through after price had already run past the
@@ -152,6 +165,14 @@ class Config:
     # narrow for that reason, and results are reported by price bucket.
     bot_scalp_mode: bool = True
     bot_scalp_target_cents: float = 0.20
+    # "candle": Ross's "I will not sell just because I'm up 20 cents" - no
+    # target and no clock; out on the stop or the first chart exit
+    # indicator on a completed candle (strategy.candle_exit). Jan-Aug 2026,
+    # same 55 entries: -0.044R against the scalp's -0.220R (paired +0.176R,
+    # t=2.15) - near break-even before spread, which is not modelled.
+    # "scalp": +20c target, 65% banked, trailing runner, stall and time stops.
+    bot_exit_mode: str = "candle"
+    bot_topping_tail_ratio: float = 2.0   # upper wick vs body for a topping tail
     # Sell this share of the position at the target and let the rest run,
     # governed by the stall exit below. 0 takes the whole thing off.
     bot_scalp_scale_out_pct: float = 65.0
@@ -223,15 +244,13 @@ class Config:
     # The grading horizon must match the holding horizon, or the journal
     # labels a trade a loss while the bot is still holding it.
     bot_alert_window_minutes: int = 10
-    # 09:30: pre-market is OBSERVED, not traded. It ran live from 08:00 on
-    # 2026-09-29/30 (zero trades) and the free data could not support it:
-    # the screener's movers list resets at the bell, so before 09:30 the
-    # candidates were ETFs, megacaps and yesterday's runners - the day's
-    # gappers only appeared after the open. The pre-market execution path
-    # (extended-hours limits, a stop the bot runs itself, the 09:30 handoff)
-    # is still in place and tested; setting 08:00 here turns it back on.
-    # Do that only with a pre-market universe that can see today's movers.
-    bot_window_open: str = "09:30"       # ET; no entries before/after the window
+    # 08:00, when IEX's pre-market opens. It was switched off on 2026-09-30
+    # because the free movers list resets at the bell and could not see the
+    # day's gappers. Breaking-news discovery (main.discover_news) now finds
+    # them from the whole market's headlines instead. Pre-market positions
+    # use extended-hours limits and a stop the bot runs itself, handed to
+    # Alpaca at 09:30. "09:30" switches pre-market trading off again.
+    bot_window_open: str = "08:00"       # ET; no entries before/after the window
     # 10:00: the first half hour, the user's window. Stated plainly because
     # it is a choice made against the replay: on Jan-Aug 2026 (IEX) the
     # 09:30-10:00 half hour was the most consistent loser, and 10:00-12:30
@@ -289,6 +308,7 @@ class Config:
     # timeout as "no float" silently removes the stock from the strategy.
     float_retry_minutes: int = 60
     float_cache_path: str = "cache/floats.json"
+    country_cache_path: str = "cache/countries.json"   # see countries.py
 
 
 DEFAULT = Config()

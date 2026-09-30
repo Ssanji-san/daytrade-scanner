@@ -137,6 +137,24 @@ class TestNewsIsNotCrowdedOut:
         assert len(calls) == NEWS_MAX_PAGES
 
 
+    def test_market_news_asks_for_every_symbol(self):
+        """Breaking-news discovery: no symbol list, so the whole market."""
+        pages = [{"news": [self._article("AAA")], "next_page_token": "t1"},
+                 {"news": [self._article("BBB")]}]
+        client, calls = self._client(pages)
+        items = asyncio.run(client.market_news("2026-07-14T11:00:00+00:00"))
+        assert [i["symbol"] for i in items] == ["AAA", "BBB"]
+        assert "symbols" not in calls[0]
+        assert calls[0]["start"] == "2026-07-14T11:00:00+00:00"
+        assert calls[1]["page_token"] == "t1"
+
+    def test_market_news_is_bounded(self):
+        endless = [{"news": [self._article("AAA")], "next_page_token": "t"}] * 50
+        client, calls = self._client(endless)
+        asyncio.run(client.market_news("2026-07-14T11:00:00+00:00"))
+        assert len(calls) == NEWS_MAX_PAGES
+
+
 class TestQuotes:
     """Pre-market Ross buys 10c over the ASK and sells under the BID, where
     the spread is wide enough to matter - so the quote has to come through."""
@@ -226,3 +244,14 @@ class TestYesterdaysMinuteBarIsDropped:
     def test_without_a_date_the_bar_is_kept(self):
         raw = self.snap("2026-09-28T23:59:00Z")
         assert parse_snapshots(raw)["KNRX"]["minute_bar"] is not None
+
+
+def test_avg_volumes_averages_the_last_n_daily_bars():
+    """The live loop's rvol baseline. Deleted once by accident in a cleanup
+    with every test still green - this pins it."""
+    class Client(AlpacaClient):
+        async def bars(self, symbols, timeframe, start, end=None, feed=None):
+            assert timeframe == "1Day"
+            return {"AAA": [{"v": 999}, {"v": 100}, {"v": 300}]}
+    out = asyncio.run(Client(None, CFG).avg_volumes(["AAA"], days=2))
+    assert out == {"AAA": 200}
