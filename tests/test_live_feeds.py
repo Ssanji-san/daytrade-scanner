@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from scanner.config import Config
 from scanner.main import (discover_news, news_candidates, refresh_sip,
-                          watchlist)
+                          sweep_candidates, sweep_universe, watchlist)
 from scanner.state import MarketState
 
 ET = ZoneInfo("America/New_York")
@@ -118,3 +118,36 @@ class TestWatchlist:
     def test_a_fresh_symbol_stays(self):
         seen = et(9, 55)
         assert watchlist({"NEW": seen}, et(10, 0), CFG) == {"NEW": seen}
+
+
+class TestMarketSweep:
+    """Every stock in the band, once a minute - not just Alpaca's top 50,
+    and not yesterday's list before the bell."""
+
+    def snap(self, price, prev_close):
+        return {"price": price, "prev_close": prev_close}
+
+    def test_in_band_and_up_ten_percent(self):
+        snaps = {"RUN": self.snap(2.40, 2.00),       # +20%
+                 "FLAT": self.snap(2.05, 2.00),      # +2.5%
+                 "BIG": self.snap(150.0, 100.0),     # +50%, out of band
+                 "PENY": self.snap(0.60, 0.30),      # +100%, under $1
+                 "NOPC": self.snap(3.00, None)}      # no baseline
+        assert sweep_candidates(snaps, CFG) == ["RUN"]
+
+    def test_the_first_sweep_asks_for_everything(self):
+        assert sweep_universe(["A", "B"], {}, CFG) == ["A", "B"]
+
+    def test_later_sweeps_skip_what_cannot_reach_the_band(self):
+        """A $150 stock will not be a $5 stock this morning; each one left
+        out saves part of a 500-symbol request, every minute."""
+        prices = {"AAPL": 230.0, "SOS": 2.1, "DEAD": 0.0, "ALMO": 0.9}
+        assert sweep_universe(["AAPL", "ALMO", "DEAD", "NEW", "SOS"],
+                              prices, CFG) == ["ALMO", "NEW", "SOS"]
+
+    def test_a_whole_market_sweep_fits_the_rate_limit(self):
+        """8,000 symbols is 16 snapshot requests; the limit is 200 a minute
+        and the rest of the loop uses about half of it."""
+        import math
+        from scanner.alpaca import MAX_SYMBOLS_PER_REQUEST
+        assert math.ceil(8_000 / MAX_SYMBOLS_PER_REQUEST) <= 20

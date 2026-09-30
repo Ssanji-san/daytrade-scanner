@@ -16,6 +16,10 @@ class Config:
     # stock with news stays on the candidate list this long after it.
     news_discovery_seconds: float = 10.0
     news_candidate_minutes: float = 240.0
+    # Market sweep: snapshot every common stock that could reach the band,
+    # this often, and track any up hod_min_pct_up - a scanner's view, where
+    # the movers list shows only the top 50 and resets at the bell.
+    sweep_seconds: float = 60.0
     calendar_poll_seconds: float = 600.0
     movers_top: int = 50
     actives_top: int = 100
