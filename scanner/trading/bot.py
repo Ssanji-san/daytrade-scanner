@@ -162,6 +162,15 @@ def choose_entries(qualified_rows, scorer, trades_today, traded_symbols,
         if skips is not None:
             skips.append({"symbol": symbol, "reason": reason, "score": score})
 
+    if cfg.bot_top_gainer_only and qualified_rows:
+        # The most obvious stock of the moment, or nothing: falling back to
+        # the runner-up would be trading a different idea.
+        leader = max(qualified_rows, key=lambda r: r.get("day_pct") or 0)
+        for row in qualified_rows:
+            if row is not leader:
+                note(row["symbol"], "not_top_gainer")
+        qualified_rows = [leader]
+
     scored = []
     for row in qualified_rows:
         # The momentum criteria say *what* to trade; the pullback says

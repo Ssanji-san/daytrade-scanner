@@ -297,6 +297,31 @@ def scalp_levels(entry_price, cfg: Config):
     return {"stop": round(stop, 2), "target": round(target, 2)}
 
 
+def candle_exit(bar, prev_bar, vwap, cfg: Config):
+    """Ross's chart exit indicators on a completed candle, or None to hold.
+
+    The ones a chart can show: a red candle closing below the prior candle's
+    low (the pullback has become a reversal), a topping tail (sellers pushed
+    the high back down), and a close below VWAP. His Level 2 and tape exits
+    - big and hidden sellers, a burst of red - need data this bot lacks.
+    """
+    open_, close = bar.get("o"), bar.get("c")
+    high, low = bar.get("h"), bar.get("l")
+    if None in (open_, close, high, low):
+        return None
+    if (prev_bar and prev_bar.get("l") is not None
+            and close < open_ and close < prev_bar["l"]):
+        return "red_candle"
+    span, body = high - low, abs(close - open_)
+    upper = high - max(open_, close)
+    if (span > 0 and upper >= cfg.bot_topping_tail_ratio * body
+            and upper >= span / 2):
+        return "topping_tail"
+    if vwap is not None and close < vwap:
+        return "vwap"
+    return None
+
+
 def runner_trail_pct(entry, price, cfg: Config):
     """Trail width for the runner, capped so it never starts below entry.
 

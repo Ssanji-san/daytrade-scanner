@@ -163,3 +163,30 @@ class TestSkipsAreExplained:
         """The backtest and every existing caller pass no list at all."""
         assert choose_entries([row("GOOD")], HeuristicScorer(), 0, set(),
                               0.0, et(10, 0), CFG)
+
+
+class TestTopGainerOnly:
+    """Ross: focus on the number one leading gainer."""
+
+    def test_off_by_default(self):
+        assert CFG.bot_top_gainer_only is False
+
+    def test_only_the_biggest_gainer_is_considered(self):
+        from dataclasses import replace
+        cfg = replace(CFG, bot_top_gainer_only=True)
+        rows = [row("AAA", day_pct=40.0, rvol=20.0),
+                row("BBB", day_pct=90.0, rvol=6.0),
+                row("CCC", day_pct=15.0, rvol=30.0)]
+        picks = choose_entries(rows, HeuristicScorer(), trades_today=0,
+                               traded_symbols=set(), day_pnl=0.0,
+                               now=et(9, 45), cfg=cfg)
+        assert [p["symbol"] for p in picks] == ["BBB"]
+
+    def test_the_leader_blocked_means_no_trade_not_the_runner_up(self):
+        from dataclasses import replace
+        cfg = replace(CFG, bot_top_gainer_only=True)
+        rows = [row("AAA", day_pct=40.0), row("BBB", day_pct=90.0)]
+        picks = choose_entries(rows, HeuristicScorer(), trades_today=0,
+                               traded_symbols={"BBB"}, day_pnl=0.0,
+                               now=et(9, 45), cfg=cfg)
+        assert picks == []

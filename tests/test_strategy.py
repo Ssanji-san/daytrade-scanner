@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from scanner.config import Config
-from scanner.trading.strategy import scalp_levels
+from scanner.trading.strategy import candle_exit, scalp_levels
 from scanner.trading.strategy import (bankroll_from, exit_levels, in_window,
                                       position_slots, runner_trail_pct,
                                       should_enter, size_position, split_qty,
@@ -369,3 +369,44 @@ class TestScaledTarget:
         assert scalp_levels(10.00, cfg)["target"] == pytest.approx(10.40)
         assert scalp_levels(5.00, cfg)["target"] == pytest.approx(5.20)
         assert scalp_levels(10.00, cfg)["stop"] == pytest.approx(9.50)
+
+
+def ohlc(o, h, l, c):
+    return {"o": o, "h": h, "l": l, "c": c}
+
+
+class TestCandleExit:
+    """Ross holds until an exit indicator, rather than selling at +20c.
+    These are the chart ones; Level 2 and the tape are not available."""
+
+    PREV = ohlc(5.00, 5.30, 4.95, 5.25)
+
+    def test_a_healthy_green_candle_holds(self):
+        assert candle_exit(ohlc(5.25, 5.50, 5.20, 5.45), self.PREV, 5.00,
+                           CFG) is None
+
+    def test_red_close_below_the_prior_low(self):
+        assert candle_exit(ohlc(5.20, 5.22, 4.80, 4.90), self.PREV, 4.50,
+                           CFG) == "red_candle"
+
+    def test_a_red_candle_inside_the_prior_range_holds(self):
+        assert candle_exit(ohlc(5.25, 5.28, 5.10, 5.15), self.PREV, 4.50,
+                           CFG) is None
+
+    def test_topping_tail(self):
+        # Ran to 5.80, gave it back: wick 0.45 vs body 0.05.
+        assert candle_exit(ohlc(5.30, 5.80, 5.28, 5.35), self.PREV, 4.50,
+                           CFG) == "topping_tail"
+
+    def test_a_long_lower_wick_is_not_a_topping_tail(self):
+        # Upper wick 4x the body, but most of the range is BELOW: buyers.
+        assert candle_exit(ohlc(5.00, 5.10, 4.80, 5.02), ohlc(5, 5, 4.7, 5),
+                           4.50, CFG) is None
+
+    def test_close_below_vwap(self):
+        assert candle_exit(ohlc(5.25, 5.30, 5.10, 5.20), self.PREV, 5.22,
+                           CFG) == "vwap"
+
+    def test_no_prior_candle_or_vwap_yet(self):
+        assert candle_exit(ohlc(5.20, 5.22, 4.80, 4.90), None, None,
+                           CFG) is None

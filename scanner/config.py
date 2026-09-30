@@ -177,6 +177,15 @@ class Config:
     # keeps the original once-a-day rule. A symbol still held is never
     # bought again whatever this says (strategy.symbols_at_cap).
     bot_max_entries_per_symbol: int = 1
+    # "scalp": +20c target, 65% banked, trailing runner, stall and time stops.
+    # "candle": Ross's "I will not sell just because I'm up 20 cents" - no
+    # target and no clock; out on the stop or the first chart exit
+    # indicator (strategy.candle_exit). Replay-only until it earns live use.
+    bot_exit_mode: str = "scalp"
+    bot_topping_tail_ratio: float = 2.0   # upper wick vs body for a topping tail
+    # Ross: "focus on the number one leading gainer". Only the qualifying row
+    # up the most may be entered; if it cannot be, nothing is.
+    bot_top_gainer_only: bool = False
     # Sell this share of the position at the target and let the rest run,
     # governed by the stall exit below. 0 takes the whole thing off.
     bot_scalp_scale_out_pct: float = 65.0
