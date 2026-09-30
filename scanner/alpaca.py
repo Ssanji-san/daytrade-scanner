@@ -236,6 +236,14 @@ class AlpacaClient:
                     break
         return out
 
+    async def avg_volumes(self, symbols, days=None):
+        """30-day average daily volume per symbol (rvol baseline)."""
+        days = days or self.cfg.rvol_baseline_days
+        start = (dt.date.today() - dt.timedelta(days=days * 2)).isoformat()
+        volumes = await self.bars(symbols, "1Day", start)
+        return {sym: compute_avg_volume(rows[-days:])
+                for sym, rows in volumes.items()}
+
     async def market_news(self, since, limit=50):
         """Every headline since `since` (ISO), across the whole market.
 

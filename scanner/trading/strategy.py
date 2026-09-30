@@ -1,14 +1,13 @@
-"""Pure trading decisions: entry gate, position sizing, scalp exit levels.
+"""Pure trading decisions: entry gate, position sizing, exit rules.
 
 No I/O here - the bot loop feeds in current state, this answers what to do.
 Every threshold comes from config.
 
-The live strategy is Ross Cameron's cents-on-the-dollar scalp: buy the
-pullback, bank most of the position a fixed number of cents up, and let the
-rest ride a trail that can never come back under what was paid. The R-based
-2R/3R path is still here and still reachable by configuration.
+The live strategy buys Ross Cameron's first pullback and sells the way he
+does: no target, out on the stop or the first chart exit indicator
+(candle_exit). The cents-on-the-dollar scalp - bank most of it 20c up, trail
+the rest - and the R-based 2R/3R path are still reachable by configuration.
 """
-import datetime as dt
 import math
 from zoneinfo import ZoneInfo
 

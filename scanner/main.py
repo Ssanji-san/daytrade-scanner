@@ -96,6 +96,16 @@ def news_candidates(news_seen, now, cfg: Config, prices=None):
                   if ts >= horizon and plausible(s))
 
 
+def watchlist(candidates, now, cfg: Config, held=()):
+    """The symbols to snapshot: seen within candidate_ttl_minutes, plus
+    every symbol the bot holds. A held stock that has left the screener
+    lists still needs its bars - the candle exit is read off them."""
+    ttl = dt.timedelta(minutes=cfg.candidate_ttl_minutes)
+    out = {s: t for s, t in candidates.items() if now - t < ttl}
+    out.update({s: now for s in held})
+    return out
+
+
 async def refresh_sip(client, state, symbols, sip_until, now):
     """Read each symbol's real tape up to the free-data cutoff.
 
@@ -159,8 +169,8 @@ async def live_loop(app, cfg: Config):
                     last_discovery = now.timestamp()
                 for sym in news_candidates(news_seen, now, cfg, last_price):
                     candidates[sym] = now
-                ttl = dt.timedelta(minutes=cfg.candidate_ttl_minutes)
-                candidates = {s: t for s, t in candidates.items() if now - t < ttl}
+                candidates = watchlist(candidates, now, cfg,
+                                       app["ctx"].get("held", ()))
 
                 snaps = await client.snapshots(list(candidates))
                 last_price.update({s: d.get("price") for s, d in snaps.items()})

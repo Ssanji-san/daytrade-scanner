@@ -8,7 +8,8 @@ import datetime as dt
 from zoneinfo import ZoneInfo
 
 from scanner.config import Config
-from scanner.main import discover_news, news_candidates, refresh_sip
+from scanner.main import (discover_news, news_candidates, refresh_sip,
+                          watchlist)
 from scanner.state import MarketState
 
 ET = ZoneInfo("America/New_York")
@@ -100,3 +101,20 @@ class TestRealTape:
         starts = {tuple(c[0]): c[2] for c in client.bar_calls[1:]}
         assert starts == {("VOL",): et(7, 44).isoformat(),
                           ("NEWB",): et(4, 0).isoformat()}
+
+
+class TestWatchlist:
+    """A held stock is watched for as long as it is held: the candle exit
+    reads its bars, and bars only come for symbols still snapshotted."""
+
+    def test_an_expired_symbol_drops_off(self):
+        stale = et(9, 0)
+        assert watchlist({"OLD": stale}, et(10, 0), CFG) == {}
+
+    def test_a_held_symbol_stays_whatever_its_age(self):
+        out = watchlist({"HELD": et(9, 0)}, et(10, 0), CFG, held={"HELD"})
+        assert out == {"HELD": et(10, 0)}
+
+    def test_a_fresh_symbol_stays(self):
+        seen = et(9, 55)
+        assert watchlist({"NEW": seen}, et(10, 0), CFG) == {"NEW": seen}

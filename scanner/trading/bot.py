@@ -15,13 +15,12 @@ from ..setups import vwap
 from .broker import Broker
 from .journal import Journal
 from .model import train
-from .strategy import (ET, MARKET_OPEN, bankroll_from, buying_power,
-                       candle_exit, exit_levels, is_doji, position_slots, runner_trail_pct,
-                       scalp_levels, scalp_split, should_enter, size_position,
-                       is_premarket, premarket_entry_limit,
-                       premarket_exit_limit,
-                       split_qty, technical_stop, weighted_exit,
-                       _parse_hhmm)
+from .strategy import (ET, MARKET_OPEN, _parse_hhmm, bankroll_from,
+                       buying_power, candle_exit, exit_levels, is_doji,
+                       is_premarket, position_slots, premarket_entry_limit,
+                       premarket_exit_limit, runner_trail_pct, scalp_levels,
+                       scalp_split, should_enter, size_position, split_qty,
+                       technical_stop, weighted_exit)
 
 STARTUP_ATTEMPTS = 10
 
@@ -1094,6 +1093,8 @@ async def bot_loop(app, cfg: Config):
             now = dt.datetime.now(dt.timezone.utc)
             try:
                 await bot.cycle(ctx["state"], now)
+                # The scanner keeps these snapshotted (main.watchlist).
+                ctx["held"] = set(bot.open_trades)
                 if now.timestamp() - last_equity_pull > 300:
                     history = await broker.portfolio_history()
                     bot.equity_history = [

@@ -244,3 +244,14 @@ class TestYesterdaysMinuteBarIsDropped:
     def test_without_a_date_the_bar_is_kept(self):
         raw = self.snap("2026-09-28T23:59:00Z")
         assert parse_snapshots(raw)["KNRX"]["minute_bar"] is not None
+
+
+def test_avg_volumes_averages_the_last_n_daily_bars():
+    """The live loop's rvol baseline. Deleted once by accident in a cleanup
+    with every test still green - this pins it."""
+    class Client(AlpacaClient):
+        async def bars(self, symbols, timeframe, start, end=None, feed=None):
+            assert timeframe == "1Day"
+            return {"AAA": [{"v": 999}, {"v": 100}, {"v": 300}]}
+    out = asyncio.run(Client(None, CFG).avg_volumes(["AAA"], days=2))
+    assert out == {"AAA": 200}

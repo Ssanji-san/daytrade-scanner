@@ -409,7 +409,7 @@ def test_a_banked_runner_outlives_the_time_stop(tmp_path):
 
 def test_the_fixed_break_even_stop_is_still_reachable(tmp_path):
     bot, broker, _ = make_bot(tmp_path, bot_scalp_runner_trail=False)
-    trade = _open_a_trade(bot, ts=int(et(9, 40).timestamp()))
+    _open_a_trade(bot, ts=int(et(9, 40).timestamp()))
     broker._positions = [{"symbol": "HODX", "current_price": 5.22}]
 
     asyncio.run(bot._manage_open(FakeState({"HODX": {"price": 5.22}}),
