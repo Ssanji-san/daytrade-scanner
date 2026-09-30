@@ -248,6 +248,26 @@ class AlpacaClient:
         return {sym: compute_avg_volume(rows[-days:])
                 for sym, rows in volumes.items()}
 
+    async def market_news(self, since, limit=50):
+        """Every headline since `since` (ISO), across the whole market.
+
+        Breaking-news discovery: no symbol list, so a stock nobody is
+        watching yet shows up the moment its news does - which is how the
+        pre-market movers get found at all, since the free movers list
+        resets at the bell.
+        """
+        items, token = [], None
+        for _ in range(NEWS_MAX_PAGES):
+            params = {"start": since, "limit": limit}
+            if token:
+                params["page_token"] = token
+            raw = await self._get("/v1beta1/news", params)
+            items.extend(parse_news(raw))
+            token = raw.get("next_page_token")
+            if not token:
+                break
+        return items
+
     async def news(self, symbols, limit=50, start=None, end=None):
         """Headlines for these symbols; defaults to the last news_max_age_hours.
 

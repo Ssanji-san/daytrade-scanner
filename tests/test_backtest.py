@@ -11,7 +11,9 @@ from scanner.backtest import fetch, replay
 from scanner.config import Config
 from scanner.trading.journal import Journal
 
-CFG = Config()
+# The 500K real-volume floor needs a SIP tape these tests do not model;
+# it has its own tests (test_volume, test_hod, and the SIP replay test).
+CFG = Config(hod_min_real_volume=0)
 
 
 def bar(t, o, h, l, c, v=20_000):
@@ -145,6 +147,41 @@ def test_replay_knows_a_chinese_company(tmp_path):
 def test_replay_knows_a_us_company(tmp_path):
     failed = _replay_country(tmp_path, "DE")
     assert failed and not any("china_news" in f for f in failed)
+
+
+def _replay_sip(tmp_path, sip_v):
+    """MOVR ramps 09:30-09:41 with 40K IEX shares a minute; SIP from 04:00."""
+    import sqlite3
+    journal = Journal(str(tmp_path / "backtest.db"))
+    day = "2026-08-12"
+    minute_rows = []
+    for i in range(12):
+        stamp = f"{day}T13:{30 + i:02d}:00Z"
+        price = 3.00 + i * 0.06
+        minute_rows.append(bar(stamp, price, price + 0.02,
+                               round(price * 0.995, 4), price, v=40_000))
+    sip = [bar(f"{day}T12:{m:02d}:00Z", 3, 3, 3, 3, v=sip_v)
+           for m in range(0, 60)]                      # 08:00-08:59 ET
+    context = {"prev_close": {"MOVR": 2.40}, "country": {"MOVR": "DE"},
+               "avg_volume": {"MOVR": 400_000},
+               "float_shares": {"MOVR": 8_000_000}}
+    replay.replay_day(day, {"MOVR": minute_rows}, [], context, journal,
+                      Config(), sip_bars={"MOVR": sip})
+    return [r[0] or "" for r in sqlite3.connect(journal.path).execute(
+        "SELECT failed FROM alerts WHERE symbol='MOVR'")]
+
+
+def test_replay_counts_real_volume_from_sip(tmp_path):
+    """60 x 10K pre-market SIP bars = 600K, over the 500K floor."""
+    failed = _replay_sip(tmp_path, 10_000)
+    assert failed and not any("real_volume" in f for f in failed)
+
+
+def test_replay_fails_a_thin_tape(tmp_path):
+    """Nothing on SIP before the open, and at most 12 x 40K = 480K of IEX
+    since the cutoff: under 500K all session."""
+    failed = _replay_sip(tmp_path, 0)
+    assert failed and any("real_volume" in f for f in failed)
 
 
 class TestTimeline:

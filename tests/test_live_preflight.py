@@ -17,6 +17,7 @@ import pytest
 
 from scanner.config import Config
 from scanner.state import MarketState
+from scanner.volume import sip_cutoff
 from scanner.trading.bot import TradingBot
 from scanner.trading.journal import Journal
 
@@ -42,6 +43,9 @@ def feed(state, now, price, cum, o=None, h=None, l=None):
         "price": price, "cum_volume": cum, "day_high": max(price, h or price),
         "prev_close": 2.60, "avg_volume": 120_000, "float_shares": 8_000_000,
         "minute_bar": bar(now, o, h or price, l or price, price)}})
+    # The live loop's SIP read: nothing is 16 minutes old this early, so
+    # real volume is the IEX bars since the cutoff.
+    state.add_sip("HODX", until=sip_cutoff(now))
 
 
 def a_session(state, news_ts):

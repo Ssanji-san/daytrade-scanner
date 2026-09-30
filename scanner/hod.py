@@ -42,6 +42,9 @@ def _criteria(state, cfg: Config):
     if cfg.hod_min_volume:
         checks.insert(1, ("volume",
                           (state["day_volume"] or 0) >= cfg.hod_min_volume))
+    if cfg.hod_min_real_volume:
+        checks.append(("real_volume", (state.get("real_volume") or 0)
+                       >= cfg.hod_min_real_volume))
     if cfg.require_vwap:
         # Long only above VWAP - below it the move is a fade, not a trend.
         checks.append(("vwap", bool(state.get("above_vwap"))))

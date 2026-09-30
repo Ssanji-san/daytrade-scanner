@@ -7,7 +7,7 @@ badges) is computed here so the two modes exercise identical logic.
 import datetime as dt
 from dataclasses import replace
 
-from . import catalyst, hod, setups
+from . import catalyst, hod, setups, volume
 from .config import Config
 from .gainers import top_gainers
 from .history import ET, SESSION_OPEN as MARKET_OPEN, SymbolHistory, rvol
@@ -42,6 +42,7 @@ class MarketState:
         self._opening_range = {}    # symbol -> {"high", "low"} of first N min
         self._open_price = {}    # symbol -> price at the 9:30 bell
         self._premarket_high = {}   # symbol -> highest bar before the bell
+        self._sip = {}           # symbol -> volume.SipTape
 
     def ingest(self, now, symbol_data):
         """symbol_data: {sym: {price, cum_volume, day_high, prev_close,
@@ -107,6 +108,13 @@ class MarketState:
                 "high": max(b["h"] for b in opening),
                 "low": min(b["l"] for b in opening),
             }
+
+    def add_sip(self, symbol, bars=(), until=None):
+        """Fold in SIP minute bars, and/or move how far they may be read."""
+        tape = self._sip.setdefault(symbol, volume.SipTape())
+        tape.add(bars)
+        if until is not None:
+            tape.until = until
 
     def set_news(self, now, items):
         """Merge a batch of headlines into what is already known.
@@ -198,6 +206,7 @@ class MarketState:
                 "price": price,
                 "day_pct": day_pct,
                 "day_volume": data["cum_volume"],
+                "real_volume": volume.real_volume(self._sip.get(sym), bars),
                 "bid": data.get("bid"),
                 "ask": data.get("ask"),
                 "day_high": data.get("day_high"),

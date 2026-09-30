@@ -19,6 +19,7 @@ from ..history import ET
 from ..state import MarketState
 from ..trading.bot import journal_alert
 from ..trading.journal import Journal
+from ..volume import sip_cutoff
 
 
 def _hhmm(text):
@@ -148,12 +149,17 @@ def _record(journal, tracked, counted, ts, row, now, observed, cfg):
 
 
 def replay_day(day, minute_bars, news_items, context, journal: Journal,
-               cfg: Config, simulator=None):
+               cfg: Config, simulator=None, sip_bars=None):
     """Replay one session, journalling graded alerts. Returns how many.
 
     The count is distinct alerts, not row-minutes: a symbol that qualifies
     for ninety consecutive minutes is one alert, and reporting ninety made
     the daily numbers look forty times larger than the dataset.
+
+    `sip_bars` is the day's consolidated-tape minute bars, {symbol: [bar]}.
+    They are loaded once and released as the live loop would read them,
+    16 minutes late (volume.sip_cutoff). Without them real volume is unknown
+    and the 500K floor fails every row, as it would live.
 
     `context` supplies the per-symbol facts a live session would already
     know: {"prev_close": {}, "prev_high": {}, "avg_volume": {},
@@ -165,6 +171,8 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
     state = MarketState(replace(
         cfg, near_filter_max_failures=cfg.backtest_near_failures))
     cursor = SessionCursor()
+    for symbol, rows in (sip_bars or {}).items():
+        state.add_sip(symbol, rows)
     timeline = bars_by_minute(minute_bars, cfg)
     last_bar = {}
     tracked = {}          # symbol -> alert id, gradable rows only
@@ -190,6 +198,11 @@ def replay_day(day, minute_bars, news_items, context, journal: Journal,
             continue
 
         state.ingest(now, symbol_data)
+        if sip_bars:
+            cutoff = sip_cutoff(now)
+            for symbol in symbol_data:
+                if symbol in sip_bars:
+                    state.add_sip(symbol, until=cutoff)
         state.set_news(now, visible_news(news_items, now_ts))
 
         # Past the entry cutoff the replay still steps bars - open alerts

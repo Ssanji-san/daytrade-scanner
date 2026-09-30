@@ -9,6 +9,7 @@ def make_state(**overrides):
         "day_pct": 25.0,          # % up vs previous close
         "open_pct": 12.0,         # % gained since the 9:30 bell
         "day_volume": 2_000_000,
+        "real_volume": 2_000_000,  # consolidated shares today (SIP + IEX)
         "day_high": 3.03,
         "rvol": 8.0,
         "avg_volume": 400_000,

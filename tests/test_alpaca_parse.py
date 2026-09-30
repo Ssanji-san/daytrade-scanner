@@ -138,6 +138,24 @@ class TestNewsIsNotCrowdedOut:
         assert len(calls) == NEWS_MAX_PAGES
 
 
+    def test_market_news_asks_for_every_symbol(self):
+        """Breaking-news discovery: no symbol list, so the whole market."""
+        pages = [{"news": [self._article("AAA")], "next_page_token": "t1"},
+                 {"news": [self._article("BBB")]}]
+        client, calls = self._client(pages)
+        items = asyncio.run(client.market_news("2026-07-14T11:00:00+00:00"))
+        assert [i["symbol"] for i in items] == ["AAA", "BBB"]
+        assert "symbols" not in calls[0]
+        assert calls[0]["start"] == "2026-07-14T11:00:00+00:00"
+        assert calls[1]["page_token"] == "t1"
+
+    def test_market_news_is_bounded(self):
+        endless = [{"news": [self._article("AAA")], "next_page_token": "t"}] * 50
+        client, calls = self._client(endless)
+        asyncio.run(client.market_news("2026-07-14T11:00:00+00:00"))
+        assert len(calls) == NEWS_MAX_PAGES
+
+
 class TestQuotes:
     """Pre-market Ross buys 10c over the ASK and sells under the BID, where
     the spread is wide enough to matter - so the quote has to come through."""

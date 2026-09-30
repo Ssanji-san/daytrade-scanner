@@ -4,6 +4,7 @@ import datetime as dt
 from scanner.calendar_feed import filter_events
 from scanner.config import Config
 from scanner.demo import build_demo_session
+from scanner.main import _ingest_frame
 from scanner.state import MarketState
 
 CFG = Config()
@@ -13,7 +14,7 @@ def play_session(session):
     state = MarketState(CFG)
     for frame in session["frames"]:
         now = dt.datetime.fromtimestamp(frame["ts"], dt.timezone.utc)
-        state.ingest(now, frame["symbols"])
+        _ingest_frame(state, now, frame["symbols"])     # as the dashboard does
     state.set_news(now, session["news"])
     state.set_calendar(filter_events(session["calendar_events"], CFG))
     return state.payload(now)

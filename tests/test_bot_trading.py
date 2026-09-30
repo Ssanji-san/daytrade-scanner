@@ -678,8 +678,8 @@ class TestPremarketEntry:
     The entry is a plain limit at the ask plus the offset - no OTO, so no
     stop rides along; the bot runs it (TestPremarketStop).
 
-    Pre-market entries are switched off by default (bot_window_open 09:30)
-    but the path is kept, so these open the window to 08:00 to exercise it.
+    The window opens at 08:00 by default; these pin it there so the path
+    stays exercised if pre-market is ever switched off again.
     """
 
     def _rows(self, price=2.00, ask=2.03):

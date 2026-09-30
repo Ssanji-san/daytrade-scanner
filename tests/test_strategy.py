@@ -27,12 +27,12 @@ def ok_kwargs(**overrides):
 
 class TestWindow:
     def test_window_edges(self):
-        # The bell through the first half hour. Pre-market is observed, not
-        # traded: before the open the screener cannot see the day's movers,
-        # and a symbol that has not printed yet reads yesterday's numbers.
-        # Both edges are inclusive.
-        assert not in_window(et(8, 0), CFG)
-        assert not in_window(et(9, 29), CFG)    # pre-market
+        # IEX's pre-market from 08:00 through the first half hour after the
+        # bell. Breaking-news discovery is what finds pre-market movers; the
+        # free movers list cannot. Both edges are inclusive.
+        assert not in_window(et(7, 59), CFG)
+        assert in_window(et(8, 0), CFG)         # IEX pre-market opens
+        assert in_window(et(9, 29), CFG)        # pre-market
         assert in_window(et(9, 30), CFG)        # the bell
         assert in_window(et(10, 0), CFG)
         assert not in_window(et(10, 1), CFG)

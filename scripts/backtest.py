@@ -133,6 +133,13 @@ async def run(start, end, feed, fetch_only, trades=False, require_news=True,
         for day in days:
             todays = candidates[day]
             minute = await fetch.minute_bars(client, cache, todays, day, feed)
+            # The real tape, for the 500K volume floor. Free once 15 minutes
+            # old, so the live bot reads it too; the replay releases it on
+            # the same delay. A symbol SIP has no bars for traded nothing.
+            sip_raw = (minute if feed == "sip" else
+                       await fetch.minute_bars(client, cache, todays, day,
+                                               "sip"))
+            sip = {sym: sip_raw.get(sym, []) for sym in todays}
             news = await fetch.day_news(client, cache, todays, day)
             if fetch_only:
                 print(f"[backtest] {day}: cached {len(minute)} symbols, "
@@ -142,7 +149,7 @@ async def run(start, end, feed, fetch_only, trades=False, require_news=True,
             sim = (Simulator(cfg, journal, day, HeuristicScorer(), score_bar)
                    if trades else None)
             graded = replay.replay_day(day, minute, news, context, journal,
-                                       cfg, simulator=sim)
+                                       cfg, simulator=sim, sip_bars=sip)
             took = f", {sim.closed:>2} trades" if sim else ""
             print(f"[backtest] {day}: {len(todays):>3} candidates -> "
                   f"{graded:>4} alerts journalled{took}")

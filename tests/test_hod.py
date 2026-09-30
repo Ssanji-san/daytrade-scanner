@@ -253,3 +253,25 @@ class TestChineseStocksNeedNews:
         assert scan([china], strict)[1][0]["failed"] == ["china_news"]
         us = make_state(country="DE", catalyst=stale)
         assert len(scan([us], strict)[0]) == 1
+
+
+class TestRealVolume:
+    """At least 500K shares traded today, counted on the real tape."""
+
+    def test_default_floor_is_500k(self):
+        assert CFG.hod_min_real_volume == 500_000
+
+    def test_under_the_floor_fails(self):
+        row = make_state(real_volume=499_999)
+        assert scan([row], CFG)[1][0]["failed"] == ["real_volume"]
+
+    def test_at_the_floor_passes(self):
+        assert len(scan([make_state(real_volume=500_000)], CFG)[0]) == 1
+
+    def test_unknown_fails(self):
+        row = make_state(real_volume=None)
+        assert scan([row], CFG)[1][0]["failed"] == ["real_volume"]
+
+    def test_zero_switches_it_off(self):
+        off = Config(hod_min_real_volume=0)
+        assert len(scan([make_state(real_volume=None)], off)[0]) == 1
