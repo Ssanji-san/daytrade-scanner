@@ -18,7 +18,7 @@ import aiohttp
 from aiohttp import web
 
 from .alpaca import AlpacaClient
-from .backtest.fetch import tradable_symbols
+from .backtest.fetch import is_common_stock, tradable_symbols
 from .calendar_feed import filter_events
 from .config import DEFAULT, Config
 from .countries import CountryCache, fetch_country
@@ -69,7 +69,8 @@ async def discover_news(client, state, news_seen, ticker_map, since, now):
     # Advance past everything read, stocks or not, or the next call reads
     # the same ETF headlines again.
     since = max([since] + [i["ts"] for i in items])
-    items = [i for i in items if i["symbol"] in ticker_map]
+    items = [i for i in items
+             if i["symbol"] in ticker_map and is_common_stock(i["symbol"])]
     state.set_news(now, items)
     for i in items:
         news_seen[i["symbol"]] = max(news_seen.get(i["symbol"], 0), i["ts"])
@@ -189,7 +190,8 @@ async def live_loop(app, cfg: Config):
                     client.movers(), client.most_actives())
                 now = utcnow()
                 for sym in movers + actives:
-                    candidates[sym] = now
+                    if is_common_stock(sym):     # the lists carry warrants
+                        candidates[sym] = now
                 if now.timestamp() - last_discovery > cfg.news_discovery_seconds:
                     try:
                         news_since = await discover_news(
