@@ -51,6 +51,14 @@ class TestBreakingNews:
             dt.datetime.fromtimestamp(100, dt.timezone.utc).isoformat()]
         assert "SOS" in state._news_by_symbol           # scored as a catalyst
 
+    def test_a_warrant_in_the_news_is_not_a_candidate(self):
+        """The SEC map lists warrants under the company's own CIK."""
+        seen = {}
+        asyncio.run(discover_news(FakeClient([item("SOSXW", et(7, 58))]),
+                                  MarketState(CFG), seen, {"SOSXW": 1}, 100,
+                                  et(8, 0)))
+        assert seen == {}
+
     def test_nothing_new_keeps_the_same_since(self):
         since = asyncio.run(discover_news(
             FakeClient(), MarketState(CFG), {}, {}, 500, et(8, 0)))

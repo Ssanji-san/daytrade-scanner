@@ -20,11 +20,19 @@ from ..config import Config
 # rejects and which this strategy would not trade anyway - WVVIP was the
 # lesson that a preferred can print a huge percentage move on no volume.
 COMMON_STOCK = re.compile(r"^[A-Z]{1,5}$")
+# Nasdaq marks these with a fifth letter and no dash: W warrant, U unit,
+# R rights. A shorter symbol ending in one of them (SNOW, AUR) is a stock.
+NASDAQ_DERIVATIVE = re.compile(r"^[A-Z]{4}[WUR]$")
+
+
+def is_common_stock(symbol):
+    return bool(COMMON_STOCK.match(symbol)
+                and not NASDAQ_DERIVATIVE.match(symbol))
 
 
 def tradable_symbols(tickers):
     """Drop the share classes this strategy has no business trading."""
-    return sorted(s for s in tickers if COMMON_STOCK.match(s))
+    return sorted(s for s in tickers if is_common_stock(s))
 
 
 # Pure helpers first - these are what the tests exercise.

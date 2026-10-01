@@ -250,6 +250,21 @@ class TestSymbolFilter:
         messy = ["AAPL", "ABR-PD", "ACHR-WT", "AAC-UN", "AGM-A"]
         assert fetch.tradable_symbols(messy) == ["AAPL"]
 
+    def test_drops_nasdaq_five_letter_warrants_units_and_rights(self):
+        """Nasdaq marks these with a fifth letter, no dash: W warrant, U unit,
+        R rights. XRPNW and ATIIW reached the live sweep on 2026-10-01."""
+        assert fetch.tradable_symbols(
+            ["XRPNW", "ATIIW", "ABCDU", "ABCDR", "AAPL"]) == ["AAPL"]
+
+    def test_short_symbols_ending_in_those_letters_are_stocks(self):
+        assert fetch.tradable_symbols(["SNOW", "AUR", "W", "GOOGL"]) == [
+            "AUR", "GOOGL", "SNOW", "W"]
+
+    def test_one_symbol_at_a_time(self):
+        assert fetch.is_common_stock("MEDS")
+        assert not fetch.is_common_stock("XRPNW")
+        assert not fetch.is_common_stock("ACHR-WT")
+
 
 def test_a_thin_symbol_still_gets_resolved_at_the_close(tmp_path):
     """A symbol that stops printing must not leave an unlabeled alert.
