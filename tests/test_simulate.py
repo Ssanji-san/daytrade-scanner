@@ -154,6 +154,15 @@ class TestCaps:
         assert sim.open == {}
 
 
+    def test_the_position_carries_the_setup_stop(self, tmp_path):
+        """Ross's stop: the pullback's low, when the band allows it."""
+        cfg = replace(CFG, bot_min_stop_pct=1.0, bot_max_stop_pct=8.0)
+        j = Journal(str(tmp_path / "st.db"), cfg.bot_alert_window_minutes)
+        sim = Simulator(cfg, j, "2026-08-12", HeuristicScorer(), 0.0)
+        sim.enter(et(9, 40), int(et(9, 40).timestamp()), self._rows(1))
+        assert sim.open["S0"].stop == pytest.approx(4.85)   # not 4.75
+
+
 class TestTradeReport:
     """The report is the only place trade results are ever seen.
 

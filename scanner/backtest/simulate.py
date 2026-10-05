@@ -288,7 +288,8 @@ class Simulator:
             bankroll=self.cfg.bot_bankroll,
             budget=max(0.0, self.cfg.bot_bankroll - deployed))
         for pick in picks:
-            levels = (scalp_levels(pick["price"], self.cfg)
+            levels = (scalp_levels(pick["price"], self.cfg,
+                                   stop_price=pick.get("stop"))
                       if self.cfg.bot_scalp_mode
                       else exit_levels(pick["price"], self.cfg,
                                        stop_price=pick.get("stop")))
