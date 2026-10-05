@@ -272,9 +272,11 @@ def is_doji(bar, cfg: Config):
     return abs(close - open_) <= (cfg.bot_doji_body_pct / 100.0) * span
 
 
-def scalp_levels(entry_price, cfg: Config):
-    """Stop a fixed % below, target a fixed number of cents above."""
-    stop = entry_price * (1 - cfg.bot_stop_pct / 100)
+def scalp_levels(entry_price, cfg: Config, stop_price=None):
+    """The stop the position was sized on - the setup's, through
+    technical_stop - or a flat bot_stop_pct without one; the target a fixed
+    number of cents above."""
+    stop = stop_price or entry_price * (1 - cfg.bot_stop_pct / 100)
     return {"stop": round(stop, 2),
             "target": round(entry_price + cfg.bot_scalp_target_cents, 2)}
 

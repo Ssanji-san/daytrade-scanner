@@ -384,7 +384,7 @@ class TradingBot:
         # This must match scanner.backtest.simulate or the bot trades a
         # strategy the backtest never measured.
         if self.cfg.bot_scalp_mode:
-            scalp = scalp_levels(entry, self.cfg)
+            scalp = scalp_levels(entry, self.cfg, stop_price=pick.get("stop"))
             levels = {"stop": scalp["stop"], "scale_out": scalp["target"]}
             bank_qty, runner_qty = scalp_split(pick["qty"], self.cfg)
         else:

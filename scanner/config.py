@@ -201,15 +201,16 @@ class Config:
     bot_max_concurrent_positions: int = 5
     bot_min_price: float = 1.0           # scalping band, $1-$5
     bot_max_price: float = 5.0
-    # Min and max both at 20 collapses the band, so technical_stop returns a
-    # flat 20% on every trade and skips anything wider. This deliberately
-    # discards the technical stop - the pullback low Ross places the stop at -
-    # in favour of a fixed percentage. Restore 1.0/6.0 to undo it.
-    # Flat 5%: the stop is a fixed slice of the money at work, not the
-    # setup low. On $1,000 that is exactly $50, at any share price.
+    # Ross's stop: the low of the pullback ("my max loss is the low of the
+    # pullback"), widened to 1% if tighter - that is noise - and skipped past
+    # 8%, the deepest pullback the detector accepts. The flat 5% it replaced
+    # (min = max = 5) skipped the day's only setup three times as too wide.
+    # Jan-Aug 2026, same data: +0.143R over 53 trades against +0.028R over
+    # 48, 34% stopped against 8% - and -$20 against +$33, since a tight stop
+    # risks less than $50 once the $1,000 unit caps the size.
     bot_stop_pct: float = 5.0            # fallback stop when no setup low exists
-    bot_min_stop_pct: float = 5.0        # floor: never risk less than noise
-    bot_max_stop_pct: float = 5.0        # skip setups whose stop is this far away
+    bot_min_stop_pct: float = 1.0        # floor: never risk less than noise
+    bot_max_stop_pct: float = 8.0        # skip setups whose stop is this far away
     # Regular-hours entry limit, as a % above the signal. The broker takes a
     # two-decimal price, so under $1.67 this rounds to zero cents: the limit
     # sits at the last trade. Live, 9 of 10 regular-hours entries filled.

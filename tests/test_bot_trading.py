@@ -127,8 +127,11 @@ def make_bot(tmp_path, **cfg_overrides):
     return TradingBot(cfg, journal, broker), broker, journal
 
 
-def a_pick(price=5.0, qty=50):
-    return {"symbol": "HODX", "price": price, "qty": qty, "stop": 4.85,
+def a_pick(price=5.0, qty=50, stop=None):
+    """What choose_entries hands over: the stop technical_stop gave it,
+    which under the live 5/5 band is exactly 5% below the price."""
+    return {"symbol": "HODX", "price": price, "qty": qty,
+            "stop": stop if stop is not None else round(price * 0.95, 2),
             "score": 0.8, "features": {"rvol": 8.0}}
 
 
@@ -180,8 +183,8 @@ def test_rejected_entry_is_not_retried_all_session(tmp_path):
     assert bot.rejected == {"HODX"}      # still skipped, no second attempt
 
 
-def _open_a_trade(bot, ts, price=5.0, qty=50):
-    asyncio.run(bot._enter(a_pick(price=price, qty=qty), ts=ts))
+def _open_a_trade(bot, ts, price=5.0, qty=50, stop=None):
+    asyncio.run(bot._enter(a_pick(price=price, qty=qty, stop=stop), ts=ts))
     return bot.open_trades["HODX"]
 
 
@@ -191,7 +194,8 @@ def test_scale_out_banks_half_and_starts_trailing(tmp_path):
     bot, broker, _ = make_bot(tmp_path, bot_scalp_mode=False,
                               bot_stop_pct=3.0, bot_min_stop_pct=1.0,
                               bot_max_stop_pct=6.0)
-    trade = _open_a_trade(bot, ts=int(et(10, 0).timestamp()))
+    # A 3% setup stop, inside the 1-6% band: +2R is 5.30.
+    trade = _open_a_trade(bot, ts=int(et(10, 0).timestamp()), stop=4.85)
     broker._positions = [{"symbol": "HODX", "current_price": 5.30}]
     state = FakeState({"HODX": {"price": 5.30}})            # at +2R
 
@@ -721,7 +725,9 @@ class TestPremarketEntry:
     def test_it_is_sized_so_a_full_fill_still_risks_50(self, tmp_path):
         bot, broker = self._cycle(tmp_path, et(8, 45))
         trade = bot.open_trades["PRE"]
-        assert trade["qty"] * (trade["limit"] - 2.00 * 0.95) == pytest.approx(50, abs=1)
+        # Against the setup's own stop, 3% under: Ross's stop, not a flat 5%.
+        assert trade["stop"] == pytest.approx(1.94)
+        assert trade["qty"] * (trade["limit"] - trade["stop"]) == pytest.approx(50, abs=1)
 
     def test_no_quote_falls_back_to_the_last_trade(self, tmp_path):
         bot, broker = self._cycle(tmp_path, et(8, 45), ask=None)
@@ -1064,3 +1070,25 @@ class TestCandleExitsPremarket:
         sell = [o for o in broker.orders if o["side"] == "sell"][-1]
         assert sell["type"] == "limit" and sell["extended_hours"] is True
         assert bot.open_trades["PRE"]["exit"]["reason"] == "topping_tail"
+
+
+class TestTheOrderCarriesTheSizedStop:
+    """The position is sized on the setup's stop; the order must use the
+    same one. It used to send a flat bot_stop_pct whatever was sized."""
+
+    def test_regular_hours_oto(self, tmp_path):
+        bot, broker, _ = make_bot(tmp_path, bot_min_stop_pct=1.0,
+                                  bot_max_stop_pct=8.0)
+        pick = dict(a_pick(price=5.0, qty=50), stop=4.62)   # the wick low
+        asyncio.run(bot._enter(pick, ts=1_700_000_000))
+        assert broker.orders[0]["stop_price"] == pytest.approx(4.62)
+        assert bot.open_trades["HODX"]["stop"] == pytest.approx(4.62)
+
+    def test_premarket_bot_run_stop(self, tmp_path):
+        bot, _, _ = make_bot(tmp_path, bot_min_stop_pct=1.0,
+                             bot_max_stop_pct=8.0)
+        pick = {"symbol": "PRE", "price": 2.00, "premarket": True,
+                "limit": 2.13, "qty": 200, "stop": 1.88, "score": 0.9,
+                "setup": "micro_pullback", "features": {"rvol": 9.0}}
+        asyncio.run(bot._enter(pick, ts=int(et(8, 40).timestamp())))
+        assert bot.open_trades["PRE"]["stop"] == pytest.approx(1.88)
