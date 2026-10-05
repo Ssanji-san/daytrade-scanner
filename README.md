@@ -76,13 +76,16 @@ will not sell just because I'm up 20 cents."
   swing high, then a break of the prior candle's high — or, for a gapper
   with no flag yet, a break of the first five minutes' range. No setup, no
   trade; buying at the high is the chasing this exists to avoid.
-- Positions are **$1,000 units**, each risking 5% against the flat 5% stop —
-  $50, at any share price. The live account balance decides how *many* fit,
+- **Ross's stop: the low of the pullback**, between 1% and 8% under the
+  entry (tighter is widened to 1%, wider is skipped). Positions are
+  **$1,000 units** risking at most $50: the size is $50 over the distance to
+  the stop, capped at $1,000, so a tight stop risks less. The live account
+  balance decides how *many* fit,
   up to 5 at once: $2,473.74 opens $1,000 + $1,000 + $473, and a leftover
   slice under $150 is skipped as not worth the spread. Growth buys more
   slots rather than fatter trades, so one bad name never costs more than it
   did yesterday.
-- Exits: **no target and no clock**. The 5% stop, or the first of Ross's
+- Exits: **no target and no clock**. The stop, or the first of Ross's
   chart exit indicators on a completed candle: a red candle closing under
   the prior candle's low, a topping tail (upper wick at least twice the
   body and half the candle), or a close under VWAP. Everything flattened

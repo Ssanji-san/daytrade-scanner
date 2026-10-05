@@ -725,7 +725,9 @@ class TestPremarketEntry:
     def test_it_is_sized_so_a_full_fill_still_risks_50(self, tmp_path):
         bot, broker = self._cycle(tmp_path, et(8, 45))
         trade = bot.open_trades["PRE"]
-        assert trade["qty"] * (trade["limit"] - 2.00 * 0.95) == pytest.approx(50, abs=1)
+        # Against the setup's own stop, 3% under: Ross's stop, not a flat 5%.
+        assert trade["stop"] == pytest.approx(1.94)
+        assert trade["qty"] * (trade["limit"] - trade["stop"]) == pytest.approx(50, abs=1)
 
     def test_no_quote_falls_back_to_the_last_trade(self, tmp_path):
         bot, broker = self._cycle(tmp_path, et(8, 45), ask=None)
