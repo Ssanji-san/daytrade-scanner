@@ -11,9 +11,7 @@ from scanner.backtest import fetch, replay
 from scanner.config import Config
 from scanner.trading.journal import Journal
 
-# The 500K real-volume floor needs a SIP tape these tests do not model;
-# it has its own tests (test_volume, test_hod, and the SIP replay test).
-CFG = Config(hod_min_real_volume=0)
+CFG = Config()
 
 
 def bar(t, o, h, l, c, v=20_000):
@@ -140,7 +138,7 @@ def _replay_sip(tmp_path, sip_v):
                "avg_volume": {"MOVR": 400_000},
                "float_shares": {"MOVR": 8_000_000}}
     replay.replay_day(day, {"MOVR": minute_rows}, [], context, journal,
-                      Config(), sip_bars={"MOVR": sip})
+                      Config(hod_min_real_volume=500_000), sip_bars={"MOVR": sip})
     return [r[0] or "" for r in sqlite3.connect(journal.path).execute(
         "SELECT failed FROM alerts WHERE symbol='MOVR'")]
 

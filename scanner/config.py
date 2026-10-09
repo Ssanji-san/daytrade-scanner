@@ -61,7 +61,10 @@ class Config:
     # Shares traded today on the REAL tape: SIP to 16 minutes ago plus IEX
     # since (volume.py) - a floor on the true figure. 0 disables. Right after
     # news breaks the 16-minute lag can hold an entry back.
-    hod_min_real_volume: int = 500_000
+    # Off: rvol >= 5x carries the volume test. Jan-Aug 2026 IEX, same data:
+    # 500K on 53 trades +0.143R +/-0.194, -$20; off 56 trades +0.124R
+    # +/-0.187, +$9 - the three extra trades are noise either way.
+    hod_min_real_volume: int = 0
     sip_poll_seconds: float = 60.0      # how often the live loop reads SIP
     # Baseline liquidity: does this thing trade AT ALL on a normal day?
     # Dropping the daily floor let dead instruments through - WVVIP, a

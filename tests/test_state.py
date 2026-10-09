@@ -7,9 +7,7 @@ from scanner.config import Config
 from scanner.state import MarketState
 
 ET = ZoneInfo("America/New_York")
-# The 500K real-volume floor needs a SIP tape these tests do not model;
-# it has its own tests (test_volume, test_hod, and the SIP replay test).
-CFG = Config(hod_min_real_volume=0)
+CFG = Config()
 
 
 def t(hour, minute, second=0):

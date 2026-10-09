@@ -256,22 +256,20 @@ class TestChineseStocksNeedNews:
 
 
 class TestRealVolume:
-    """At least 500K shares traded today, counted on the real tape."""
+    """An optional floor on shares traded today, counted on the real tape."""
+    ON = Config(hod_min_real_volume=500_000)
 
-    def test_default_floor_is_500k(self):
-        assert CFG.hod_min_real_volume == 500_000
+    def test_off_by_default_rvol_carries_volume(self):
+        assert CFG.hod_min_real_volume == 0
+        assert len(scan([make_state(real_volume=None)], CFG)[0]) == 1
 
     def test_under_the_floor_fails(self):
         row = make_state(real_volume=499_999)
-        assert scan([row], CFG)[1][0]["failed"] == ["real_volume"]
+        assert scan([row], self.ON)[1][0]["failed"] == ["real_volume"]
 
     def test_at_the_floor_passes(self):
-        assert len(scan([make_state(real_volume=500_000)], CFG)[0]) == 1
+        assert len(scan([make_state(real_volume=500_000)], self.ON)[0]) == 1
 
     def test_unknown_fails(self):
         row = make_state(real_volume=None)
-        assert scan([row], CFG)[1][0]["failed"] == ["real_volume"]
-
-    def test_zero_switches_it_off(self):
-        off = Config(hod_min_real_volume=0)
-        assert len(scan([make_state(real_volume=None)], off)[0]) == 1
+        assert scan([row], self.ON)[1][0]["failed"] == ["real_volume"]
