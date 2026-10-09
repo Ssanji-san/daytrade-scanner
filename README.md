@@ -24,14 +24,16 @@ calendar — no paid subscriptions.
    | % up today | ≥ 10% |
    | % up since the 9:30 bell | ≥ 5% |
    | Relative volume | ≥ 5× |
-   | Volume today | ≥ 500K shares, on the real tape (see below) |
+   | Volume today | no share floor: relative volume carries it (optional, see below) |
    | 30-day average volume | ≥ 10k shares |
    | VWAP | price must be above it |
    | News | a scored catalyst, with dilution vetoed |
    | Chinese companies | only on **breaking** news (under 60 min old) |
 
-   The free live feed is IEX only, a few percent of the tape, so the 500K
-   floor is not counted on it. The real consolidated (SIP) tape is free on
+   A 500K-shares floor exists but is off (`hod_min_real_volume`): over
+   Jan–Aug 2026 it changed three trades and nothing measurable. The free
+   live feed is IEX only, a few percent of the tape, so that floor is not
+   counted on it. The real consolidated (SIP) tape is free on
    Alpaca once it is 15 minutes old: volume today is SIP up to 16 minutes
    ago plus IEX since, which can only under-count (`scanner/volume.py`).
    Right after news breaks, that lag can hold an entry back a few minutes.
