@@ -78,8 +78,11 @@ will not sell just because I'm up 20 cents."
   swing high, then a break of the prior candle's high — or, for a gapper
   with no flag yet, a break of the first five minutes' range. No setup, no
   trade; buying at the high is the chasing this exists to avoid.
-- **Ross's stop: the low of the pullback**, between 1% and 8% under the
-  entry (tighter is widened to 1%, wider is skipped). Positions are
+- **The stop: the previous 5-minute candle's wick** (or the pullback's
+  low, if that is lower), between 1% and 8% under the entry (tighter is
+  widened to 1%, wider is skipped). A one-minute dip low sits inside the
+  noise: NCPL on 2026-10-12 was stopped six cents under the entry, then
+  ran to 2.66. Positions are
   **$1,000 units** risking at most $50: the size is $50 over the distance to
   the stop, capped at $1,000, so a tight stop risks less. The live account
   balance decides how *many* fit,

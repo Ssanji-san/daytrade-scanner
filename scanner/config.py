@@ -213,8 +213,11 @@ class Config:
     # risks less than $50 once the $1,000 unit caps the size.
     # The user's stop: the wick of the previous candle on this timeframe
     # (clock-aligned, so 5 = the 5-minute chart), or the setup's low when
-    # that is lower. 0 = the setup's low alone.
-    stop_candle_minutes: int = 0
+    # that is lower. 0 = the setup's low alone. Jan-Aug 2026 IEX, 13:00
+    # window, same data: setup low 78 trades +0.143R +/-0.164 -$54, 35%
+    # stopped; 5-minute wick 66 trades +0.261R +/-0.159 +$343, 14% stopped
+    # (best of five stops tried, so read it as "not worse", not proven).
+    stop_candle_minutes: int = 5
     bot_stop_pct: float = 5.0            # fallback stop when no setup low exists
     bot_min_stop_pct: float = 1.0        # floor: never risk less than noise
     bot_max_stop_pct: float = 8.0        # skip setups whose stop is this far away
