@@ -9,6 +9,7 @@ import pytest
 
 from scanner.config import Config
 from scanner.setups import (detect_opening_range_break, detect_pullback,
+                            exit_candles, previous_candle_low, setup_stop,
                             vwap)
 from scanner.trading.strategy import technical_stop
 
@@ -144,3 +145,85 @@ class TestOpeningRangeBreak:
         wide = detect_opening_range_break({"high": 15.0, "low": 13.2},
                                           price=15.1, gap_pct=180.0, cfg=CFG)
         assert technical_stop(15.1, wide["stop"], BAND) is None
+
+
+class TestPreviousCandleLow:
+    """The user's stop: the wick low of the previous 5-minute candle.
+
+    NCPL on 2026-10-12 (SIP minute bars): bought 1.565 at 09:39 with the
+    stop at the 1-minute pullback low, 1.50 - six cents, taken out at 09:42.
+    The 09:30 five-minute candle's wick was 1.44.
+    """
+    import datetime as _dt
+    ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+    NCPL = [  # 09:30-09:38 ET
+        (1.49, 1.49, 1.44, 1.475), (1.475, 1.52, 1.465, 1.465),
+        (1.465, 1.52, 1.465, 1.5101), (1.5199, 1.5599, 1.505, 1.55),
+        (1.545, 1.59, 1.54, 1.545), (1.5424, 1.55, 1.50, 1.5307),
+        (1.535, 1.5499, 1.52, 1.5495), (1.545, 1.5493, 1.52, 1.521),
+        (1.521, 1.57, 1.5201, 1.5695)]
+
+    def bars(self):
+        return [bar(o, h, l, c, t=f"2026-10-12T13:{30 + i:02d}:00Z")
+                for i, (o, h, l, c) in enumerate(self.NCPL)]
+
+    def at(self, h, m, s=0):
+        return self._dt.datetime(2026, 10, 12, h, m, s, tzinfo=self.ET)
+
+    def test_ncpl_stop_is_the_0930_wick(self):
+        assert previous_candle_low(self.bars(), self.at(9, 39), 5) == 1.44
+
+    def test_a_new_candle_moves_it_up(self):
+        """At 09:40 the 09:35 candle is the previous one: its wick, 1.50."""
+        assert previous_candle_low(self.bars(), self.at(9, 40, 5), 5) == 1.50
+
+    def test_none_without_bars_in_that_candle(self):
+        assert previous_candle_low(self.bars()[5:], self.at(9, 39), 5) is None
+        assert previous_candle_low([], self.at(9, 39), 5) is None
+
+    def test_the_setup_takes_the_lower_of_the_two(self):
+        """Never above the pullback low: a stop inside the dip is noise."""
+        setup = {"stop": 1.50}
+        assert setup_stop(setup, self.bars(), self.at(9, 39), CFG5) == 1.44
+        assert setup_stop({"stop": 1.43}, self.bars(), self.at(9, 39),
+                          CFG5) == 1.43
+
+    def test_off_keeps_the_pullback_low(self):
+        assert setup_stop({"stop": 1.50}, self.bars(), self.at(9, 39),
+                          replace(CFG, stop_candle_minutes=0)) == 1.50
+
+    def test_falls_back_to_the_pullback_low(self):
+        assert setup_stop({"stop": 1.50}, [], self.at(9, 39), CFG5) == 1.50
+
+
+CFG5 = replace(CFG, stop_candle_minutes=5)
+
+
+class TestExitCandles:
+    """Sell signals judged on the 5-minute chart, built from 1-minute bars."""
+    import datetime as _dt
+    UTC = _dt.timezone.utc
+
+    def minute(self, m, o, h, l, c, v=100):
+        return bar(o, h, l, c, v=v, t=f"2026-10-12T13:{m:02d}:00Z")
+
+    def at(self, m, s=0):
+        return self._dt.datetime(2026, 10, 12, 13, m, s, tzinfo=self.UTC)
+
+    def test_five_minutes_make_one_candle(self):
+        bars = [self.minute(30 + i, *ohlc) for i, ohlc in enumerate(
+            [(1, 2, 0.9, 1.5), (1.5, 3, 1.4, 2), (2, 2.5, 0.8, 1),
+             (1, 1.2, 1, 1.1), (1.1, 1.3, 1, 1.25)])]
+        [candle] = exit_candles(bars, self.at(35), 5)
+        assert (candle["o"], candle["h"], candle["l"], candle["c"],
+                candle["v"]) == (1, 3, 0.8, 1.25, 500)
+        assert candle["t"] == "2026-10-12T13:30:00+00:00"
+
+    def test_the_forming_candle_is_left_out(self):
+        bars = [self.minute(30 + i, 1, 1, 1, 1) for i in range(7)]
+        assert len(exit_candles(bars, self.at(36, 59), 5)) == 1
+        assert len(exit_candles(bars, self.at(40), 5)) == 2
+
+    def test_one_minute_is_the_bars_themselves(self):
+        bars = [self.minute(30 + i, 1, 1, 1, 1) for i in range(3)]
+        assert exit_candles(bars, self.at(33), 1) == bars

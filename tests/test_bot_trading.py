@@ -216,7 +216,7 @@ def test_time_stop_cuts_a_stalled_trade_before_scale_out(tmp_path):
     _open_a_trade(bot, ts=open_ts)
     broker._positions = [{"symbol": "HODX", "current_price": 5.05}]  # below +2R
     state = FakeState({"HODX": {"price": 5.05}})
-    late = et(14, 5)                                     # 4h05m later
+    late = et(13, 30)                       # 3h30m later, before 14:00
 
     asyncio.run(bot._manage_open(state, now=late, ts=int(late.timestamp())))
 
@@ -1047,6 +1047,45 @@ class TestCandleExitsLive:
 
     def test_candle_is_the_default(self):
         assert Config().bot_exit_mode == "candle"
+
+
+class TestCandleExitsOnFiveMinutes:
+    """exit_candle_minutes = 5: the sell signals read the 5-minute chart."""
+
+    def _open(self, tmp_path):
+        bot, broker, journal = make_bot(tmp_path, bot_exit_mode="candle",
+                                        exit_candle_minutes=5)
+        _open_a_trade(bot, ts=int(et(9, 34).timestamp()))
+        return bot, broker, journal
+
+    def _manage(self, bot, broker, price, bars, at):
+        broker._positions = [{"symbol": "HODX", "current_price": price}]
+        asyncio.run(bot._manage_open(_BarState({"HODX": {"price": price}},
+                                               bars),
+                                     now=at, ts=int(at.timestamp())))
+
+    # 09:35-09:39 runs 5.00 -> 5.40, one green 5-minute candle.
+    RUN = [_bar(f"2026-07-14T13:{35 + i}:00Z", 5.00 + 0.08 * i,
+                5.10 + 0.08 * i, 4.99 + 0.08 * i, 5.08 + 0.08 * i)
+           for i in range(5)]
+
+    def test_a_one_minute_red_candle_inside_it_holds(self, tmp_path):
+        bot, broker, _ = self._open(tmp_path)
+        bars = self.RUN + [
+            _bar("2026-07-14T13:40:00Z", 5.40, 5.42, 5.30, 5.36),
+            _bar("2026-07-14T13:41:00Z", 5.36, 5.37, 5.20, 5.22)]  # 1m red
+        self._manage(bot, broker, 5.22, bars, et(9, 42))
+        assert "HODX" in bot.open_trades
+
+    def test_a_completed_red_five_minute_candle_sells(self, tmp_path):
+        bot, broker, journal = self._open(tmp_path)
+        bars = self.RUN + [
+            _bar(f"2026-07-14T13:{40 + i}:00Z", 5.40 - 0.10 * i,
+                 5.42 - 0.10 * i, 5.28 - 0.10 * i, 5.30 - 0.10 * i)
+            for i in range(5)]            # 09:40-09:44: 5.40 -> 4.90, red
+        self._manage(bot, broker, 4.90, bars, et(9, 45))
+        assert "HODX" not in bot.open_trades
+        assert journal.recent_trades(1)[0]["exit_reason"] == "red_candle"
 
 
 class TestCandleExitsPremarket:

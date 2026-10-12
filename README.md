@@ -68,8 +68,8 @@ anything else. Rules (all tunable in `scanner/config.py`):
 It trades Ross Cameron's first pullback, and sells the way he does: "I
 will not sell just because I'm up 20 cents."
 
-- $1–$5 symbols only, entries **08:00–10:00 ET** (pre-market from IEX's
-  08:00 open through the first half hour), max 10 trades/day, never the
+- $1–$5 symbols only, entries **08:00–12:00 ET** (pre-market from IEX's
+  08:00 open, then the regular session until noon), max 10 trades/day, never the
   same symbol twice in a day
 - **Breaking news finds the stocks**: every 10 seconds the bot reads the
   whole market's headlines, and any stock with fresh news is watched for
@@ -78,8 +78,11 @@ will not sell just because I'm up 20 cents."
   swing high, then a break of the prior candle's high — or, for a gapper
   with no flag yet, a break of the first five minutes' range. No setup, no
   trade; buying at the high is the chasing this exists to avoid.
-- **Ross's stop: the low of the pullback**, between 1% and 8% under the
-  entry (tighter is widened to 1%, wider is skipped). Positions are
+- **The stop: the previous 5-minute candle's wick** (or the pullback's
+  low, if that is lower), between 1% and 8% under the entry (tighter is
+  widened to 1%, wider is skipped). A one-minute dip low sits inside the
+  noise: NCPL on 2026-10-12 was stopped six cents under the entry, then
+  ran to 2.66. Positions are
   **$1,000 units** risking at most $50: the size is $50 over the distance to
   the stop, capped at $1,000, so a tight stop risks less. The live account
   balance decides how *many* fit,
@@ -90,8 +93,10 @@ will not sell just because I'm up 20 cents."
 - Exits: **no target and no clock**. The stop, or the first of Ross's
   chart exit indicators on a completed candle: a red candle closing under
   the prior candle's low, a topping tail (upper wick at least twice the
-  body and half the candle), or a close under VWAP. Everything flattened
-  15:50 ET; the day ends after 4 losing trades. On Jan–Aug 2026 the same
+  body and half the candle), or a close under VWAP, all on 1-minute
+  candles (`exit_candle_minutes`; 5-minute candles lost $470 more on the
+  same Jan–Aug 2026 trades, stopped out 39% of the time against 15%).
+  Everything is closed by **14:00 ET**; the day ends after 4 losing trades. On Jan–Aug 2026 the same
   55 entries lost −0.22R each with the old +20c scalp and −0.04R with these
   exits - better, and still not a proven edge. `bot_exit_mode = "scalp"`
   brings back the +20c target, 65% banked, trailing runner, stall and time
@@ -129,13 +134,14 @@ You don't need your PC on: two workflows run the whole thing on GitHub's
 servers every weekday.
 
 - **trading-session** starts before the open, scans + trades until
-  12:45 ET, and pushes the journal + a status snapshot every ~10 min.
+  13:15 ET, and pushes the journal + a status snapshot every ~10 min.
 - When the session ends — at the cutoff, on a crash, or because the bot
   died — a **protect** step checks every open position has a stop at the
   broker, and places one if not. Regular-hours stops already live at
   Alpaca; a pre-market position's stop is the bot itself, so a session that
-  dies holding one would otherwise leave it unguarded until 15:50. Before
-  the bell it first tries to sell with an extended-hours limit.
+  dies holding one would otherwise leave it unguarded. Before the bell it
+  first tries to sell with an extended-hours limit. It then waits until
+  14:00 ET and closes anything still open.
 - **flatten** runs near 15:50 ET as a safety net: reconciles fills and
   closes anything still open. (Broker-held stops and trailing stops work
   with no process running.)

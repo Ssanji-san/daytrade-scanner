@@ -228,7 +228,25 @@ def test_a_flag_takes_precedence_over_the_opening_range():
 
     row = {s["symbol"]: s for s in state.build_states(breaking)}["GAPR"]
     assert row["setup"]["setup"] == "micro_pullback"
-    assert row["setup"]["stop"] > 14.85        # tighter than the range low
+    assert row["setup"]["pullback_low"] > 14.85   # tighter than the range low
+
+
+def test_the_stop_is_the_previous_five_minute_wick():
+    """The same flag, with the user's stop: the 09:30 five-minute candle's
+    wick (14.85), not the one-minute dip low (15.048)."""
+    state = MarketState(CFG)
+    for i in range(5):
+        when = t(9, 30 + i)
+        state.ingest(when, {"GAPR": _gapper_snap(15.00 + i * 0.10, when)})
+    dip = t(9, 36)
+    state.ingest(dip, {"GAPR": _gapper_snap(15.20, dip)})
+    breaking = t(9, 37)
+    state.ingest(breaking, {"GAPR": _gapper_snap(15.60, breaking)})
+
+    row = {s["symbol"]: s for s in state.build_states(breaking)}["GAPR"]
+    assert row["setup"]["setup"] == "micro_pullback"
+    assert row["setup"]["pullback_low"] == pytest.approx(15.048)
+    assert row["setup"]["stop"] == pytest.approx(14.85)
 
 
 class TestOpeningDrive:

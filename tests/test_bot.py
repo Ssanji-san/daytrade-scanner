@@ -85,7 +85,7 @@ class TestChooseEntries:
         assert choose_entries(rows, HeuristicScorer(), 0, set(), 0.0,
                               et(7, 50), CFG) == []     # before IEX opens
         assert choose_entries(rows, HeuristicScorer(), 0, set(), 0.0,
-                              et(10, 1), CFG) == []     # after the close
+                              et(12, 1), CFG) == []     # after the close
 
     def test_four_losses_ends_the_day(self):
         # The kill switch is a loss count now, not a dollar figure, so a
