@@ -143,7 +143,7 @@ class TestCaps:
         assert sim.open == {}
 
     def test_no_entries_outside_the_window(self, sim):
-        sim.enter(et(13, 1), int(et(13, 1).timestamp()), self._rows(5))
+        sim.enter(et(12, 1), int(et(12, 1).timestamp()), self._rows(5))
         assert sim.open == {}
 
     def test_a_symbol_is_only_entered_once_a_session(self, sim):

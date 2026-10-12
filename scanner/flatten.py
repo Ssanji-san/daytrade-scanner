@@ -1,6 +1,6 @@
 """End-of-day safety net: cancel open orders, close positions, reconcile.
 
-    python -m scanner.flatten [--force]
+    python -m scanner.flatten [--force | --at-flatten-time]
 
 Run by GitHub Actions near 15:50 ET. Normally there is nothing to do -
 the bot's time stop closed stragglers during the session and bracket
@@ -11,11 +11,16 @@ legs handled the rest on Alpaca's servers. Steps:
 2. If within the flatten window (>= 15:40 ET, market still open) or
    --force: cancel all open orders and close all remaining positions.
 
+`--at-flatten-time` waits until `bot_flatten_time` (14:00) and then
+closes everything: the session ends at 13:15, and a position still open
+then is out by 14:00 at the latest.
+
 Idempotent; safe to run twice (two cron times cover DST drift).
 """
 import argparse
 import asyncio
 import datetime as dt
+import time
 
 import aiohttp
 
@@ -214,6 +219,14 @@ async def reconcile(broker, journal, position_symbols, now_ts):
         print(f"[flatten] reconciled {trade['symbol']} exit ~{price:.2f}")
 
 
+def seconds_until(now, hhmm):
+    """Seconds from `now` to today's HH:MM ET, 0 once it has passed."""
+    hour, minute = (int(x) for x in hhmm.split(":"))
+    now_et = now.astimezone(ET)
+    target = now_et.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return max(0, int((target - now_et).total_seconds()))
+
+
 async def run(force=False):
     cfg = DEFAULT
     now_et = dt.datetime.now(ET)
@@ -277,11 +290,25 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--force", action="store_true",
                         help="flatten regardless of time of day")
+    parser.add_argument("--at-flatten-time", action="store_true",
+                        help="wait until bot_flatten_time, then flatten")
     parser.add_argument("--protect", action="store_true",
                         help="guard positions a finished session left behind "
                              "instead of flattening")
     parser.add_argument("--dry-run", action="store_true",
                         help="with --protect: print the plan, send nothing")
     args = parser.parse_args()
-    asyncio.run(run_protect(dry_run=args.dry_run) if args.protect
-                else run(force=args.force))
+    if args.protect:
+        asyncio.run(run_protect(dry_run=args.dry_run))
+    elif args.at_flatten_time:
+        wait = seconds_until(dt.datetime.now(ET), DEFAULT.bot_flatten_time)
+        print(f"[flatten] closing at {DEFAULT.bot_flatten_time} ET "
+              f"({wait // 60} min)")
+        time.sleep(wait)
+        now_et = dt.datetime.now(ET)
+        if (now_et.hour, now_et.minute) >= MARKET_CLOSE:
+            print("[flatten] market closed - leaving it to the 15:52 run")
+        else:
+            asyncio.run(run(force=True))
+    else:
+        asyncio.run(run(force=args.force))

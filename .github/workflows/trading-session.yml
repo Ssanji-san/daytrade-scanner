@@ -83,7 +83,7 @@ jobs:
     needs: session
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 330   # a crash at the open waits here until 14:00
     steps:
       # The latest main, not the commit this run started from: the journal
       # pushed during the session holds the stops this job needs to place.
@@ -103,3 +103,23 @@ jobs:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
         run: python -u -m scanner.flatten --protect
+
+      # Nothing is held past bot_flatten_time (14:00): the session ends at
+      # 13:15, so this waits and closes whatever is still open.
+      - name: Close what is left at 14:00 ET
+        env:
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+        run: python -u -m scanner.flatten --at-flatten-time
+
+      - name: Commit the journal
+        if: always()
+        run: |
+          git config user.name "trade-bot"
+          git config user.email "actions@github.com"
+          git add cache || true
+          if ! git diff --cached --quiet; then
+            git commit -m "14:00 close-out [skip ci]" --quiet
+            git pull --rebase --autostash --quiet || true
+            git push --quiet
+          fi

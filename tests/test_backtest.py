@@ -300,17 +300,17 @@ class TestSessionWindow:
     """
 
     def test_bars_run_to_the_flatten_time(self):
-        # 19:00Z = 15:00 ET: past the 12:15 entry cutoff, but the bot
+        # 17:30Z = 13:30 ET: past the noon entry cutoff, but the bot
         # could still be holding, so the bar is kept for grading.
         rows = {"AAA": [bar("2026-08-12T13:35:00Z", 1, 1, 1, 1),   # 09:35 ET
-                        bar("2026-08-12T19:00:00Z", 1, 1, 1, 1)]}
+                        bar("2026-08-12T17:30:00Z", 1, 1, 1, 1)]}
         timeline = replay.bars_by_minute(rows, CFG)
         assert list(timeline) == ["2026-08-12T13:35:00Z",
-                                  "2026-08-12T19:00:00Z"]
+                                  "2026-08-12T17:30:00Z"]
 
     def test_bars_after_the_flatten_are_dropped(self):
-        # 20:00Z = 16:00 ET, after the 15:50 flatten: nothing is held.
-        rows = {"AAA": [bar("2026-08-12T20:00:00Z", 1, 1, 1, 1)]}
+        # 18:30Z = 14:30 ET, after the 14:00 flatten: nothing is held.
+        rows = {"AAA": [bar("2026-08-12T18:30:00Z", 1, 1, 1, 1)]}
         assert replay.bars_by_minute(rows, CFG) == {}
 
     def test_entry_cutoff_is_the_narrower_window(self):

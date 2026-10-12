@@ -270,13 +270,15 @@ class Config:
     # use extended-hours limits and a stop the bot runs itself, handed to
     # Alpaca at 09:30. "09:30" switches pre-market trading off again.
     bot_window_open: str = "08:00"       # ET; no entries before/after the window
-    # 13:00, the user's call after NCPL on 2026-10-12: stopped out at 09:42,
-    # then broke out again at 11:25 and ran to 2.66 while the window was
-    # shut. The session runs to 13:15, so a late entry gets its candle
-    # exits for 15 minutes; after that the protect step's stop and the
-    # 15:50 flatten guard it.
-    bot_window_close: str = "13:00"
-    bot_flatten_time: str = "15:50"      # ET; close everything before the bell
+    # Noon, the user's call after NCPL on 2026-10-12: stopped out at 09:42,
+    # then broke out again at 11:25 and ran to 2.66 while a 10:00 window
+    # was shut. Jan-Aug 2026 IEX, same data: 13:00 gave 66 trades +0.261R
+    # +$343; noon with everything out by 14:00 gave 61 trades +0.269R
+    # +$318. The session runs to 13:15, so a noon entry gets its candle
+    # exits for over an hour; after that the protect step's stop guards it
+    # and `flatten --at-flatten-time` closes it at 14:00.
+    bot_window_close: str = "12:00"
+    bot_flatten_time: str = "14:00"      # ET; nothing is held past this
     # 0 = disabled. The day now ends on a loss COUNT
     # (bot_max_losses_per_day), not a dollar figure. Worth knowing: a count
     # bounds how many losers close, not how much is open - with 4 concurrent
