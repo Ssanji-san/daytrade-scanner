@@ -199,7 +199,7 @@ def test_a_full_session_rides_past_20c_and_exits_on_a_red_candle(tmp_path):
 def test_nothing_is_entered_outside_the_window(rig):
     bot, broker, journal, state = rig
     now, _ = a_session(state, int(et(9, 20).timestamp()))
-    late = et(12, 31)                      # past the 12:30 cutoff
+    late = et(13, 1)                       # past the 13:00 cutoff
     asyncio.run(bot.cycle(state, late))
     assert bot.open_trades == {}
     assert broker.orders == []

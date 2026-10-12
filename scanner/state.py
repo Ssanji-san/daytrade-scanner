@@ -173,6 +173,9 @@ class MarketState:
             if setup is None:
                 setup = setups.detect_opening_range_break(
                     opening_range, price, gap_pct, self.cfg)
+            if setup is not None:
+                setup["stop"] = setups.setup_stop(
+                    setup, history.completed_bars, now, self.cfg)
             states.append({
                 "catalyst": catalyst.score_news(
                     self._news_by_symbol.get(sym), now.timestamp(), self.cfg),

@@ -211,6 +211,10 @@ class Config:
     # Jan-Aug 2026, same data: +0.143R over 53 trades against +0.028R over
     # 48, 34% stopped against 8% - and -$20 against +$33, since a tight stop
     # risks less than $50 once the $1,000 unit caps the size.
+    # The user's stop: the wick of the previous candle on this timeframe
+    # (clock-aligned, so 5 = the 5-minute chart), or the setup's low when
+    # that is lower. 0 = the setup's low alone.
+    stop_candle_minutes: int = 0
     bot_stop_pct: float = 5.0            # fallback stop when no setup low exists
     bot_min_stop_pct: float = 1.0        # floor: never risk less than noise
     bot_max_stop_pct: float = 8.0        # skip setups whose stop is this far away
@@ -244,8 +248,8 @@ class Config:
     bot_cancel_settle_seconds: float = 2.0
     bot_scale_out_r: float = 2.0         # bank half here
     bot_runner_trail_pct: float = 5.0    # native trailing-stop width for the runner
-    # Scalping: in and out. Last entry 10:00 + 10m = 10:10, long before the
-    # session ends at 12:45. Note this fires far more often than the +20c target -
+    # Scalp mode only: in and out within ten minutes, so even a 13:00 entry
+    # is out before the session ends. This fires far more often than the +20c target -
     # both live scalps so far ended on the stall or the stop, neither on
     # the target.
     bot_time_stop_minutes: int = 10
@@ -259,12 +263,12 @@ class Config:
     # use extended-hours limits and a stop the bot runs itself, handed to
     # Alpaca at 09:30. "09:30" switches pre-market trading off again.
     bot_window_open: str = "08:00"       # ET; no entries before/after the window
-    # 10:00: the first half hour, the user's window. Stated plainly because
-    # it is a choice made against the replay: on Jan-Aug 2026 (IEX) the
-    # 09:30-10:00 half hour was the most consistent loser, and 10:00-12:30
-    # the least bad. The session still runs to 12:45, so positions opened
-    # near 10:00 are managed to their exit and every alert is journalled.
-    bot_window_close: str = "10:00"
+    # 13:00, the user's call after NCPL on 2026-10-12: stopped out at 09:42,
+    # then broke out again at 11:25 and ran to 2.66 while the window was
+    # shut. The session runs to 13:15, so a late entry gets its candle
+    # exits for 15 minutes; after that the protect step's stop and the
+    # 15:50 flatten guard it.
+    bot_window_close: str = "13:00"
     bot_flatten_time: str = "15:50"      # ET; close everything before the bell
     # 0 = disabled. The day now ends on a loss COUNT
     # (bot_max_losses_per_day), not a dollar figure. Worth knowing: a count

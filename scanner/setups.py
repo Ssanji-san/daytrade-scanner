@@ -13,6 +13,7 @@ bars behind it - so it gets its own trigger: let the first few minutes
 carve out a range, then buy the break of that range's high with the stop
 at its low.
 """
+import datetime as dt
 
 
 def vwap(bars):
@@ -89,3 +90,35 @@ def detect_pullback(bars, price, cfg):
         "pullback_low": pullback_low,
         "trigger": trigger,
     }
+
+
+def _minute(bar):
+    try:
+        return dt.datetime.fromisoformat(str(bar["t"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError):
+        return None
+
+
+def previous_candle_low(bars, now, minutes):
+    """The wick low of the last completed `minutes`-candle before `now`.
+
+    Candles are clock-aligned (09:30, 09:35, ...), built from 1-minute bars.
+    None when no bar falls inside it.
+    """
+    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elapsed = int((now - start_of_day).total_seconds() // 60)
+    forming = start_of_day + dt.timedelta(minutes=elapsed - elapsed % minutes)
+    previous = forming - dt.timedelta(minutes=minutes)
+    lows = [b["l"] for b in bars
+            if (t := _minute(b)) is not None and previous <= t < forming]
+    return min(lows) if lows else None
+
+
+def setup_stop(setup, bars, now, cfg):
+    """The stop a setup is sized on: the previous `stop_candle_minutes`
+    candle's wick, or the setup's own low when that is lower - a stop
+    inside the dip is noise. 0 minutes keeps the setup's low."""
+    if not cfg.stop_candle_minutes:
+        return setup["stop"]
+    wick = previous_candle_low(bars, now, cfg.stop_candle_minutes)
+    return setup["stop"] if wick is None else min(wick, setup["stop"])

@@ -28,15 +28,16 @@ def ok_kwargs(**overrides):
 
 class TestWindow:
     def test_window_edges(self):
-        # IEX's pre-market from 08:00 through the first half hour after the
-        # bell. Breaking-news discovery is what finds pre-market movers; the
-        # free movers list cannot. Both edges are inclusive.
+        # IEX's pre-market from 08:00 through 13:00, so a late second leg -
+        # NCPL's 11:25 break on 2026-10-12 - can still be bought. Both edges
+        # are inclusive.
         assert not in_window(et(7, 59), CFG)
         assert in_window(et(8, 0), CFG)         # IEX pre-market opens
         assert in_window(et(9, 29), CFG)        # pre-market
         assert in_window(et(9, 30), CFG)        # the bell
-        assert in_window(et(10, 0), CFG)
-        assert not in_window(et(10, 1), CFG)
+        assert in_window(et(11, 25), CFG)
+        assert in_window(et(13, 0), CFG)
+        assert not in_window(et(13, 1), CFG)
 
     def test_handles_other_timezones(self):
         utc_10et = et(10, 0).astimezone(dt.timezone.utc)
@@ -52,7 +53,7 @@ class TestShouldEnter:
         ({"price": 0.50}, "price"),
         ({"price": 25.0}, "price"),
         ({"now": et(7, 50)}, "window"),
-        ({"now": et(10, 1)}, "window"),
+        ({"now": et(13, 1)}, "window"),
         ({"trades_today": 10}, "daily_cap"),
         ({"losses_today": 4}, "loss_cap"),
         ({"open_positions": 5}, "concurrency"),

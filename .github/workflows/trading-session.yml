@@ -15,7 +15,7 @@ permissions:
 jobs:
   session:
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
@@ -29,7 +29,7 @@ jobs:
       - name: Build Pages dashboard
         run: python scripts/build_docs.py
 
-      - name: Run scanner + bot until 12:45 ET
+      - name: Run scanner + bot until 13:15 ET
         env:
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
@@ -38,9 +38,9 @@ jobs:
           git config user.name "trade-bot"
           git config user.email "actions@github.com"
           # -u, or nothing reaches the log until the process exits: a
-          # five-hour session prints its whole story at 12:45 and there is
+          # six-hour session prints its whole story at 13:15 and there is
           # no way to see what it is doing while it matters.
-          python -u -m scanner.session --until-et 12:45 &
+          python -u -m scanner.session --until-et 13:15 &
           SESSION_PID=$!
           # Push fresh status + journal every 10 minutes while it runs, but
           # check on the process every 15s: if it dies holding a pre-market

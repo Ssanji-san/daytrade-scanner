@@ -68,7 +68,7 @@ async def run_for(cfg: Config, seconds, with_bot=True):
     A dead bot ends the session. Before the bell the bot IS a position's
     stop, and the workflow's protect step - which guards whatever is left
     open - only runs once this process exits. Keeping the scanner alive to
-    12:45 behind a dead bot held that step back for hours.
+    the cutoff behind a dead bot held that step back for hours.
     """
     app = {"ctx": {"state": MarketState(cfg), "virtual_now": None,
                    "bot_status": None}}
@@ -96,7 +96,7 @@ async def run_for(cfg: Config, seconds, with_bot=True):
                     and bot.exception() is not None)
     if not survived:
         print("[session] the bot died - ending the session early so any "
-              "open position is guarded now, not at 12:45")
+              "open position is guarded now, not at the cutoff")
     print("[session] done")
     return survived
 

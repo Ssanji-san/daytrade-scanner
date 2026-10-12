@@ -68,8 +68,8 @@ anything else. Rules (all tunable in `scanner/config.py`):
 It trades Ross Cameron's first pullback, and sells the way he does: "I
 will not sell just because I'm up 20 cents."
 
-- $1–$5 symbols only, entries **08:00–10:00 ET** (pre-market from IEX's
-  08:00 open through the first half hour), max 10 trades/day, never the
+- $1–$5 symbols only, entries **08:00–13:00 ET** (pre-market from IEX's
+  08:00 open, then the regular session until 1 pm), max 10 trades/day, never the
   same symbol twice in a day
 - **Breaking news finds the stocks**: every 10 seconds the bot reads the
   whole market's headlines, and any stock with fresh news is watched for
@@ -129,7 +129,7 @@ You don't need your PC on: two workflows run the whole thing on GitHub's
 servers every weekday.
 
 - **trading-session** starts before the open, scans + trades until
-  12:45 ET, and pushes the journal + a status snapshot every ~10 min.
+  13:15 ET, and pushes the journal + a status snapshot every ~10 min.
 - When the session ends — at the cutoff, on a crash, or because the bot
   died — a **protect** step checks every open position has a stop at the
   broker, and places one if not. Regular-hours stops already live at
