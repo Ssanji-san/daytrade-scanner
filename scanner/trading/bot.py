@@ -11,12 +11,11 @@ import traceback
 import aiohttp
 
 from ..config import Config
-from ..setups import vwap
 from .broker import Broker
 from .journal import Journal
 from .model import train
 from .strategy import (ET, MARKET_OPEN, _parse_hhmm, bankroll_from,
-                       buying_power, candle_exit, exit_levels, is_doji,
+                       buying_power, exit_levels, exit_signal, is_doji,
                        is_premarket, position_slots, premarket_entry_limit,
                        premarket_exit_limit, runner_trail_pct, scalp_levels,
                        scalp_split, should_enter, size_position, split_qty,
@@ -523,7 +522,7 @@ class TradingBot:
             return
 
         if self.cfg.bot_exit_mode == "candle":
-            reason = self._candle_signal(state, symbol, trade)
+            reason = self._candle_signal(state, symbol, trade, now)
             if reason:
                 await self._flatten_trade(symbol, trade, ts, pos, reason)
             return
@@ -711,21 +710,19 @@ class TradingBot:
                 if (_bar_ts(b) or 0) > opened_ts][-want:]
         return len(bars) == want and all(is_doji(b, self.cfg) for b in bars)
 
-    def _candle_signal(self, state, symbol, trade):
+    def _candle_signal(self, state, symbol, trade, now):
         """Ross's chart exit indicator on the newest completed candle since
-        the entry, or None.
+        the entry, or None. Candles are exit_candle_minutes long, built
+        from the 1-minute bars.
 
-        Completed bars only, as the replay judges them: the minute still in
-        progress is replaced on every poll and would flicker in and out of
+        Completed candles only, as the replay judges them: one still in
+        progress changes on every poll and would flicker in and out of
         being a red candle. The stop is not checked here - regular hours it
         is a broker order, pre-market _manage_premarket checks it first.
         """
         history = getattr(state, "histories", {}).get(symbol)
         bars = history.completed_bars if history is not None else []
-        if not bars or (_bar_ts(bars[-1]) or 0) <= trade["opened_ts"]:
-            return None
-        prev = bars[-2] if len(bars) > 1 else None
-        return candle_exit(bars[-1], prev, vwap(bars), self.cfg)
+        return exit_signal(bars, now, trade["opened_ts"], self.cfg)
 
     def _arm_runner(self, trade, price):
         """The runner's rules once the bulk is banked. Returns the trail %.
@@ -829,7 +826,7 @@ class TradingBot:
                                        "trailing" if trade["banked"] else "stop")
             return
         if self.cfg.bot_exit_mode == "candle":
-            reason = self._candle_signal(state, symbol, trade)
+            reason = self._candle_signal(state, symbol, trade, now)
             if reason:
                 await self._premarket_exit(symbol, trade, state, ts, pos,
                                            price, reason)

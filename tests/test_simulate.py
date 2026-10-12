@@ -382,6 +382,24 @@ class TestCandleExitMode:
         self._feed(csim, 41, 3.00, 3.01, 2.80, 2.90)     # through 2.85
         assert pos.legs == [(pos.qty, pos.stop)]
 
+    def test_five_minute_candles_ignore_a_one_minute_red(self, tmp_path):
+        """exit_candle_minutes = 5: a red minute inside the candle holds; the
+        completed red 5-minute candle under the prior one's low sells at
+        its close."""
+        cfg = replace(CFG, bot_exit_mode="candle", exit_candle_minutes=5)
+        sim = Simulator(cfg, Journal(str(tmp_path / "f.db")), "2026-08-12",
+                        HeuristicScorer(), 0.0)
+        pos = _scalp_open(sim, price=3.00, ts=int(et(9, 34).timestamp()))
+        for m in range(35, 40):                          # green 3.00 -> 3.20
+            self._feed(sim, m, 3.00 + 0.04 * (m - 35), 3.06 + 0.04 * (m - 35),
+                       2.99 + 0.04 * (m - 35), 3.04 + 0.04 * (m - 35))
+        self._feed(sim, 40, 3.20, 3.22, 3.10, 3.12)      # 1-minute red
+        self._feed(sim, 41, 3.12, 3.13, 3.04, 3.05)      # under its low
+        assert "HODX" in sim.open
+        for m in range(42, 45):                          # 09:40 candle: red,
+            self._feed(sim, m, 3.05, 3.06, 2.96, 2.97)   # closes 2.97 < 2.99
+        assert pos.legs == [(pos.qty, 2.97)]
+
     def test_no_time_stop(self, csim):
         _scalp_open(csim, price=3.00)
         for m in range(41, 59):                          # 18 quiet minutes

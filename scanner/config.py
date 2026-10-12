@@ -179,6 +179,10 @@ class Config:
     # t=2.15) - near break-even before spread, which is not modelled.
     # "scalp": +20c target, 65% banked, trailing runner, stall and time stops.
     bot_exit_mode: str = "candle"
+    # The chart the candle exits read, in minutes: 1, or 5 for the 5-minute
+    # chart (clock-aligned candles built from the 1-minute bars). The stop
+    # is still checked on every print.
+    exit_candle_minutes: int = 1
     bot_topping_tail_ratio: float = 2.0   # upper wick vs body for a topping tail
     # Sell this share of the position at the target and let the rest run,
     # governed by the stall exit below. 0 takes the whole thing off.

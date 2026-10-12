@@ -18,10 +18,12 @@ how backtests come to promise what they cannot pay.
 Spread and slippage are NOT modelled. On these prices they are the same size
 as the edge, so treat every number here as an upper bound.
 """
+import datetime as dt
+
 from ..config import Config
 from ..history import ET
 from ..trading.bot import choose_entries
-from ..trading.strategy import (candle_exit, exit_levels, is_doji,
+from ..trading.strategy import (exit_levels, exit_signal, is_doji,
                                 runner_trail_pct, scalp_levels, scalp_split,
                                 split_qty, weighted_exit)
 
@@ -95,8 +97,7 @@ class Simulator:
         self.traded = set()       # one entry per symbol per session
         self.closed = 0
         self.losses = 0
-        self._vwap = {}           # symbol -> [price x volume, volume]
-        self._prev_bar = {}       # symbol -> last completed bar
+        self._bars = {}           # symbol -> the session's 1-minute bars
 
     # ------------------------------------------------------------ exits
 
@@ -110,8 +111,7 @@ class Simulator:
 
     def manage(self, now, ts, symbol_bars):
         flatten = _at_or_past(now, self.cfg.bot_flatten_time)
-        prev_bars = dict(self._prev_bar)
-        self._track(symbol_bars)
+        self._track(now, symbol_bars)
         for symbol, pos in list(self.open.items()):
             bar = symbol_bars.get(symbol)
             if bar is None:
@@ -129,7 +129,7 @@ class Simulator:
                 continue
 
             if self.cfg.bot_exit_mode == "candle":
-                self._candle(pos, ts, bar, low, close, prev_bars.get(symbol))
+                self._candle(pos, now, ts, low, close)
                 continue
 
             if self.cfg.bot_scalp_mode:
@@ -162,30 +162,27 @@ class Simulator:
                 pos.close(pos.runner_qty, trail)
                 self._finish(pos, ts, "trailing")
 
-    def _track(self, symbol_bars):
-        """Session VWAP and the prior candle, kept for every symbol, the way
-        MarketState keeps them live."""
+    def _track(self, now, symbol_bars):
+        """Every symbol's bars, stamped with their minute, the way
+        MarketState keeps them live: the exits read VWAP and candles off
+        them."""
+        stamp = now.astimezone(dt.timezone.utc).isoformat()
         for symbol, bar in symbol_bars.items():
             if bar.get("h") is None or bar.get("l") is None:
                 continue
-            typical = (bar["h"] + bar["l"] + bar["c"]) / 3.0
-            acc = self._vwap.setdefault(symbol, [0.0, 0.0])
-            acc[0] += typical * (bar.get("v") or 0)
-            acc[1] += bar.get("v") or 0
-        self._prev_bar.update(symbol_bars)
+            self._bars.setdefault(symbol, []).append({**bar, "t": stamp})
 
-    def vwap(self, symbol):
-        acc = self._vwap.get(symbol)
-        return acc[0] / acc[1] if acc and acc[1] else None
-
-    def _candle(self, pos, ts, bar, low, close, prev_bar):
-        """No target, no clock: the stop, or Ross's chart exit indicators."""
+    def _candle(self, pos, now, ts, low, close):
+        """No target, no clock: the stop, or Ross's chart exit indicators.
+        The minute's bar is complete at the end of it."""
         remaining = pos.qty - sum(q for q, _ in pos.legs)
         if low <= pos.stop:
             pos.close(remaining, pos.stop)
             self._finish(pos, ts, "stop")
             return
-        reason = candle_exit(bar, prev_bar, self.vwap(pos.symbol), self.cfg)
+        reason = exit_signal(self._bars.get(pos.symbol, []),
+                             now + dt.timedelta(minutes=1), pos.opened_ts,
+                             self.cfg)
         if reason:
             pos.close(remaining, close)
             self._finish(pos, ts, reason)

@@ -8,11 +8,13 @@ does: no target, out on the stop or the first chart exit indicator
 (candle_exit). The cents-on-the-dollar scalp - bank most of it 20c up, trail
 the rest - and the R-based 2R/3R path are still reachable by configuration.
 """
+import datetime as dt
 import math
 from zoneinfo import ZoneInfo
 
 from ..config import Config
 from ..history import SESSION_OPEN as MARKET_OPEN
+from ..setups import bar_time, exit_candles, vwap
 
 ET = ZoneInfo("America/New_York")
 
@@ -304,6 +306,25 @@ def candle_exit(bar, prev_bar, vwap, cfg: Config):
     if vwap is not None and close < vwap:
         return "vwap"
     return None
+
+
+def exit_signal(bars, now, opened_ts, cfg: Config):
+    """candle_exit on the newest completed exit candle that opened after the
+    entry, or None. Live and replay both call this, on the session's
+    1-minute bars.
+
+    Candles are exit_candle_minutes long. VWAP is measured as of the
+    candle's close, so re-reading the same candle a minute later gives the
+    same answer.
+    """
+    candles = exit_candles(bars, now, cfg.exit_candle_minutes)
+    start = bar_time(candles[-1]) if candles else None
+    if start is None or start.timestamp() <= opened_ts:
+        return None
+    end = start + dt.timedelta(minutes=max(cfg.exit_candle_minutes, 1))
+    session = [b for b in bars if (t := bar_time(b)) is not None and t < end]
+    prev = candles[-2] if len(candles) > 1 else None
+    return candle_exit(candles[-1], prev, vwap(session), cfg)
 
 
 def runner_trail_pct(entry, price, cfg: Config):

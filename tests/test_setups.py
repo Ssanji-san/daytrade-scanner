@@ -9,7 +9,8 @@ import pytest
 
 from scanner.config import Config
 from scanner.setups import (detect_opening_range_break, detect_pullback,
-                            previous_candle_low, setup_stop, vwap)
+                            exit_candles, previous_candle_low, setup_stop,
+                            vwap)
 from scanner.trading.strategy import technical_stop
 
 CFG = Config()
@@ -196,3 +197,33 @@ class TestPreviousCandleLow:
 
 
 CFG5 = replace(CFG, stop_candle_minutes=5)
+
+
+class TestExitCandles:
+    """Sell signals judged on the 5-minute chart, built from 1-minute bars."""
+    import datetime as _dt
+    UTC = _dt.timezone.utc
+
+    def minute(self, m, o, h, l, c, v=100):
+        return bar(o, h, l, c, v=v, t=f"2026-10-12T13:{m:02d}:00Z")
+
+    def at(self, m, s=0):
+        return self._dt.datetime(2026, 10, 12, 13, m, s, tzinfo=self.UTC)
+
+    def test_five_minutes_make_one_candle(self):
+        bars = [self.minute(30 + i, *ohlc) for i, ohlc in enumerate(
+            [(1, 2, 0.9, 1.5), (1.5, 3, 1.4, 2), (2, 2.5, 0.8, 1),
+             (1, 1.2, 1, 1.1), (1.1, 1.3, 1, 1.25)])]
+        [candle] = exit_candles(bars, self.at(35), 5)
+        assert (candle["o"], candle["h"], candle["l"], candle["c"],
+                candle["v"]) == (1, 3, 0.8, 1.25, 500)
+        assert candle["t"] == "2026-10-12T13:30:00+00:00"
+
+    def test_the_forming_candle_is_left_out(self):
+        bars = [self.minute(30 + i, 1, 1, 1, 1) for i in range(7)]
+        assert len(exit_candles(bars, self.at(36, 59), 5)) == 1
+        assert len(exit_candles(bars, self.at(40), 5)) == 2
+
+    def test_one_minute_is_the_bars_themselves(self):
+        bars = [self.minute(30 + i, 1, 1, 1, 1) for i in range(3)]
+        assert exit_candles(bars, self.at(33), 1) == bars

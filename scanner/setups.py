@@ -92,11 +92,18 @@ def detect_pullback(bars, price, cfg):
     }
 
 
-def _minute(bar):
+def bar_time(bar):
+    """A bar's timestamp as an aware datetime, or None."""
     try:
         return dt.datetime.fromisoformat(str(bar["t"]).replace("Z", "+00:00"))
     except (KeyError, ValueError):
         return None
+
+
+def _bucket(when, minutes):
+    """The start of the clock-aligned `minutes`-candle holding `when`."""
+    floor = when.replace(second=0, microsecond=0)
+    return floor - dt.timedelta(minutes=floor.minute % minutes)
 
 
 def previous_candle_low(bars, now, minutes):
@@ -105,13 +112,38 @@ def previous_candle_low(bars, now, minutes):
     Candles are clock-aligned (09:30, 09:35, ...), built from 1-minute bars.
     None when no bar falls inside it.
     """
-    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    elapsed = int((now - start_of_day).total_seconds() // 60)
-    forming = start_of_day + dt.timedelta(minutes=elapsed - elapsed % minutes)
+    forming = _bucket(now, minutes)
     previous = forming - dt.timedelta(minutes=minutes)
     lows = [b["l"] for b in bars
-            if (t := _minute(b)) is not None and previous <= t < forming]
+            if (t := bar_time(b)) is not None and previous <= t < forming]
     return min(lows) if lows else None
+
+
+def exit_candles(bars, now, minutes):
+    """The completed `minutes`-candles in `bars` as of `now`, oldest first.
+
+    1 is the bars themselves. Otherwise each clock-aligned candle takes its
+    first open, last close, the extremes and the summed volume, and the one
+    still forming at `now` is left out.
+    """
+    if minutes <= 1:
+        return list(bars)
+    forming = _bucket(now, minutes)
+    candles = {}
+    for bar in bars:
+        t = bar_time(bar)
+        if t is None or (start := _bucket(t, minutes)) >= forming:
+            continue
+        c = candles.get(start)
+        if c is None:
+            candles[start] = {"t": start.isoformat(), "o": bar["o"],
+                              "h": bar["h"], "l": bar["l"], "c": bar["c"],
+                              "v": bar.get("v") or 0}
+        else:
+            c["h"], c["l"] = max(c["h"], bar["h"]), min(c["l"], bar["l"])
+            c["c"] = bar["c"]
+            c["v"] += bar.get("v") or 0
+    return [candles[k] for k in sorted(candles)]
 
 
 def setup_stop(setup, bars, now, cfg):
