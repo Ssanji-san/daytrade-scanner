@@ -996,8 +996,14 @@ class TradingBot:
 
     async def _flatten_trade(self, symbol, trade, ts, pos, reason):
         # Clear protective orders first: an open sell blocks the close as a
-        # wash trade, and a leftover one blocks tomorrow's entry.
-        await self.broker.cancel_orders_for(symbol)
+        # wash trade, and a leftover one blocks tomorrow's entry. Until the
+        # cancel completes Alpaca keeps the stop's shares reserved and
+        # refuses the close (NCPL 2026-10-15, 403), so wait for it, or try
+        # again next cycle - the stop still stands until it is gone.
+        if not await self.broker.cancel_orders_for(
+                symbol, settle_seconds=self.cfg.bot_cancel_settle_seconds):
+            print(f"[bot] {symbol}: cancel not settled yet, sell waits a cycle")
+            return
         await self.broker.close_position(symbol)
         fallback = float(pos.get("current_price") or trade["entry"])
         exit_price = await self._closed_exit_price(symbol, trade, fallback)
