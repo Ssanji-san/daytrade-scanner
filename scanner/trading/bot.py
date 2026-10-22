@@ -17,9 +17,9 @@ from .model import train
 from .strategy import (ET, MARKET_OPEN, _parse_hhmm, bankroll_from,
                        buying_power, exit_levels, exit_signal, is_doji,
                        is_premarket, position_slots, premarket_entry_limit,
-                       premarket_exit_limit, runner_trail_pct, scalp_levels,
-                       scalp_split, should_enter, size_position, split_qty,
-                       technical_stop, weighted_exit)
+                       premarket_exit_limit, price_str, runner_trail_pct,
+                       scalp_levels, scalp_split, should_enter, size_position,
+                       split_qty, technical_stop, tick, weighted_exit)
 
 STARTUP_ATTEMPTS = 10
 
@@ -439,13 +439,13 @@ class TradingBot:
             # "closed". See _settle_pending.
             "filled": False,
             "banked": False}
-        how = (f"pre-market limit {limit:.2f} (ext. hours), stop run by the bot"
-               if premarket else f"limit {limit:.2f}")
+        how = (f"pre-market limit {price_str(limit)} (ext. hours), stop run "
+               "by the bot" if premarket else f"limit {price_str(limit)}")
         exits = ("exit on a candle indicator"
                  if self.cfg.bot_exit_mode == "candle"
                  else f"scale-out {levels['scale_out']:.2f}")
-        print(f"[bot] ENTER {pick['symbol']} x{total_qty} @~{entry:.2f} "
-              f"[{pick.get('setup')}] {how} stop {levels['stop']:.2f} "
+        print(f"[bot] ENTER {pick['symbol']} x{total_qty} @~{price_str(entry)} "
+              f"[{pick.get('setup')}] {how} stop {price_str(levels['stop'])} "
               f"{exits}")
 
     async def _manage_open(self, state, now, ts):
@@ -732,7 +732,7 @@ class TradingBot:
         can never sit below what was paid. One definition for both sides of
         the bell: who holds the stop differs, the rule must not.
         """
-        trade["stop"] = round(trade["entry"], 2)
+        trade["stop"] = tick(trade["entry"])
         trade["trail_pct"] = (runner_trail_pct(trade["entry"], price, self.cfg)
                               if self.cfg.bot_scalp_runner_trail else None)
         trade["high"] = price
@@ -876,7 +876,7 @@ class TradingBot:
         trade["high"] = max(trade.get("high") or price, price)
         pct = trade.get("trail_pct")
         if pct:
-            trailed = round(trade["high"] * (1 - pct / 100), 2)
+            trailed = tick(trade["high"] * (1 - pct / 100))
             trade["stop"] = max(trade["stop"], trailed)
 
     def _bid(self, state, symbol):
@@ -922,8 +922,8 @@ class TradingBot:
         if qty < 1:
             return
         fresh = premarket_exit_limit(price, self._bid(state, symbol), self.cfg)
-        px = max(0.01, round(min(pending["px"], fresh)
-                             - self.cfg.bot_premarket_offset_cents, 2))
+        # One more offset below the lower of the two, never under a tick.
+        px = premarket_exit_limit(min(pending["px"], fresh), None, self.cfg)
         order = await self.broker.submit_limit_sell(symbol, qty, px,
                                                     extended_hours=True)
         pending.update(order_id=(order or {}).get("id"), ts=ts, px=px)
@@ -984,7 +984,7 @@ class TradingBot:
         if qty < 1:
             return
         pct = trade.get("trail_pct") if trade["banked"] else None
-        if pct and round(price * (1 - pct / 100), 2) >= trade["stop"]:
+        if pct and tick(price * (1 - pct / 100)) >= trade["stop"]:
             order = await self.broker.submit_trailing_stop(symbol, qty, pct)
             trade["trailing_order_id"] = (order or {}).get("id")
             how = f"trailing {pct:g}%"

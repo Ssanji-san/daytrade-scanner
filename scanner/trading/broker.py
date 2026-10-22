@@ -10,6 +10,7 @@ import os
 import aiohttp
 
 from ..config import Config
+from .strategy import price_str
 
 PAPER_MARKER = "paper-api"
 
@@ -51,7 +52,7 @@ class Broker:
     def stop_payload(symbol, qty, stop_price, side="sell"):
         return {"symbol": symbol, "qty": str(qty), "side": side,
                 "type": "stop", "time_in_force": "day",
-                "stop_price": f"{stop_price:.2f}"}
+                "stop_price": price_str(stop_price)}
 
     @staticmethod
     def oto_stop_payload(symbol, qty, stop_price, limit_price=None):
@@ -64,12 +65,12 @@ class Broker:
         payload = {"symbol": symbol, "qty": str(qty), "side": "buy",
                    "type": "market", "time_in_force": "day",
                    "order_class": "oto",
-                   "stop_loss": {"stop_price": f"{stop_price:.2f}"}}
+                   "stop_loss": {"stop_price": price_str(stop_price)}}
         if limit_price:
             # Marketable limit: fills like a market order but refuses the
             # runaway prints that market orders eat on thin small caps.
             payload["type"] = "limit"
-            payload["limit_price"] = f"{limit_price:.2f}"
+            payload["limit_price"] = price_str(limit_price)
         return payload
 
     @staticmethod
@@ -79,7 +80,7 @@ class Broker:
         trailing, OTO and bracket orders are all rejected then."""
         payload = {"symbol": symbol, "qty": str(qty), "side": side,
                    "type": "limit", "time_in_force": "day",
-                   "limit_price": f"{limit_price:.2f}"}
+                   "limit_price": price_str(limit_price)}
         if extended_hours:
             payload["extended_hours"] = True
         return payload

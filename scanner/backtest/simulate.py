@@ -25,7 +25,7 @@ from ..history import ET
 from ..trading.bot import choose_entries
 from ..trading.strategy import (exit_levels, exit_signal, is_doji,
                                 runner_trail_pct, scalp_levels, scalp_split,
-                                split_qty, weighted_exit)
+                                split_qty, tick, weighted_exit)
 
 
 def _hhmm(text):
@@ -207,8 +207,8 @@ class Simulator:
             pos.trail_high = max(pos.trail_high, high)
             stop = pos.stop
             if pos.trail_pct:
-                stop = max(stop, round(pos.trail_high
-                                       * (1 - pos.trail_pct / 100), 2))
+                stop = max(stop, tick(pos.trail_high
+                                      * (1 - pos.trail_pct / 100)))
             if low <= stop:
                 pos.close(remaining, stop)
                 self._finish(pos, ts,
