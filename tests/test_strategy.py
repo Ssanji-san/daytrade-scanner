@@ -51,8 +51,12 @@ class TestShouldEnter:
         take, reasons = should_enter(**ok_kwargs())
         assert take and reasons == []
 
+    def test_a_penny_stock_from_25_cents_is_allowed(self):
+        take, reasons = should_enter(symbol="TEST", **ok_kwargs(price=0.30))
+        assert take and reasons == []
+
     @pytest.mark.parametrize("overrides,expected", [
-        ({"price": 0.50}, "price"),
+        ({"price": 0.20}, "price"),
         ({"price": 25.0}, "price"),
         ({"now": et(7, 50)}, "window"),
         ({"now": et(12, 1)}, "window"),
@@ -416,3 +420,14 @@ class TestPennyTicks:
 
     def test_an_exit_floor_is_never_below_one_tick(self):
         assert premarket_exit_limit(0.00005, None, CFG) == 0.0001
+
+    def test_nothing_changes_from_a_dollar_up(self):
+        """The penny tick rule must leave every $1+ price exactly as the
+        cent rule had it - the backtest's $1+ trades rest on that."""
+        for cents in range(100, 2001):
+            for frac in (0.0, 0.0012, 0.0049, 0.005, 0.0051, 0.0099):
+                p = cents / 100 + frac
+                assert tick(p) == round(p, 2), p
+                assert premarket_entry_limit(p, p, CFG) == round(p + 0.10, 2)
+                if p >= 1.10:        # a floor under $1 keeps its 4 decimals
+                    assert premarket_exit_limit(p, p, CFG) == round(p - 0.10, 2)

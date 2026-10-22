@@ -70,18 +70,18 @@ class TestBreakingNews:
         assert news_candidates(seen, et(8, 0), CFG) == ["NEW"]
 
     def test_a_stock_far_outside_the_price_band_is_dropped(self):
-        """News finds every megacap; the scan can only use $1-$10 stocks.
+        """News finds every megacap; the scan can only use $0.25-$10 stocks.
         Watching AAPL costs snapshot and news calls for nothing."""
         when = int(et(7, 0).timestamp())
         seen = {"AAPL": when, "SOS": when, "PENY": when, "FRESH": when}
-        prices = {"AAPL": 230.0, "SOS": 2.10, "PENY": 0.20}
+        prices = {"AAPL": 230.0, "SOS": 2.10, "PENY": 0.10}
         assert news_candidates(seen, et(8, 0), CFG, prices) == ["FRESH", "SOS"]
 
     def test_near_the_band_is_kept(self):
-        """A $0.90 stock with news can run through $1; keep watching it."""
+        """A $0.20 stock with news can run through $0.25; keep watching it."""
         when = int(et(7, 0).timestamp())
         assert news_candidates({"ALMO": when}, et(8, 0), CFG,
-                               {"ALMO": 0.90}) == ["ALMO"]
+                               {"ALMO": 0.20}) == ["ALMO"]
 
 
 class TestRealTape:
@@ -139,9 +139,10 @@ class TestMarketSweep:
         snaps = {"RUN": self.snap(2.40, 2.00),       # +20%
                  "FLAT": self.snap(2.05, 2.00),      # +2.5%
                  "BIG": self.snap(150.0, 100.0),     # +50%, out of band
-                 "PENY": self.snap(0.60, 0.30),      # +100%, under $1
+                 "PENY": self.snap(0.60, 0.30),      # +100%, a penny stock
+                 "DUST": self.snap(0.20, 0.10),      # +100%, under $0.25
                  "NOPC": self.snap(3.00, None)}      # no baseline
-        assert sweep_candidates(snaps, CFG) == ["RUN"]
+        assert sweep_candidates(snaps, CFG) == ["PENY", "RUN"]
 
     def test_the_first_sweep_asks_for_everything(self):
         assert sweep_universe(["A", "B"], {}, CFG) == ["A", "B"]

@@ -336,8 +336,8 @@ def report(journal, cfg):
 # A fixed-cent target behaves completely differently across the price band,
 # so the aggregate can hide a strategy that only works in one part of it.
 PRICE_BUCKETS = ((0.0, 1.00), (1.00, 1.50), (1.50, 2.50), (2.50, 3.50),
-                 (3.50, 5.00),
-                 (5.00, 10.00), (10.00, 20.00), (20.00, float("inf")))
+                 (3.50, 5.00), (5.00, 10.00), (10.00, 20.00),
+                 (20.00, float("inf")))
 
 
 def _bucket_report(rows, cfg):
