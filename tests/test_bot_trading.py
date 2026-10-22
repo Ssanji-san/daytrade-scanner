@@ -1045,6 +1045,23 @@ class TestCandleExitsLive:
         assert "HODX" in bot.open_trades
         assert not [o for o in broker.orders if o["side"] == "sell"]
 
+    def test_the_sell_waits_for_the_stop_cancel_to_settle(self, tmp_path):
+        """NCPL 2026-10-15: the close went out while Alpaca still held the
+        shares for the cancelled stop and was refused (403, held_for_orders
+        357). Wait a cycle instead; the stop is still in place until then."""
+        bot, broker, journal, _ = self._open(tmp_path)
+        bars = self.RUN + [_bar("2026-07-14T13:43:00Z", 5.40, 5.41, 5.10,
+                                5.12)]
+        broker.slow_cancels.add("HODX")
+        self._manage(bot, broker, 5.12, bars, et(9, 44))
+        assert "HODX" in bot.open_trades
+        assert broker._positions, "sold into a reserved position"
+
+        broker.slow_cancels.clear()
+        self._manage(bot, broker, 5.12, bars, et(9, 45))
+        assert "HODX" not in bot.open_trades
+        assert journal.recent_trades(1)[0]["exit_reason"] == "red_candle"
+
     def test_candle_is_the_default(self):
         assert Config().bot_exit_mode == "candle"
 
