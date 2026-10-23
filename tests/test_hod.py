@@ -20,8 +20,11 @@ def test_price_band_is_a_hard_gate():
     # A $50 stock is out of scope entirely - not even a near miss
     qualified, near = scan([make_state(price=50.0, day_high=50.5)], CFG)
     assert qualified == [] and near == []
-    qualified, near = scan([make_state(price=0.80, day_high=0.81)], CFG)
+    # Penny stocks from $0.25 (the user's floor): $0.30 trades, $0.20 not.
+    qualified, near = scan([make_state(price=0.20, day_high=0.201)], CFG)
     assert qualified == [] and near == []
+    qualified, _ = scan([make_state(price=0.30, day_high=0.301)], CFG)
+    assert [r["symbol"] for r in qualified] == [make_state()["symbol"]]
 
 
 @pytest.mark.parametrize("override,expected_fail", [

@@ -27,7 +27,9 @@ import aiohttp
 from .config import DEFAULT
 from .trading.broker import Broker
 from .trading.journal import Journal
-from .trading.strategy import ET, MARKET_OPEN, is_premarket, weighted_exit
+from .trading.strategy import (ET, MARKET_OPEN, is_premarket,
+                               premarket_exit_limit, price_str, tick,
+                               weighted_exit)
 
 FLATTEN_FROM = (15, 40)
 MARKET_CLOSE = (16, 0)
@@ -74,7 +76,7 @@ def plan_protection(positions, open_orders, stops, cfg):
         stop = stops.get(symbol)
         if stop is None:
             basis = float(pos.get("avg_entry_price") or price)
-            stop = round(basis * (1 - cfg.bot_stop_pct / 100), 2)
+            stop = tick(basis * (1 - cfg.bot_stop_pct / 100))
         if price <= stop:
             plan.append({"symbol": symbol, "action": "close"})
             continue
@@ -139,11 +141,11 @@ async def _exit_before_the_bell(broker, cfg):
         if held < 1 or pos["symbol"] in working:
             continue
         price = float(pos.get("current_price") or 0)
-        limit = max(0.01, round(price - cfg.bot_premarket_offset_cents, 2))
+        limit = premarket_exit_limit(price, None, cfg)
         await broker.submit_limit_sell(pos["symbol"], held, limit,
                                        extended_hours=True)
         print(f"[protect] {pos['symbol']}: bot gone before the bell - limit "
-              f"sell {held} floor {limit:.2f}, extended hours")
+              f"sell {held} floor {price_str(limit)}, extended hours")
 
 
 def _describe(step):

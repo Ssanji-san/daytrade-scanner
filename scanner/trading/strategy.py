@@ -184,6 +184,25 @@ def is_premarket(now):
     return now.astimezone(ET).time() < MARKET_OPEN
 
 
+def tick(price):
+    """A price on Alpaca's grid: $0.0001 below $1, whole cents from $1 up.
+    Cents alone would round a 1% stop on a $0.30 stock onto the entry."""
+    sub = round(price, 4)
+    return sub if sub < 1 else round(price, 2)
+
+
+def price_str(price):
+    """`tick`, formatted for an order payload."""
+    price = tick(price)
+    return f"{price:.4f}" if price < 1 else f"{price:.2f}"
+
+
+def _offset(price, cfg: Config):
+    """Ross's pre-market offset: 10c, but at most 10% of the price - the
+    flat 10c would be a third of a $0.30 stock."""
+    return min(cfg.bot_premarket_offset_cents, 0.10 * price)
+
+
 def premarket_entry_limit(price, ask, cfg: Config):
     """Ross's pre-market entry: the ask plus a fixed offset.
 
@@ -196,7 +215,7 @@ def premarket_entry_limit(price, ask, cfg: Config):
     """
     band = price * cfg.bot_premarket_quote_band_pct / 100
     base = ask if ask and abs(ask - price) <= band else price
-    return round(base + cfg.bot_premarket_offset_cents, 2)
+    return tick(base + _offset(base, cfg))
 
 
 def premarket_exit_limit(price, bid, cfg: Config):
@@ -204,11 +223,11 @@ def premarket_exit_limit(price, bid, cfg: Config):
 
     A sell limit is a floor, not a price - it fills at the best bid above
     it - so this is how far the bot will let a thin book walk it down on
-    one attempt. Falls back to the last trade with no quote. Never below a
-    cent.
+    one attempt. Falls back to the last trade with no quote. Never below one
+    tick.
     """
     base = bid if bid else price
-    return max(0.01, round(base - cfg.bot_premarket_offset_cents, 2))
+    return max(0.0001, tick(base - _offset(base, cfg)))
 
 
 def max_positions(bankroll, cfg: Config):
@@ -279,8 +298,8 @@ def scalp_levels(entry_price, cfg: Config, stop_price=None):
     technical_stop - or a flat bot_stop_pct without one; the target a fixed
     number of cents above."""
     stop = stop_price or entry_price * (1 - cfg.bot_stop_pct / 100)
-    return {"stop": round(stop, 2),
-            "target": round(entry_price + cfg.bot_scalp_target_cents, 2)}
+    return {"stop": tick(stop),
+            "target": tick(entry_price + cfg.bot_scalp_target_cents)}
 
 
 def candle_exit(bar, prev_bar, vwap, cfg: Config):
@@ -364,8 +383,8 @@ def exit_levels(entry_price, cfg: Config, stop_price=None):
     # Round to cents: these are the prices we actually send to the broker,
     # and comparing raw floats against a quoted price is a coin flip.
     return {
-        "stop": round(stop_price, 2),
-        "scale_out": round(entry_price + cfg.bot_scale_out_r * r, 2),
+        "stop": tick(stop_price),
+        "scale_out": tick(entry_price + cfg.bot_scale_out_r * r),
     }
 
 

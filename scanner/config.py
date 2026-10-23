@@ -30,7 +30,13 @@ class Config:
     gainer_rows: int = 20
 
     # --- scanner 2: HOD momentum (Ross Cameron's five criteria) ---
-    hod_min_price: float = 1.0          # $1-$5, matching the bot's band
+    # $0.25-$5, matching the bot's band. Penny stocks from $0.25 were the
+    # user's call (2026-10-22); prices below $1 trade on $0.0001 ticks
+    # (strategy.tick). Jan-Aug 2026 IEX, same data: $1 floor 60 trades
+    # +0.258R +$272; $0.25 floor 61 trades +0.416R +$493 - the one penny
+    # trade (+9.88R) is all of the difference, so it is not evidence yet,
+    # and the replay does not model the spread, widest down there.
+    hod_min_price: float = 0.25
     hod_max_price: float = 5.0
     # Watched but never bought. Rows priced above hod_max_price and up to
     # here are graded into the training set with "price" among their failed
@@ -206,7 +212,7 @@ class Config:
     # This bounds exposure if the balance grows - raise it deliberately
     # rather than letting position count climb on its own.
     bot_max_concurrent_positions: int = 5
-    bot_min_price: float = 1.0           # scalping band, $1-$5
+    bot_min_price: float = 0.25          # $0.25-$5, see hod_min_price
     bot_max_price: float = 5.0
     # Ross's stop: the low of the pullback ("my max loss is the low of the
     # pullback"), widened to 1% if tighter - that is noise - and skipped past

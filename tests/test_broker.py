@@ -95,3 +95,16 @@ class TestSellLegs:
              "filled_at": "2026-07-14T14:05:00Z"}]}]
         legs = Broker.sell_legs(orders, self._ts("2026-07-14T13:30:00Z"))
         assert legs == [(10.0, 5.50)]
+
+
+def test_penny_prices_keep_four_decimals():
+    """Alpaca takes $0.0001 ticks below $1; cents would round a stop onto
+    the entry."""
+    broker = Broker(session=None, cfg=CFG)
+    assert broker.stop_payload("PNY", 100, 0.2876)["stop_price"] == "0.2876"
+    oto = broker.oto_stop_payload("PNY", 100, 0.2876, limit_price=0.3012)
+    assert oto["stop_loss"]["stop_price"] == "0.2876"
+    assert oto["limit_price"] == "0.3012"
+    limit = broker.limit_payload("PNY", 100, "buy", 0.3012)
+    assert limit["limit_price"] == "0.3012"
+    assert broker.stop_payload("HODX", 25, 4.85)["stop_price"] == "4.85"

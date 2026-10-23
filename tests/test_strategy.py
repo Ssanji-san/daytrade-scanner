@@ -7,9 +7,11 @@ import pytest
 from scanner.config import Config
 from scanner.trading.strategy import candle_exit
 from scanner.trading.strategy import (bankroll_from, exit_levels, in_window,
-                                      position_slots, runner_trail_pct,
-                                      should_enter, size_position, split_qty,
-                                      weighted_exit)
+                                      position_slots, premarket_entry_limit,
+                                      premarket_exit_limit, price_str,
+                                      runner_trail_pct, should_enter,
+                                      size_position, split_qty,
+                                      technical_stop, tick, weighted_exit)
 
 ET = ZoneInfo("America/New_York")
 CFG = Config()
@@ -49,8 +51,12 @@ class TestShouldEnter:
         take, reasons = should_enter(**ok_kwargs())
         assert take and reasons == []
 
+    def test_a_penny_stock_from_25_cents_is_allowed(self):
+        take, reasons = should_enter(symbol="TEST", **ok_kwargs(price=0.30))
+        assert take and reasons == []
+
     @pytest.mark.parametrize("overrides,expected", [
-        ({"price": 0.50}, "price"),
+        ({"price": 0.20}, "price"),
         ({"price": 25.0}, "price"),
         ({"now": et(7, 50)}, "window"),
         ({"now": et(12, 1)}, "window"),
@@ -378,3 +384,50 @@ class TestCandleExit:
     def test_no_prior_candle_or_vwap_yet(self):
         assert candle_exit(ohlc(5.20, 5.22, 4.80, 4.90), None, None,
                            CFG) is None
+
+
+class TestPennyTicks:
+    """Below $1 Alpaca takes $0.0001 ticks, at $1 and up only cents. A cent
+    rule on a $0.30 stock rounds a 1% stop onto the entry itself."""
+
+    def test_tick(self):
+        assert tick(0.29763) == 0.2976
+        assert tick(1.234) == 1.23
+        assert tick(0.99996) == 1.0
+        assert tick(5.005) == pytest.approx(5.0, abs=0.01)
+
+    def test_price_str(self):
+        assert price_str(0.2976) == "0.2976"
+        assert price_str(4.85) == "4.85"
+        assert price_str(0.99996) == "1.00"
+
+    def test_a_penny_stop_sizes_below_the_entry(self):
+        stop = technical_stop(0.30, 0.297, CFG)          # 1% - the floor
+        qty, stop = size_position(0.30, CFG, stop_price=stop)
+        assert stop < 0.30
+        assert qty * 0.30 <= 1000 + 1e-6
+        assert qty * (0.30 - stop) <= 50 + 1e-6
+
+    def test_exit_levels_keep_sub_penny_stops(self):
+        assert exit_levels(0.30, CFG, stop_price=0.2876)["stop"] == 0.2876
+
+    def test_premarket_offset_scales_under_a_dollar(self):
+        """Ross's 10c is 33% of a $0.30 stock; below $1 it is 10% of it."""
+        assert premarket_entry_limit(0.30, 0.30, CFG) == pytest.approx(0.33)
+        assert premarket_entry_limit(3.00, 3.00, CFG) == pytest.approx(3.10)
+        assert premarket_exit_limit(0.30, 0.30, CFG) == pytest.approx(0.27)
+        assert premarket_exit_limit(3.00, 3.00, CFG) == pytest.approx(2.90)
+
+    def test_an_exit_floor_is_never_below_one_tick(self):
+        assert premarket_exit_limit(0.00005, None, CFG) == 0.0001
+
+    def test_nothing_changes_from_a_dollar_up(self):
+        """The penny tick rule must leave every $1+ price exactly as the
+        cent rule had it - the backtest's $1+ trades rest on that."""
+        for cents in range(100, 2001):
+            for frac in (0.0, 0.0012, 0.0049, 0.005, 0.0051, 0.0099):
+                p = cents / 100 + frac
+                assert tick(p) == round(p, 2), p
+                assert premarket_entry_limit(p, p, CFG) == round(p + 0.10, 2)
+                if p >= 1.10:        # a floor under $1 keeps its 4 decimals
+                    assert premarket_exit_limit(p, p, CFG) == round(p - 0.10, 2)

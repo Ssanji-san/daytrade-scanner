@@ -232,6 +232,12 @@ class TestProtectingPositionsTheBotLeftBehind:
         assert plan[0]["stop"] == pytest.approx(
             round(2.00 * (1 - CFG.bot_stop_pct / 100), 2))
 
+    def test_a_penny_fallback_stop_keeps_sub_cent_ticks(self):
+        """5% under 0.3150 is 0.299250 - cents would make it 0.30."""
+        plan = plan_protection([_pos(price="0.32", avg="0.3150")], [], {},
+                               CFG)
+        assert plan[0]["stop"] == pytest.approx(0.29925, abs=1e-4)
+
     def test_a_short_is_reported_never_sold(self):
         plan = plan_protection([_pos(qty="-50")], [], {"PRE": 1.90}, CFG)
         assert plan[0]["action"] == "short"

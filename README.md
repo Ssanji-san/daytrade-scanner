@@ -14,12 +14,12 @@ calendar — no paid subscriptions.
    price band up 10% or more, and breaking news. The screener lists reset
    at the bell and show only the top 50; the sweep sees the rest, and sees
    pre-market movers from IEX's 08:00 open.
-2. **HOD Momentum** — $1–$5 stocks at/near their high of day, filtered on
+2. **HOD Momentum** — $0.25–$5 stocks at/near their high of day, filtered on
    Ross Cameron's stock-selection criteria (defaults in `scanner/config.py`;
    the panel header states the gates actually in force):
    | Criterion | Default |
    |---|---|
-   | Price | $1–$5 (watched to $10, never bought above $5) |
+   | Price | $0.25–$5 (watched to $10, never bought above $5); under $1 prices use $0.0001 ticks |
    | Float | < 20M shares |
    | % up today | ≥ 10% |
    | % up since the 9:30 bell | ≥ 5% |
@@ -68,7 +68,8 @@ anything else. Rules (all tunable in `scanner/config.py`):
 It trades Ross Cameron's first pullback, and sells the way he does: "I
 will not sell just because I'm up 20 cents."
 
-- $1–$5 symbols only, entries **08:00–12:00 ET** (pre-market from IEX's
+- $0.25–$5 symbols only (penny stocks from 25 cents; Ross's 10c pre-market
+  offset is capped at 10% of the price), entries **08:00–12:00 ET** (pre-market from IEX's
   08:00 open, then the regular session until noon), max 10 trades/day, never the
   same symbol twice in a day
 - **Breaking news finds the stocks**: every 10 seconds the bot reads the
