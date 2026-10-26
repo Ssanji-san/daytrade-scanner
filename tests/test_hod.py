@@ -309,3 +309,6 @@ class TestPennyStocksNeedNoNews:
     def test_a_chinese_penny_still_needs_breaking_news(self):
         row = self.penny(country="China")
         assert scan([row], self.STRICT)[1][0]["failed"] == ["china_news"]
+
+    def test_it_is_the_default(self):
+        assert Config().news_required_from_price == 1.0

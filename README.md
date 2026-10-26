@@ -27,7 +27,7 @@ calendar — no paid subscriptions.
    | Volume today | no share floor: relative volume carries it (optional, see below) |
    | 30-day average volume | ≥ 10k shares |
    | VWAP | price must be above it |
-   | News | a scored catalyst, with dilution vetoed |
+   | News | a scored catalyst, with dilution vetoed; under $1 none is needed (a share offering still vetoes) |
    | Chinese companies | only on **breaking** news (under 60 min old) |
 
    A 500K-shares floor exists but is off (`hod_min_real_volume`): over
