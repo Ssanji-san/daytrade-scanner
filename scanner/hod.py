@@ -51,8 +51,12 @@ def _criteria(state, cfg: Config):
     if cfg.hod_require_news:
         # Not "is there a headline" but "is there a *reason*": a real
         # catalyst, still fresh, and no share offering behind the move.
-        checks.append(("news", catalyst.is_tradable(state.get("catalyst"),
-                                                    cfg)))
+        # Below news_required_from_price only the offering veto applies.
+        found = state.get("catalyst")
+        if price < cfg.news_required_from_price:
+            checks.append(("news", not (found and found.get("veto"))))
+        else:
+            checks.append(("news", catalyst.is_tradable(found, cfg)))
     if cfg.china_requires_news and is_chinese(state.get("country")) is not False:
         # Chinese small caps moving on nothing are pumps, so they need news
         # that is BREAKING, not merely recent: the bot already requires a

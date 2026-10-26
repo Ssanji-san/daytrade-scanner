@@ -89,6 +89,13 @@ class Config:
     # than one that gapped overnight and has drifted since.
     hod_min_open_pct: float = 5.0
     hod_require_news: bool = False      # UI toggle; badge always shown
+    # Below this price a stock needs no catalyst - the user's rule for
+    # penny stocks (2026-10-26). A share offering still vetoes it, and a
+    # Chinese stock still needs breaking news (china_requires_news). 0 =
+    # news for all. Jan-Aug 2026 IEX, same data: news for all 65 trades
+    # +0.369R +$441; none under $1 68 trades +0.347R +$424 - three more
+    # penny trades, -$17 between them.
+    news_required_from_price: float = 1.0
     # Chinese companies (and any whose country is not known yet) trade only
     # on BREAKING news: a real catalyst at most catalyst_fresh_minutes old.
     # Everything else needs a catalyst too, but a day-old one still counts.
