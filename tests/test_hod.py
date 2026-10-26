@@ -276,3 +276,36 @@ class TestRealVolume:
     def test_unknown_fails(self):
         row = make_state(real_volume=None)
         assert scan([row], self.ON)[1][0]["failed"] == ["real_volume"]
+
+
+class TestPennyStocksNeedNoNews:
+    """The user's rule (2026-10-26): from $0.25 to $1 a stock does not need
+    a catalyst. A share offering still keeps it out, and a Chinese penny
+    still needs breaking news."""
+    STRICT = Config(hod_require_news=True, news_required_from_price=1.0)
+
+    def penny(self, **kw):
+        base = dict(price=0.50, day_high=0.505, has_news=False, catalyst=None,
+                    setup={"setup": "micro_pullback", "stop": 0.48,
+                           "swing_high": 0.505, "pullback_low": 0.48,
+                           "trigger": 0.495}, vwap=0.47)
+        base.update(kw)
+        return make_state(**base)
+
+    def test_a_penny_without_news_qualifies(self):
+        assert len(scan([self.penny()], self.STRICT)[0]) == 1
+
+    def test_a_dollar_stock_without_news_still_fails(self):
+        row = make_state(price=1.20, day_high=1.21, has_news=False,
+                         catalyst=None)
+        assert scan([row], self.STRICT)[1][0]["failed"] == ["news"]
+
+    def test_an_offering_still_keeps_a_penny_out(self):
+        dilution = {"category": "offering", "weight": 0.05, "score": 0.05,
+                    "age_minutes": 5.0, "veto": True, "headline": "offering"}
+        row = self.penny(catalyst=dilution, has_news=True)
+        assert scan([row], self.STRICT)[1][0]["failed"] == ["news"]
+
+    def test_a_chinese_penny_still_needs_breaking_news(self):
+        row = self.penny(country="China")
+        assert scan([row], self.STRICT)[1][0]["failed"] == ["china_news"]
