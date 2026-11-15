@@ -30,13 +30,10 @@ class Config:
     gainer_rows: int = 20
 
     # --- scanner 2: HOD momentum (Ross Cameron's five criteria) ---
-    # $0.25-$5, matching the bot's band. Penny stocks from $0.25 were the
-    # user's call (2026-10-22); prices below $1 trade on $0.0001 ticks
-    # (strategy.tick). Jan-Aug 2026 IEX, same data: $1 floor 60 trades
-    # +0.258R +$272; $0.25 floor 61 trades +0.416R +$493 - the one penny
-    # trade (+9.88R) is all of the difference, so it is not evidence yet,
-    # and the replay does not model the spread, widest down there.
-    hod_min_price: float = 0.25
+    # $1-$5, matching the bot's band. Penny stocks were traded from $0.25
+    # between 2026-10-23 and 2026-11-15 and dropped on the user's call;
+    # strategy.tick still prices anything under $1 on $0.0001 ticks.
+    hod_min_price: float = 1.0
     hod_max_price: float = 5.0
     # Watched but never bought. Rows priced above hod_max_price and up to
     # here are graded into the training set with "price" among their failed
@@ -89,13 +86,11 @@ class Config:
     # than one that gapped overnight and has drifted since.
     hod_min_open_pct: float = 5.0
     hod_require_news: bool = False      # UI toggle; badge always shown
-    # Below this price a stock needs no catalyst - the user's rule for
-    # penny stocks (2026-10-26). A share offering still vetoes it, and a
-    # Chinese stock still needs breaking news (china_requires_news). 0 =
-    # news for all. Jan-Aug 2026 IEX, same data: news for all 65 trades
-    # +0.369R +$441; none under $1 68 trades +0.347R +$424 - three more
-    # penny trades, -$17 between them.
-    news_required_from_price: float = 1.0
+    # Below this price a stock needs no catalyst (the user's penny rule
+    # of 2026-10-26; a share offering still vetoes, and a Chinese stock
+    # still needs breaking news). 0 = news for all - the default since
+    # penny stocks were dropped.
+    news_required_from_price: float = 0.0
     # Chinese companies (and any whose country is not known yet) trade only
     # on BREAKING news: a real catalyst at most catalyst_fresh_minutes old.
     # Everything else needs a catalyst too, but a day-old one still counts.
@@ -219,7 +214,7 @@ class Config:
     # This bounds exposure if the balance grows - raise it deliberately
     # rather than letting position count climb on its own.
     bot_max_concurrent_positions: int = 5
-    bot_min_price: float = 0.25          # $0.25-$5, see hod_min_price
+    bot_min_price: float = 1.0           # $1-$5, see hod_min_price
     bot_max_price: float = 5.0
     # Ross's stop: the low of the pullback ("my max loss is the low of the
     # pullback"), widened to 1% if tighter - that is noise - and skipped past

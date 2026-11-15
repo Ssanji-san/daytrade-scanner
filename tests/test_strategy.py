@@ -51,12 +51,8 @@ class TestShouldEnter:
         take, reasons = should_enter(**ok_kwargs())
         assert take and reasons == []
 
-    def test_a_penny_stock_from_25_cents_is_allowed(self):
-        take, reasons = should_enter(symbol="TEST", **ok_kwargs(price=0.30))
-        assert take and reasons == []
-
     @pytest.mark.parametrize("overrides,expected", [
-        ({"price": 0.20}, "price"),
+        ({"price": 0.50}, "price"),
         ({"price": 25.0}, "price"),
         ({"now": et(7, 50)}, "window"),
         ({"now": et(12, 1)}, "window"),
