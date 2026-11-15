@@ -20,11 +20,9 @@ def test_price_band_is_a_hard_gate():
     # A $50 stock is out of scope entirely - not even a near miss
     qualified, near = scan([make_state(price=50.0, day_high=50.5)], CFG)
     assert qualified == [] and near == []
-    # Penny stocks from $0.25 (the user's floor): $0.30 trades, $0.20 not.
-    qualified, near = scan([make_state(price=0.20, day_high=0.201)], CFG)
+    # No penny stocks (the user's call, 2026-11-15): under $1 is out.
+    qualified, near = scan([make_state(price=0.80, day_high=0.81)], CFG)
     assert qualified == [] and near == []
-    qualified, _ = scan([make_state(price=0.30, day_high=0.301)], CFG)
-    assert [r["symbol"] for r in qualified] == [make_state()["symbol"]]
 
 
 @pytest.mark.parametrize("override,expected_fail", [
@@ -279,10 +277,12 @@ class TestRealVolume:
 
 
 class TestPennyStocksNeedNoNews:
-    """The user's rule (2026-10-26): from $0.25 to $1 a stock does not need
-    a catalyst. A share offering still keeps it out, and a Chinese penny
+    """news_required_from_price: under it a stock does not need a catalyst
+    (the user's penny rule, 2026-10-26, off since pennies were dropped on
+    2026-11-15). A share offering still keeps it out, and a Chinese penny
     still needs breaking news."""
-    STRICT = Config(hod_require_news=True, news_required_from_price=1.0)
+    STRICT = Config(hod_require_news=True, news_required_from_price=1.0,
+                    hod_min_price=0.25)
 
     def penny(self, **kw):
         base = dict(price=0.50, day_high=0.505, has_news=False, catalyst=None,
@@ -310,5 +310,5 @@ class TestPennyStocksNeedNoNews:
         row = self.penny(country="China")
         assert scan([row], self.STRICT)[1][0]["failed"] == ["china_news"]
 
-    def test_it_is_the_default(self):
-        assert Config().news_required_from_price == 1.0
+    def test_off_by_default_news_for_every_stock(self):
+        assert Config().news_required_from_price == 0.0
